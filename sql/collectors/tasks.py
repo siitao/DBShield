@@ -340,7 +340,7 @@ def add_slowquery_collect_schedule():
         schedule_type="I",  # 每N分钟
         minutes=5,
         repeats=-1,  # 无限重复
-        timeout=-1,
+        timeout=600,  # 有界超时：避免无限任务长期占满 worker 导致诊断/采集排队
     )
     logger.info("添加慢查询采集定时任务（每5分钟）")
 
@@ -351,7 +351,7 @@ def add_slowquery_collect_schedule():
         schedule_type="I",  # 每N分钟
         minutes=5,
         repeats=-1,
-        timeout=-1,
+        timeout=600,  # 有界超时：避免无限任务长期占满 worker 导致诊断/采集排队
     )
     logger.info("添加慢查询聚合定时任务（每5分钟）")
 
@@ -361,7 +361,7 @@ def add_slowquery_collect_schedule():
         name="MySQL慢日志清理-每天",
         schedule_type="D",  # 每天
         repeats=-1,
-        timeout=-1,
+        timeout=600,  # 有界超时：避免无限任务长期占满 worker 导致诊断/采集排队
     )
     logger.info("添加MySQL慢日志清理定时任务（每天）")
 
@@ -371,7 +371,7 @@ def add_slowquery_collect_schedule():
         name="慢查询数据清理-每天",
         schedule_type="D",  # 每天
         repeats=-1,
-        timeout=-1,
+        timeout=600,  # 有界超时：避免无限任务长期占满 worker 导致诊断/采集排队
     )
     logger.info("添加慢查询数据清理定时任务（每天）")
 

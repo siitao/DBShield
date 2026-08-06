@@ -42,7 +42,7 @@ env = environ.Env(
         dict,
         {"username": "preferred_username", "display": "name", "email": "email"},
     ),
-    Q_CLUISTER_SYNC=(bool, False),  # qcluster 同步模式, debug 时可以调整为 True
+    Q_CLUSTER_SYNC=(bool, False),  # qcluster 同步模式, debug 时可以调整为 True
     # CSRF_TRUSTED_ORIGINS=subdomain.example.com,subdomain.example2.com subdomain.example.com
     CSRF_TRUSTED_ORIGINS=(list, []),
     ENABLED_ENGINES=(
@@ -251,16 +251,19 @@ DATABASES = {
 # Django-Q
 Q_CLUSTER = {
     "name": "archery",
-    "workers": env("Q_CLUISTER_WORKERS", default=4),
+    "workers": env("Q_CLUSTER_WORKERS", default=8),
     "recycle": 500,
-    "timeout": env("Q_CLUISTER_TIMEOUT", default=60),
+    "timeout": env("Q_CLUSTER_TIMEOUT", default=60),
+    # 定时任务追赶：False 表示不补跑错过的周期。若 next_run 因调度器异常卡在过去，
+    # CATCH_UP=True 会每次调度都投一条任务（追赶风暴）把队列打爆，此处显式关闭。
+    "catch_up": False,
     "compress": True,
     "cpu_affinity": 1,
     "save_limit": 0,
     "queue_limit": 50,
     "label": "Django Q",
     "django_redis": "default",
-    "sync": env("Q_CLUISTER_SYNC"),  # 本地调试可以修改为True，使用同步模式
+    "sync": env("Q_CLUSTER_SYNC"),  # 本地调试可以修改为True，使用同步模式
 }
 
 # 缓存配置
@@ -594,3 +597,16 @@ try:
     from local_settings import *
 except ImportError:
     print("import local settings failed, ignored")
+
+# Windows 下 django-q2 的 SIGALRM 任务超时静默失效（timeout.py 内被 except 吞掉），
+# 卡死的任务无法优雅超时，配合 timeout=-1 会永久占住 worker、队列只进不出。
+# 用守护线程看门狗在 Windows 上复刻超时行为（详见 common.utils.django_q_win_patch）。
+if os.name == "nt":
+    try:
+        from common.utils import django_q_win_patch
+
+        django_q_win_patch.install()
+    except Exception as _q_win_patch_err:
+        logger.warning(
+            "django-q Windows 超时补丁加载失败（不影响启动）：%s", _q_win_patch_err
+        )
