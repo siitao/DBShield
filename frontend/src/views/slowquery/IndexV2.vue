@@ -3,7 +3,8 @@ import { ref, watch, onMounted, computed } from "vue";
 import { ElMessage } from "element-plus";
 import type { EChartsOption } from "echarts";
 import { useInstanceSelect } from "@/composables/useInstanceSelect";
-import { fetchQueryResources } from "@/api/sqlquery";
+import { fetchQueryResources, checkOpenai } from "@/api/sqlquery";
+import { useAuthStore } from "@/stores/auth";
 import {
   fetchSlowSummaryV2,
   fetchSlowDetailV2,
@@ -321,7 +322,7 @@ async function openTrend(row: Record<string, unknown>) {
       },
       yAxis: [
         { type: "value", name: "执行次数" },
-        { type: "value", name: "平均耗时(秒)" },
+        { type: "value", name: "平均耗时(ms)" },
       ],
       series: [
         {
@@ -358,6 +359,29 @@ const diagnosisDbName = ref("");
 // 已诊断的 sql_hash 集合（用于显示"已诊断"状态）
 const diagnosedHashes = ref<Set<string>>(new Set());
 
+// ---- AI 诊断入口门禁（M1）----
+// 后端 POST 已有 use_ai_diagnosis 权限 + OpenAI 配置双重校验，这里做前端探测
+// 提前置灰，避免无权限/未配置用户进入抽屉（对照 sqlanalyze/Index.vue 的 checkOpenai 模式）
+const authStore = useAuthStore();
+const openaiEnabled = ref(false);
+const canUseAIDiagnosis = computed(
+  () => openaiEnabled.value && authStore.hasPerm("sql.use_ai_diagnosis")
+);
+const diagGateTip = computed(() => {
+  if (!openaiEnabled.value) return "AI 服务未配置（需在系统配置中填写 API Key）";
+  if (!authStore.hasPerm("sql.use_ai_diagnosis")) return "无 AI 慢查诊断权限（sql.use_ai_diagnosis）";
+  return "";
+});
+
+async function checkDiagGate() {
+  try {
+    const { data } = await checkOpenai();
+    openaiEnabled.value = data.status === 0 && !!data.data?.openai;
+  } catch {
+    openaiEnabled.value = false;
+  }
+}
+
 /** 打开诊断抽屉 */
 function openDiagnosis(row: Record<string, unknown>) {
   const sqlHash = String(row.SQLId || row.sql_hash || "");
@@ -378,24 +402,44 @@ function hasDiagnosableId(row: Record<string, unknown>): boolean {
   return Boolean(row.SQLId || row.sql_hash);
 }
 
+/** 诊断入口按钮是否禁用：无指纹，或（未诊断 且 无 AI 权限/未配置 OpenAI） */
+function diagEntryDisabled(row: Record<string, unknown>): boolean {
+  if (!hasDiagnosableId(row)) return true;
+  return !isDiagnosed(row) && !canUseAIDiagnosis.value;
+}
+
+/** 诊断入口 tooltip：按原因给出可读提示（空串则禁用 tooltip） */
+function diagEntryTip(row: Record<string, unknown>): string {
+  if (!hasDiagnosableId(row)) return "该数据源无 SQL 指纹，不支持 AI 诊断";
+  if (!isDiagnosed(row)) return diagGateTip.value;
+  return "";
+}
+
 /** 批量检查已诊断状态（统计数据加载后调用，单次请求避免 N+1） */
 async function checkDiagnosedStatus(rows: Record<string, unknown>[]) {
   if (!rows.length || !instanceName.value) return;
   const hashes = rows
     .map((r) => String(r.SQLId || r.sql_hash || ""))
-    .filter(Boolean)
-    .slice(0, 50);
+    .filter(Boolean);
   if (!hashes.length) return;
 
+  // 后端 batch_status 单次上限 100，整页（最大 200）分批查询（M5），
+  // 避免 200 行页内超出 50 条的行被误标为"AI诊断"
+  const BATCH = 100;
+  const diagnosed = new Set<string>();
   try {
-    const data = await getDiagnosedHashes({
-      instance_name: instanceName.value,
-      db_name: dbName.value,
-      hashes,
-    });
-    diagnosedHashes.value = new Set(data?.diagnosed || []);
+    for (let i = 0; i < hashes.length; i += BATCH) {
+      const chunk = hashes.slice(i, i + BATCH);
+      const data = await getDiagnosedHashes({
+        instance_name: instanceName.value,
+        db_name: dbName.value,
+        hashes: chunk,
+      });
+      (data?.diagnosed || []).forEach((h) => diagnosed.add(h));
+    }
+    diagnosedHashes.value = diagnosed;
   } catch {
-    // 接口失败时标记为空，不阻塞列表展示
+    // 接口失败时标记为空，不阻断列表展示
     diagnosedHashes.value = new Set();
   }
 }
@@ -411,7 +455,10 @@ function onDiagnosed(sqlHash: string) {
   if (sqlHash) diagnosedHashes.value.add(sqlHash);
 }
 
-onMounted(loadInstances);
+onMounted(() => {
+  loadInstances();
+  checkDiagGate();
+});
 </script>
 
 <template>
@@ -496,13 +543,13 @@ onMounted(loadInstances);
             <el-table-column label="操作" width="100" fixed="right">
               <template #default="{ row }">
                 <el-tooltip
-                  :disabled="hasDiagnosableId(row as Record<string, unknown>)"
-                  content="该数据源无 SQL 指纹，不支持 AI 诊断"
+                  :disabled="!diagEntryTip(row as Record<string, unknown>)"
+                  :content="diagEntryTip(row as Record<string, unknown>)"
                   placement="top"
                 >
                   <el-button
                     link
-                    :disabled="!hasDiagnosableId(row as Record<string, unknown>)"
+                    :disabled="diagEntryDisabled(row as Record<string, unknown>)"
                     :type="isDiagnosed(row as Record<string, unknown>) ? 'success' : 'primary'"
                     @click="openDiagnosis(row as Record<string, unknown>)"
                   >
@@ -548,13 +595,13 @@ onMounted(loadInstances);
                   趋势
                 </el-button>
                 <el-tooltip
-                  :disabled="hasDiagnosableId(row as Record<string, unknown>)"
-                  content="该数据源无 SQL 指纹，不支持 AI 诊断"
+                  :disabled="!diagEntryTip(row as Record<string, unknown>)"
+                  :content="diagEntryTip(row as Record<string, unknown>)"
                   placement="top"
                 >
                   <el-button
                     link
-                    :disabled="!hasDiagnosableId(row as Record<string, unknown>)"
+                    :disabled="diagEntryDisabled(row as Record<string, unknown>)"
                     :type="isDiagnosed(row as Record<string, unknown>) ? 'success' : 'primary'"
                     @click="openDiagnosis(row as Record<string, unknown>)"
                   >

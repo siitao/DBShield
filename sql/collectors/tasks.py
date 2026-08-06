@@ -175,7 +175,7 @@ def cleanup_mysql_slow_log_task():
 
                 # 等待一下，避免过度占用资源
                 import time
-                time.sleep(CLEANUP_BATCH_SLEEP)
+                time.sleep(get_cleanup_batch_sleep())
 
             if total_deleted > 0:
                 logger.info(f"[{instance.instance_name}] 清理 MySQL slow_log 完成，删除 {total_deleted} 条")
@@ -355,6 +355,17 @@ def add_slowquery_collect_schedule():
     )
     logger.info("添加慢查询聚合定时任务（每5分钟）")
 
+    # 每10分钟清理孤儿 stale 诊断任务（无人轮询时任务会永久卡 pending/running）
+    schedule(
+        "sql_api.api_slowquery_v2.cleanup_stale_diagnosis_tasks",
+        name="慢查询诊断任务清理-每10分钟",
+        schedule_type="I",  # 每N分钟
+        minutes=10,
+        repeats=-1,
+        timeout=120,
+    )
+    logger.info("添加慢查询诊断任务清理定时任务（每10分钟）")
+
     # 每天凌晨2点清理 MySQL 慢日志
     schedule(
         "sql.collectors.tasks.cleanup_mysql_slow_log_task",
@@ -391,6 +402,7 @@ def del_slowquery_schedules():
     schedule_names = [
         "慢查询采集-每5分钟",
         "慢查询聚合-每5分钟",
+        "慢查询诊断任务清理-每10分钟",
         "MySQL慢日志清理-每天",
         "慢查询数据清理-每天",
     ]

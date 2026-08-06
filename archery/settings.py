@@ -86,6 +86,14 @@ env = environ.Env(
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env("SECRET_KEY")
 
+# 生产环境必须显式配置 SECRET_KEY：为空时 JWT SIGNING_KEY 为空串，
+# 存在会话/令牌伪造隐患，启动即告警而不是静默上线
+if not SECRET_KEY:
+    logger.warning(
+        "SECRET_KEY 未配置（.env 未设置）：JWT 签名密钥将为空串，"
+        "生产环境务必配置随机密钥！"
+    )
+
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env("DEBUG")
 

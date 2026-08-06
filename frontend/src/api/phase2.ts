@@ -493,14 +493,14 @@ export function getDiagnosedHashes(params: {
     .then((res) => checkStatus(res.data).data);
 }
 
-/** 提交诊断反馈（POST /api/v1/slowquery/diagnose/feedback/<report_id>/） */
+/** 提交诊断反馈（POST /api/v1/slowquery/diagnose/<report_id>/feedback/，PRD §8.3） */
 export function submitDiagnosisFeedback(
   reportId: number,
   params: { helpful: boolean; reason?: string }
 ) {
   return request
     .post<{ status: number; msg: string; data?: { id: number } }>(
-      `/api/v1/slowquery/diagnose/feedback/${reportId}/`,
+      `/api/v1/slowquery/diagnose/${reportId}/feedback/`,
       params
     )
     .then((res) => checkStatus(res.data).data);

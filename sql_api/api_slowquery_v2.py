@@ -158,6 +158,34 @@ def _int_or_zero(value):
     return int(value or 0)
 
 
+def _safe_int(value, default):
+    """安全转整数，空/非数字入参返回默认值（避免非法入参触发 HTTP 500）"""
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _mask_sql_literals(sql_text):
+    """对 SQL 中的字面量脱敏，供外发到外部 AI 时使用（H1）。
+
+    慢查样本 SQL 含真实业务数据（user_id、手机号、日期等字面量），
+    PRD §5.8/§12 要求 prompt 不携带脱敏后的业务数据行。此处把
+    字符串字面量替换为 '?'、数字字面量替换为 0，保留 SQL 结构语义
+    （与 pg_stat_statements 等指纹归一化同思路），仅影响 AI prompt，
+    不影响 EXPLAIN 等需要真实值的场景。
+
+    注意：`\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
+    """
+    if not sql_text:
+        return sql_text
+    # 字符串字面量（含转义序列），替换为 '?'
+    masked = re.sub(r"'(?:[^'\\]|\\.)*'", "'?'", sql_text)
+    # 数字字面量（整数/小数/科学计数法），替换为 0
+    masked = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", masked)
+    return masked
+
+
 # ---------- 查询配置 ----------
 
 # Summary 查询配置
@@ -419,8 +447,8 @@ class SlowQuerySummaryView(APIView):
         end_time = request.data.get("EndTime") or _dt.datetime.now().strftime("%Y-%m-%d")
         db_name = request.data.get("db_name")
         search = request.data.get("search", "")
-        limit = int(request.data.get("limit") or 50)
-        offset = int(request.data.get("offset") or 0)
+        limit = _safe_int(request.data.get("limit"), 50)
+        offset = _safe_int(request.data.get("offset"), 0)
 
         try:
             instance = _get_and_check_instance(request.user, instance_name)
@@ -449,8 +477,9 @@ class SlowQuerySummaryView(APIView):
             return list_response(result["rows"], result["total"])
 
         except Exception as e:
+            # 只回显通用文案，原始异常进日志（L6：避免泄漏引擎/连接串细节）
             logger.error(f"获取慢查询统计失败: {e}", exc_info=True)
-            return error_response(f"获取慢查询统计失败: {e}")
+            return error_response("获取慢查询统计失败")
 
     def _query_aliyun(self, instance, db_type, start_time, end_time, db_name, limit, offset):
         """查询阿里云 RDS 慢查询统计"""
@@ -526,8 +555,8 @@ class SlowQueryDetailView(APIView):
         db_name = request.data.get("db_name")
         sql_id = request.data.get("SQLId")
         search = request.data.get("search", "")
-        limit = int(request.data.get("limit") or 50)
-        offset = int(request.data.get("offset") or 0)
+        limit = _safe_int(request.data.get("limit"), 50)
+        offset = _safe_int(request.data.get("offset"), 0)
 
         try:
             instance = _get_and_check_instance(request.user, instance_name)
@@ -557,7 +586,7 @@ class SlowQueryDetailView(APIView):
 
         except Exception as e:
             logger.error(f"获取慢查询明细失败: {e}", exc_info=True)
-            return error_response(f"获取慢查询明细失败: {e}")
+            return error_response("获取慢查询明细失败")
 
     def _query_aliyun(self, instance, db_type, start_time, end_time, db_name, sql_id, limit, offset):
         """查询阿里云 RDS 慢查询明细"""
@@ -667,7 +696,7 @@ class SlowQueryTrendView(APIView):
     def get(self, request):
         instance_name = request.query_params.get("instance_name")
         sql_hash = request.query_params.get("sql_hash")
-        days = int(request.query_params.get("days", 7))
+        days = _safe_int(request.query_params.get("days"), 7)
 
         try:
             instance = _get_and_check_instance(request.user, instance_name)
@@ -684,13 +713,13 @@ class SlowQueryTrendView(APIView):
         try:
             db_type = instance.db_type
             if db_type == "mysql":
-                result = self._query_trend(MySQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time")
+                result = self._query_trend(MySQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time", db_type)
             elif db_type == "pgsql":
-                result = self._query_trend(PgSQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time")
+                result = self._query_trend(PgSQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time", db_type)
             elif db_type == "mongo":
-                result = self._query_trend(MongoSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration")
+                result = self._query_trend(MongoSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration", db_type)
             elif db_type == "redis":
-                result = self._query_trend(RedisSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration")
+                result = self._query_trend(RedisSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration", db_type)
             else:
                 return error_response(f"不支持的数据库类型: {db_type}")
 
@@ -698,10 +727,10 @@ class SlowQueryTrendView(APIView):
 
         except Exception as e:
             logger.error(f"获取慢查询趋势失败: {e}", exc_info=True)
-            return error_response(f"获取慢查询趋势失败: {e}")
+            return error_response("获取慢查询趋势失败")
 
-    def _query_trend(self, model, instance, sql_hash, start_dt, end_dt, time_field):
-        """查询趋势数据"""
+    def _query_trend(self, model, instance, sql_hash, start_dt, end_dt, time_field, db_type):
+        """查询趋势数据（时间统一换算为毫秒，与 summary/诊断口径一致）"""
         qs = model.objects.filter(
             instance_id=instance.id,
             sql_hash=sql_hash,
@@ -721,13 +750,16 @@ class SlowQueryTrendView(APIView):
             .order_by("date")
         )
 
+        # 引擎原始单位 -> 毫秒（MySQL/PgSQL 秒、Mongo 毫秒、Redis 微秒）
+        time_unit = TIME_UNIT_MS.get(db_type, 1)
+
         # 格式化结果
         rows = [
             {
                 "date": item["date"].strftime("%Y-%m-%d"),
                 "count": item["count"],
-                "avg_time": round(item["avg_time"] or 0, 2),
-                "max_time": round(item["max_time"] or 0, 2),
+                "avg_time": round((item["avg_time"] or 0) * time_unit, 2),
+                "max_time": round((item["max_time"] or 0) * time_unit, 2),
             }
             for item in trend
         ]
@@ -755,16 +787,21 @@ class SlowQueryCollectView(APIView):
         except Instance.DoesNotExist:
             return error_response("你所在组未关联该实例")
 
-        # 异步执行采集任务
+        # 异步执行采集任务：走 django-q2 队列（与 collect_all_slowquery_task 同构），
+        # 请求线程立即返回真实 task_id，前端可凭此轮询/追踪，而不是同步阻塞到采集完成
         try:
-            from sql.collectors.tasks import collect_slowquery_task
+            from django_q.tasks import async_task
 
-            task_id = collect_slowquery_task(instance.id, collect_type)
+            task_id = async_task(
+                "sql.collectors.tasks.collect_slowquery_task",
+                instance.id,
+                collect_type,
+            )
             return success_response({"task_id": task_id}, "采集任务已提交")
 
         except Exception as e:
             logger.error(f"提交采集任务失败: {e}", exc_info=True)
-            return error_response(f"提交采集任务失败: {e}")
+            return error_response("提交采集任务失败")
 
 
 # ---------- AI 诊断 (Diagnose) ----------
@@ -897,6 +934,27 @@ def _mark_stale_task_failed(task):
     return False
 
 
+def cleanup_stale_diagnosis_tasks():
+    """后台清理孤儿 stale 诊断任务（L8）。
+
+    轮询路径的 _mark_stale_task_failed 只在用户轮询时兜底；若用户从不轮询
+    （如 web 进程重启遗留的 running 任务），任务会永久卡在 pending/running。
+    由 django-q 定时任务（每 10 分钟）调用，统一清理。
+    """
+    from sql.models import AIDiagnosisTask
+
+    marked = 0
+    for task in (
+        AIDiagnosisTask.objects
+        .filter(status__in=["pending", "running"])
+        .iterator()
+    ):
+        if _mark_stale_task_failed(task):
+            marked += 1
+    if marked:
+        logger.info(f"诊断 stale 任务清理完成，标记 failed: {marked} 个")
+
+
 def _serialize_report(report):
     """序列化诊断报告为前端可用的 dict"""
     from common.utils.extend_json_encoder import encode_json as _enc
@@ -990,7 +1048,8 @@ def _aliyun_mongo_stats_row(row):
     """将阿里云 MongoDB 统计行转换为诊断用的 stats dict。
 
     阿里云 MongoDB 时间字段已是毫秒（无需换算）；文档级扫描/返回指标映射为
-    行级扫描/返回数（复用 _apply_stat_severity 的扫描/返回比规则）；SQLId 是
+    行级扫描/返回数（复用 _apply_stat_severity 的扫描/返回比规则），并把累计值
+    归一为 per-exec 平均（与本地 summary 表口径一致，见 M8）；SQLId 是
     命令文本 md5，SQLText 为 profiler JSON，从中提取顶层 op 作为操作类型。
     """
     stats = {}
@@ -999,6 +1058,20 @@ def _aliyun_mongo_stats_row(row):
         ("query_time_avg", "QueryTimeAvg"),
         ("total_execution_counts", "TotalExecutionCounts"),
         ("total_execution_times", "TotalExecutionTimes"),
+    ]:
+        val = row.get(src)
+        if val is None:
+            continue
+        try:
+            val = float(val)
+        except (TypeError, ValueError):
+            continue
+        stats[field] = val
+    # 阿里云 DescribeSlowLogs 的 DocsExamined/ReturnRowCounts 是窗口期累计值，
+    # 而本地 summary 表存的是 per-exec 平均值——统一为 per-exec 平均（M8），
+    # 避免同一扫描/返回比严重度规则被喂进两种语义的数值
+    total_exec = stats.get("total_execution_counts") or 0
+    for field, src in [
         ("parse_total_row_counts", "DocsExamined"),
         ("return_total_row_counts", "ReturnRowCounts"),
     ]:
@@ -1009,6 +1082,8 @@ def _aliyun_mongo_stats_row(row):
             val = float(val)
         except (TypeError, ValueError):
             continue
+        if total_exec and total_exec > 0:
+            val = val / total_exec
         stats[field] = val
     stats["collection_name"] = str(row.get("TableName", "") or "")
     stats["operation_type"] = _extract_mongo_op(row.get("SQLText", "") or "")
@@ -1407,6 +1482,18 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
         first_sql = sql_text.strip().split(";")[0].strip()
         if not first_sql:
             return "（SQL 文本为空）"
+        # 安全红线（H4）：slow_log 条目/库内值为不可信来源，只对 SELECT/WITH 语句
+        # 做 EXPLAIN，拒绝任何写语句及 `/*!...*/` 版本注释、INTO OUTFILE/DUMPFILE
+        # 等注入面。注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）。
+        clean_sql = re.sub(
+            r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
+        )
+        if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
+            return "（仅支持 SELECT/WITH 语句的 EXPLAIN，已跳过该样本）"
+        if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):
+            return "（样本包含 INTO OUTFILE/DUMPFILE，已拒绝执行 EXPLAIN）"
+        # 用剥离注释后的语句执行：前导注释留在 EXPLAIN 后会被当作第二条语句导致失败
+        first_sql = clean_sql.strip()
         # 阿里云/参数化模板 SQL 含占位符（MySQL '?'、PgSQL '%s'），EXPLAIN 无法直接执行，
         # 统一替换为字面量 1（EXPLAIN 只做计划不执行，类型不匹配时后续兜底返回失败提示）
         if db_type == "mysql":
@@ -1523,10 +1610,14 @@ def diagnose_slowquery_task(task_id):
         client = OpenaiClient()
         model_name = client.default_chat_model
 
+        # 外发脱敏：prompt 只携带字面量脱敏后的 SQL（H1），
+        # 真实业务数据（手机号/日期/ID 等字面量）不出内网
+        prompt_sql = _mask_sql_literals(sample_sql)
+
         result = client.diagnose_slowquery_by_openai(
             db_type=db_type,
             db_name=db_name,
-            sample_sql=sample_sql,
+            sample_sql=prompt_sql,
             stats=stats,
             trend_summary=trend_summary,
             table_schemas=table_schemas,
@@ -1536,6 +1627,18 @@ def diagnose_slowquery_task(task_id):
         # 提取 token 使用量
         prompt_tokens = result.pop("_prompt_tokens", 0)
         completion_tokens = result.pop("_completion_tokens", 0)
+
+        # AI 服务异常/解析失败返回了降级占位（DIAGNOSIS_FALLBACK）：
+        # 不落 success 报告，直接判 failed 写错误信息——否则空报告会被
+        # _get_cached_report 当 success 缓存 7 天，用户点重试仍拿旧空报告，
+        # 永远无法重新触发 AI 诊断（H2）
+        if result.get("_is_fallback"):
+            task.status = "failed"
+            task.error = "AI 诊断服务暂不可用，已降级跳过，请稍后重试"
+            task.finished_at = _dt_mod.datetime.now()
+            task.save(update_fields=["status", "error", "finished_at"])
+            logger.warning(f"[诊断 {task_id}] AI 服务不可用，任务标记 failed")
+            return
 
         # 3. 落库报告
         _set_progress("saving")
@@ -1688,6 +1791,24 @@ class SlowQueryDiagnoseView(APIView):
                     "report": _serialize_report(cached_report),
                 }, "命中 7 天内缓存报告")
 
+        # 进行中去重（M7）：同指纹已有 pending/running 任务时复用其 task_id，
+        # 前端直接轮询该任务，避免并发双击重复建任务、重复烧 token
+        running_task = (
+            AIDiagnosisTask.objects
+            .filter(
+                instance=instance, db_name=db_name, sql_hash=sql_hash,
+                status__in=["pending", "running"],
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if running_task:
+            return success_response({
+                "task_id": running_task.id,
+                "hit_cache": False,
+                "reused": True,
+            }, "已有进行中的诊断任务，直接复用")
+
         # 创建诊断任务
         task = AIDiagnosisTask.objects.create(
             user=request.user,
@@ -1734,7 +1855,7 @@ class SlowQueryDiagnoseView(APIView):
             task.status = "failed"
             task.error = f"提交诊断任务失败: {e}"
             task.save(update_fields=["status", "error"])
-            return error_response(f"提交诊断任务失败: {e}")
+            return error_response("提交诊断任务失败")
 
         # 审计日志
         try:
@@ -1812,7 +1933,9 @@ class SlowQueryDiagnoseTaskView(APIView):
         from sql.models import AIDiagnosisTask
 
         try:
-            task = AIDiagnosisTask.objects.get(id=task_id)
+            # select_related("report")：避免 _serialize_task 里 hasattr(task, "report")
+            # 触发额外反向 OneToOne 查询（L3）
+            task = AIDiagnosisTask.objects.select_related("report").get(id=task_id)
         except AIDiagnosisTask.DoesNotExist:
             return error_response("诊断任务不存在")
 
@@ -1937,10 +2060,35 @@ class SlowQueryDiagnoseWorkflowView(APIView):
                 user_name=request.user.username,
                 user_display=request.user.display,
                 action="slowquery.suggestion_adopt",
-                extra_info=f"report_id={report_id}, suggestion_index={suggestion_index}, type={suggestion_type}",
+                extra_info=(
+                    f"report_id={report_id}, suggestion_index={suggestion_index}, "
+                    f"type={suggestion_type}, bottleneck_type={report.bottleneck_type}"
+                ),
             )
         except Exception:
             pass
+
+        # PRD §5.6/§10：工单带 AI 风险汇总，与手动提单一致——复用 api_workflow 的
+        # _calc_ai_risk_summary 管线，输入构造自诊断报告的 severity/confidence。
+        # severity 无效（unknown/空，如降级或模型异常）时传 None：管线按"无 AI 数据"
+        # 返回占位，前端据此隐藏汇总卡片，而不是按 0 分误判为 low
+        ai_risk_summary = {}
+        try:
+            from sql_api.api_workflow import WorkflowDetail
+
+            has_ai = report.severity in ("low", "medium", "high")
+            review_content = [{
+                "ai_risk_level": report.severity if has_ai else None,
+                "ai_risk_score": int((report.confidence or 0) * 100) if has_ai else None,
+                "ai_ddl_lock_risk": (
+                    "high"
+                    if suggestion_type == "index_ddl" and report.severity == "high"
+                    else ""
+                ),
+            }]
+            ai_risk_summary = WorkflowDetail._calc_ai_risk_summary(review_content)
+        except Exception as e:
+            logger.warning(f"生成 AI 风险汇总失败: {e}")
 
         return success_response({
             "sql": workflow_sql,
@@ -1953,4 +2101,5 @@ class SlowQueryDiagnoseWorkflowView(APIView):
             "desc": suggestion.get("desc", ""),
             "before": suggestion.get("before", ""),
             "after": suggestion.get("after", ""),
+            "ai_risk_summary": ai_risk_summary,
         }, "工单草稿已生成，请前往工单提交流程确认")

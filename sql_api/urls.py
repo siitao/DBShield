@@ -137,7 +137,8 @@ urlpatterns = [
     path("v1/slowquery/diagnose/", api_slowquery_v2.SlowQueryDiagnoseView.as_view()),
     path("v1/slowquery/diagnose/batch_status/", api_slowquery_v2.SlowQueryDiagnoseBatchStatusView.as_view()),
     path("v1/slowquery/diagnose/<int:task_id>/", api_slowquery_v2.SlowQueryDiagnoseTaskView.as_view()),
-    path("v1/slowquery/diagnose/feedback/<int:report_id>/", api_slowquery_v2.SlowQueryDiagnoseFeedbackView.as_view()),
+    # PRD §8.3：反馈路由为 diagnose/<report_id>/feedback/
+    path("v1/slowquery/diagnose/<int:report_id>/feedback/", api_slowquery_v2.SlowQueryDiagnoseFeedbackView.as_view()),
     path("v1/slowquery/diagnose/workflow_draft/", api_slowquery_v2.SlowQueryDiagnoseWorkflowView.as_view()),
     # ---- SQL 分析 ----
     path("v1/sql_analyze/generate/", api_slowquery.SqlAnalyzeGenerateView.as_view()),

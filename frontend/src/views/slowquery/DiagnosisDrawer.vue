@@ -48,7 +48,6 @@ watch(
     if (val) emit("diagnosed", props.sqlHash);
   }
 );
-const taskId = ref<number | null>(null);
 const progressText = ref("");
 // 后端上报的阶段进度：
 //   collecting / collecting_trend / collecting_ddl / collecting_explain / analyzing / saving
@@ -74,12 +73,19 @@ const trendOption = ref<Record<string, unknown>>({});
 
 // 轮询定时器
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+// 轮询代际：stopPolling/startPolling 时递增，旧代际的异步回调（含在途请求晚于
+// 关闭返回后新建定时器的场景）一律失效，防止抽屉关闭后产生孤儿轮询（H2）
+let pollGeneration = 0;
 // 轮询上限：按 2s/4s 动态间隔估算 300s 上限，避免任务异常时无限请求
 const MAX_POLL_ATTEMPTS = 100;
 let pollAttempts = 0;
 // 连续轮询失败上限（网络异常时停止）
 const MAX_POLL_FAILURES = 5;
 let pollFailures = 0;
+// 后端合法任务状态白名单（未知值归一为 idle，避免强转吞掉非法值——L2）
+const VALID_TASK_STATUS = ["pending", "running", "success", "failed"];
+// pollTick in-flight 守卫：慢响应未返回时跳过本次 tick，避免乱序写入
+let pollInFlight = false;
 
 // ---- 计算属性 ----
 
@@ -233,6 +239,8 @@ function closeDrawer() {
 }
 
 function stopPolling() {
+  // 递增代际：废弃所有在途轮询回调，关闭抽屉后旧异步结果无法再新建定时器
+  pollGeneration += 1;
   if (pollTimer) {
     clearInterval(pollTimer);
     pollTimer = null;
@@ -252,15 +260,24 @@ function startElapsedTimer() {
 }
 
 function startPolling(id: number) {
+  // 抽屉已关闭（在途请求晚于关闭返回）：不启动孤儿轮询（H2）
+  if (!props.visible) return;
   stopPolling();
   pollAttempts = 0;
   pollFailures = 0;
+  pollInFlight = false;
   startElapsedTimer();
+  const gen = pollGeneration;
   // 间隔自适应：前 30s 每 2s，之后每 4s，减少无效请求
   let intervalMs = 2000;
-  pollTimer = setInterval(async () => {
+
+  async function pollTick() {
+    // 代际守卫：抽屉已关闭/轮询被 stopPolling 废弃，旧回调直接失效
+    if (gen !== pollGeneration || pollInFlight) return;
     pollAttempts += 1;
-    // 轮询超时保护：任务异常卡住时停止，避免无限请求后台接口
+    // 轮询超时保护：任务异常卡住时停止，避免无限请求后台接口。
+    // 放在 pollTick 内统一计数（旧实现仅内联回调计数，切到 4s 间隔后
+    // MAX_POLL_ATTEMPTS 分支不可达，可无限轮询——H1）
     if (pollAttempts > MAX_POLL_ATTEMPTS) {
       stopPolling();
       loading.value = false;
@@ -271,19 +288,20 @@ function startPolling(id: number) {
     }
     // 超过 30s（15 次）后放慢轮询
     if (pollAttempts === 15 && intervalMs === 2000) {
-      if (pollTimer) clearInterval(pollTimer);
       intervalMs = 4000;
+      if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(pollTick, intervalMs);
       return;
     }
-    await pollTick();
-  }, intervalMs);
-
-  async function pollTick() {
+    pollInFlight = true;
     try {
       const data = await pollDiagnosisTask(id);
+      if (gen !== pollGeneration) return; // await 期间抽屉已关闭/重开
       if (!data) return;
-      taskStatus.value = data.status as typeof taskStatus.value;
+      // 未知 status 归一为 idle（继续轮询直到拿到合法状态或超时），避免强转吞掉非法值（L2）
+      taskStatus.value = (VALID_TASK_STATUS.includes(data.status)
+        ? data.status
+        : "idle") as typeof taskStatus.value;
       // 同步后端上报的阶段进度
       if (data.progress) {
         progressStage.value = data.progress as typeof progressStage.value;
@@ -306,6 +324,7 @@ function startPolling(id: number) {
       }
       pollFailures = 0;
     } catch (e) {
+      if (gen !== pollGeneration) return;
       console.error("轮询诊断任务失败", e);
       pollFailures += 1;
       if (pollFailures >= MAX_POLL_FAILURES) {
@@ -315,8 +334,12 @@ function startPolling(id: number) {
         progressText.value = "轮询诊断任务失败，请重试";
         ElMessage.error("轮询诊断任务失败，请重试");
       }
+    } finally {
+      pollInFlight = false;
     }
   }
+
+  pollTimer = setInterval(pollTick, intervalMs);
 }
 
 async function startDiagnosis(force = false) {
@@ -327,6 +350,8 @@ async function startDiagnosis(force = false) {
   errorMsg.value = "";
   report.value = null;
   feedbackSubmitted.value = false;
+  // 重诊断/重试时重置阶段进度，避免短暂显示上一次的陈旧进度（M4）
+  progressStage.value = "";
   progressText.value = "正在提交诊断任务…";
 
   try {
@@ -340,15 +365,15 @@ async function startDiagnosis(force = false) {
       if (existing?.report) {
         report.value = existing.report;
         taskStatus.value = "success";
-        taskId.value = existing.task_id;
         loading.value = false;
         loadTrendChart();
         return;
       }
       if (existing?.task_id && existing.status) {
-        // 有进行中的任务，直接轮询
-        taskId.value = existing.task_id;
-        taskStatus.value = existing.status as typeof taskStatus.value;
+        // 有进行中的任务，直接轮询（status 同样走白名单归一）
+        taskStatus.value = (VALID_TASK_STATUS.includes(existing.status)
+          ? existing.status
+          : "idle") as typeof taskStatus.value;
         startPolling(existing.task_id);
         return;
       }
@@ -368,8 +393,6 @@ async function startDiagnosis(force = false) {
       loading.value = false;
       return;
     }
-
-    taskId.value = result.task_id;
 
     // 命中缓存
     if (result.hit_cache && result.report) {
@@ -412,7 +435,7 @@ async function loadTrendChart() {
       legend: { top: 24, data: ["平均耗时", "最大耗时"] },
       grid: { left: 48, right: 24, top: 56, bottom: 32, containLabel: true },
       xAxis: { type: "category", data: dates, axisLabel: { rotate: dates.length > 7 ? 45 : 0 } },
-      yAxis: { type: "value", name: "秒" },
+      yAxis: { type: "value", name: "毫秒", axisLabel: { formatter: (v: number) => `${v}ms` } },
       series: [
         { name: "平均耗时", type: "line", smooth: true, areaStyle: { opacity: 0.2 }, data: avgTimes },
         { name: "最大耗时", type: "line", smooth: true, areaStyle: { opacity: 0.2 }, data: maxTimes },
