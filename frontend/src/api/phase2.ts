@@ -376,7 +376,11 @@ export function fetchSlowTrendV2(params: {
   days?: number;
 }) {
   return request
-    .get<{ status: number; data?: { date: string; count: number; avg_time: number; max_time: number }[] }>(
+    .get<{
+      status: number;
+      msg?: string;
+      data?: { date: string; count: number; avg_time: number; max_time: number }[];
+    }>(
       "/api/v1/slowquery/trend/",
       { params }
     )
@@ -391,6 +395,140 @@ export function triggerSlowCollect(params: {
   return request
     .post<{ status: number; msg: string }>("/api/v1/slowquery/collect/", params)
     .then((res) => checkStatus(res.data));
+}
+
+// ============ AI 慢查诊断 ============
+
+/** 诊断报告类型 */
+export interface DiagnosisReport {
+  id: number;
+  task_id: number;
+  sql_hash: string;
+  root_cause: string;
+  severity: "low" | "medium" | "high" | "unknown";
+  bottleneck_type: string;
+  evidence: string[];
+  suggestions: Array<{
+    type: "index_ddl" | "rewrite" | "config" | string;
+    desc: string;
+    index_ddl: string;
+    before: string;
+    after: string;
+  }>;
+  report_markdown: string;
+  confidence: number;
+  model: string;
+  created_at: string;
+}
+
+/** 诊断任务状态 */
+export interface DiagnosisTask {
+  task_id: number;
+  status: "pending" | "running" | "success" | "failed";
+  progress?:
+    | ""
+    | "collecting"
+    | "collecting_trend"
+    | "collecting_ddl"
+    | "collecting_explain"
+    | "analyzing"
+    | "saving";
+  sql_hash: string;
+  error: string;
+  created_at: string;
+  report?: DiagnosisReport;
+}
+
+/** 触发 AI 诊断（POST /api/v1/slowquery/diagnose/） */
+export function triggerDiagnosis(params: {
+  instance_name: string;
+  db_name: string;
+  sql_hash: string;
+  force?: boolean;
+}) {
+  return request
+    .post<{
+      status: number;
+      msg: string;
+      data?: { task_id: number; hit_cache: boolean; report?: DiagnosisReport };
+    }>("/api/v1/slowquery/diagnose/", params)
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 查询已有报告（GET /api/v1/slowquery/diagnose/） */
+export function getExistingDiagnosis(params: {
+  instance_name: string;
+  db_name: string;
+  sql_hash: string;
+}) {
+  return request
+    .get<{
+      status: number;
+      msg: string;
+      data?: { task_id: number; status?: string; report?: DiagnosisReport };
+    }>("/api/v1/slowquery/diagnose/", { params })
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 轮询诊断任务状态（GET /api/v1/slowquery/diagnose/<task_id>/） */
+export function pollDiagnosisTask(taskId: number) {
+  return request
+    .get<{ status: number; msg: string; data?: DiagnosisTask }>(
+      `/api/v1/slowquery/diagnose/${taskId}/`
+    )
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 批量查询已诊断状态（GET /api/v1/slowquery/diagnose/batch_status/，避免逐条 N+1） */
+export function getDiagnosedHashes(params: {
+  instance_name: string;
+  db_name: string;
+  hashes: string[];
+}) {
+  return request
+    .get<{ status: number; msg: string; data?: { diagnosed: string[] } }>(
+      "/api/v1/slowquery/diagnose/batch_status/",
+      { params: { ...params, hashes: params.hashes.join(",") } }
+    )
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 提交诊断反馈（POST /api/v1/slowquery/diagnose/feedback/<report_id>/） */
+export function submitDiagnosisFeedback(
+  reportId: number,
+  params: { helpful: boolean; reason?: string }
+) {
+  return request
+    .post<{ status: number; msg: string; data?: { id: number } }>(
+      `/api/v1/slowquery/diagnose/feedback/${reportId}/`,
+      params
+    )
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 生成工单草稿（POST /api/v1/slowquery/diagnose/workflow_draft/） */
+export function generateWorkflowDraft(params: {
+  report_id: number;
+  suggestion_index: number;
+}) {
+  return request
+    .post<{
+      status: number;
+      msg: string;
+      data?: {
+        sql: string;
+        suggestion_type: string;
+        source: string;
+        report_id: number;
+        root_cause: string;
+        severity: string;
+        bottleneck_type: string;
+        desc: string;
+        before: string;
+        after: string;
+      };
+    }>("/api/v1/slowquery/diagnose/workflow_draft/", params)
+    .then((res) => checkStatus(res.data).data);
 }
 
 // ============ SchemaSync instance.py ============

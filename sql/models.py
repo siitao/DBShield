@@ -1045,6 +1045,7 @@ class Permission(models.Model):
             ("offline_download", "离线下载权限"),
             ("menu_sqlexportworkflow", "菜单 数据导出"),
             ("sqlexport_submit", "提交数据导出"),
+            ("use_ai_diagnosis", "使用AI慢查诊断"),
         )
 
 
@@ -1668,4 +1669,89 @@ class SlowQueryCursor(models.Model):
         db_table = "slow_query_cursor"
         unique_together = ("instance", "db_type")
         verbose_name = "慢查询采集游标"
+        verbose_name_plural = verbose_name
+
+
+# ===================== AI 慢查诊断 =====================
+
+
+class AIDiagnosisTask(models.Model):
+    """AI 慢查诊断任务"""
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        verbose_name="发起用户",
+    )
+    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, verbose_name="实例")
+    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
+    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="SQL指纹哈希")
+    status = models.CharField(
+        max_length=16, default="pending", verbose_name="任务状态",
+    )  # pending / running / success / failed
+    progress = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="阶段进度",
+    )  # "" / collecting / collecting_trend / collecting_ddl / collecting_explain / analyzing / saving
+    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
+    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
+    error = models.TextField(blank=True, default="", verbose_name="错误信息")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_diagnosis_task"
+        indexes = [
+            models.Index(fields=["instance", "db_name", "sql_hash"], name="idx_aidiag_inst_db_hash"),
+        ]
+        verbose_name = "AI慢查诊断任务"
+        verbose_name_plural = verbose_name
+
+
+class AIDiagnosisReport(models.Model):
+    """AI 慢查诊断报告"""
+
+    task = models.OneToOneField(
+        AIDiagnosisTask, related_name="report", on_delete=models.CASCADE,
+        verbose_name="诊断任务",
+    )
+    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="SQL指纹哈希")
+    root_cause = models.CharField(max_length=200, blank=True, default="", verbose_name="根因")
+    severity = models.CharField(
+        max_length=16, default="unknown", verbose_name="严重度",
+    )  # low / medium / high / unknown
+    bottleneck_type = models.CharField(
+        max_length=32, blank=True, default="other", verbose_name="瓶颈类型",
+    )  # full_scan / missing_index / lock_wait / filesort / tmp_table / type_cast / other
+    evidence = models.JSONField(default=list, blank=True, verbose_name="证据列表")
+    suggestions = models.JSONField(default=list, blank=True, verbose_name="优化建议")
+    report_markdown = models.TextField(blank=True, default="", verbose_name="Markdown报告")
+    confidence = models.FloatField(default=0.0, verbose_name="置信度")
+    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_diagnosis_report"
+        verbose_name = "AI慢查诊断报告"
+        verbose_name_plural = verbose_name
+
+
+class AIDiagnosisFeedback(models.Model):
+    """AI 慢查诊断反馈"""
+
+    report = models.ForeignKey(
+        AIDiagnosisReport, on_delete=models.CASCADE, verbose_name="诊断报告",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name="用户",
+    )
+    helpful = models.BooleanField(default=True, verbose_name="是否有帮助")
+    reason = models.CharField(max_length=255, blank=True, default="", verbose_name="反馈原因")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_diagnosis_feedback"
+        verbose_name = "AI慢查诊断反馈"
         verbose_name_plural = verbose_name

@@ -10,7 +10,6 @@ Thumbs.db
 archery/settings.py.github
 archery/settings.py.dev
 archery/settings_dev.py
-sql/migrations/
 venv
 env
 .venv/
@@ -35,3 +34,7 @@ nohup.out
 requirements-local.txt
 # 二进制安装包（离线 wheel 等），不入库
 *.whl
+# 本地 agent 会话记录 / Windows 重定向产物，不入库
+.workbuddy/
+.zcode/
+nul

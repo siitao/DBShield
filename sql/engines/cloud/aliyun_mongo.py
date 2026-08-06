@@ -2,6 +2,7 @@
 """
 阿里云 MongoDB 慢查询引擎
 """
+import hashlib
 import json
 import logging
 import datetime
@@ -105,14 +106,17 @@ class AliyunMongoEngine:
 
             # 计算平均值和格式化
             rows = []
-            for stat in stats.values():
+            for sql_text, stat in stats.items():
                 if stat["TotalExecutionCounts"] > 0:
                     stat["QueryTimeAvg"] = round(
                         stat["TotalExecutionTimes"] / stat["TotalExecutionCounts"], 2
                     )
                 stat["TotalExecutionTimes"] = round(stat["TotalExecutionTimes"], 2)
                 stat["CreateTime"] = stat["last_seen"]
-                stat["SQLId"] = ""  # MongoDB 没有 SQL ID
+                # 阿里云 MongoDB 没有原生 SQL ID，用命令文本 md5 作为稳定指纹，
+                # 供前端诊断入口与后端 _collect_aliyun_stats 按指纹匹配。
+                # 注意用各统计自己的 sql_text，不能复用外层循环残留变量
+                stat["SQLId"] = hashlib.md5(sql_text.encode("utf-8")).hexdigest()
                 rows.append(stat)
 
             # 按总执行时间排序
@@ -139,9 +143,10 @@ class AliyunMongoEngine:
             start_str = self._format_time(start_time, for_query=True)
             end_str = self._format_time(end_time, for_query=True)
 
-            # 计算页数
-            page_number = (int(offset) + int(limit)) // int(limit) if int(limit) > 0 else 1
-            page_size = min(int(limit), 100)  # 阿里云限制最大100
+            # 计算页数。阿里云 DescribeSlowLogRecords 的 PageSize 只接受 [30, 100]，
+            # 前端"20条/页"等小分页会报 InvalidPageSize，这里钳制到合法区间
+            page_size = min(max(int(limit), 30), 100)
+            page_number = (int(offset) // page_size) + 1
 
             # 创建客户端
             ak = rds_config.ak.raw_key_id
@@ -191,6 +196,8 @@ class AliyunMongoEngine:
                     "ReturnRowCounts": item.get("ReturnRowCounts", 0),
                     "KeysExamined": item.get("KeysExamined", 0),
                     "AccountName": item.get("AccountName", ""),
+                    # 与统计页一致的稳定指纹（md5(SQLText)），供 AI 诊断入口匹配
+                    "SQLId": hashlib.md5(str(item.get("SQLText", "")).encode("utf-8")).hexdigest(),
                 }
                 rows.append(row)
 

@@ -32,6 +32,33 @@ AI_REVIEW_FALLBACK = {
     "use_osc": False,
 }
 
+# AI 慢查诊断：瓶颈类型常量
+DIAG_BOTTLENECK_FULL_SCAN = "full_scan"
+DIAG_BOTTLENECK_MISSING_INDEX = "missing_index"
+DIAG_BOTTLENECK_LOCK_WAIT = "lock_wait"
+DIAG_BOTTLENECK_FILESORT = "filesort"
+DIAG_BOTTLENECK_TMP_TABLE = "tmp_table"
+DIAG_BOTTLENECK_TYPE_CAST = "type_cast"
+DIAG_BOTTLENECK_OTHER = "other"
+
+DIAG_VALID_BOTTLENECKS = {
+    DIAG_BOTTLENECK_FULL_SCAN, DIAG_BOTTLENECK_MISSING_INDEX,
+    DIAG_BOTTLENECK_LOCK_WAIT, DIAG_BOTTLENECK_FILESORT,
+    DIAG_BOTTLENECK_TMP_TABLE, DIAG_BOTTLENECK_TYPE_CAST,
+    DIAG_BOTTLENECK_OTHER,
+}
+
+# AI 慢查诊断：降级占位（任何 AI 异常一律返回此值，绝不中断诊断流程）
+DIAGNOSIS_FALLBACK = {
+    "root_cause": "AI 诊断跳过",
+    "severity": AI_RISK_UNKNOWN,
+    "bottleneck_type": DIAG_BOTTLENECK_OTHER,
+    "evidence": [],
+    "suggestions": [],
+    "confidence": 0.0,
+    "report_markdown": "AI 诊断因服务异常暂不可用，请稍后重试。",
+}
+
 
 class OpenaiClient:
     def __init__(self):
@@ -51,7 +78,12 @@ class OpenaiClient:
             "【样本数据】\n{{sample_data}}\n\n"
             "【查询需求】\n{{user_input}}",
         )
-        self.client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        self.client = OpenAI(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            timeout=60,        # 单次请求上限，避免 AI 服务无响应时任务无限挂起
+            max_retries=1,
+        )
 
     def request_chat_completion(self, messages, **kwargs):
         """chat_completion"""
@@ -185,6 +217,333 @@ class OpenaiClient:
         except Exception as e:
             logger.warning(f"AI 审核 SQL 失败，降级返回 unknown: {e}")
             return dict(AI_REVIEW_FALLBACK)
+
+    def diagnose_slowquery_by_openai(
+        self,
+        db_type: str,
+        db_name: str,
+        sample_sql: str,
+        stats: dict,
+        trend_summary: str,
+        table_schemas: str,
+        explain_text: str,
+    ):
+        """聚合统计/趋势/表结构/执行计划，输出结构化根因 JSON（容错解析）。
+
+        Args:
+            db_type: 数据库类型（mysql / pgsql / mongo / redis）
+            db_name: 数据库名
+            sample_sql: 慢查示例 SQL（或指纹）
+            stats: 统计指标 dict，含 query_time_p95 / total_execution_counts /
+                   parse_total_row_counts / return_total_row_counts 等
+            trend_summary: 近期趋势摘要文本（如"近 14 天 p95 由 0.3s 升至 8s"）
+            table_schemas: 相关表 DDL 文本
+            explain_text: 执行计划摘要文本
+
+        Returns:
+            结构化 dict，字段见 DIAGNOSIS_FALLBACK。任何 AI 异常一律返回
+            DIAGNOSIS_FALLBACK，绝不抛异常中断诊断流程。
+        """
+        # 构建统计指标摘要
+        p95 = stats.get("query_time_p95", 0)
+        exec_count = stats.get("total_execution_counts", 0)
+        rows_examined = stats.get("parse_total_row_counts", 0)
+        rows_returned = stats.get("return_total_row_counts", 0)
+        scan_return_ratio = (
+            f"{rows_examined / rows_returned:g}:1"
+            if rows_returned and rows_returned > 0
+            else "N/A"
+        )
+
+        # MongoDB 的行级统计实为文档级统计，措辞用"文档"
+        row_unit = "文档" if db_type == "mongo" else "行"
+        stats_text = (
+            f"- p95 执行耗时: {p95} ms\n"
+            f"- 总执行次数: {exec_count}\n"
+            f"- 总扫描{row_unit}数: {rows_examined}\n"
+            f"- 总返回{row_unit}数: {rows_returned}\n"
+            f"- 扫描/返回比: {scan_return_ratio}\n"
+        )
+        # MongoDB 特有上下文：集合/操作类型/是否排序
+        if db_type == "mongo":
+            mongo_ctx = []
+            coll = stats.get("collection_name", "")
+            op = stats.get("operation_type", "")
+            if coll:
+                mongo_ctx.append(f"集合: {coll}")
+            if op:
+                mongo_ctx.append(f"操作类型: {op}")
+            if stats.get("has_sort") is not None:
+                mongo_ctx.append(f"包含排序: {'是' if stats.get('has_sort') else '否'}")
+            if mongo_ctx:
+                stats_text += "- " + ", ".join(mongo_ctx) + "\n"
+        # 无行级统计的数据库类型（如 Redis）标注说明，避免 AI 误读
+        if not rows_examined and not rows_returned:
+            stats_text += "- 说明: 该数据库类型未采集行级统计，扫描/返回比不可用\n"
+
+        # MongoDB 专属语料：bottleneck 语义映射 + 索引/改写产出格式
+        mongo_guide = ""
+        if db_type == "mongo":
+            mongo_guide = (
+                "\nMongoDB 专属说明：\n"
+                "- bottleneck_type 映射：full_scan≈COLLSCAN 集合扫描、"
+                "filesort≈内存 SORT 排序（可能触发 32MB 排序内存限制）、"
+                "tmp_table≈$group/$lookup 内存聚合、"
+                "type_cast≈字段类型不匹配导致索引失效；\n"
+                "- 索引建议的 index_ddl 字段请给 createIndex 命令，"
+                "如 db.collection.createIndex({field: 1}, {background: true})；\n"
+                "- 改写建议（before/after）给 mongo shell 命令或聚合管道对比。\n"
+            )
+
+        # 章节标签按数据库类型切换（mongo 用"集合索引/示例命令"措辞）
+        schema_label = "集合索引" if db_type == "mongo" else "相关表结构 DDL"
+        sample_label = "慢查示例命令" if db_type == "mongo" else "慢查示例 SQL"
+
+        prompt = (
+            f"你是一位资深的 {db_type} DBA 和性能优化专家。"
+            "请基于以下慢查询的统计指标、近期趋势、集合/表结构信息和执行计划，"
+            "进行根因诊断并给出优化建议。\n\n"
+            "诊断要求：\n"
+            "1. root_cause：用一句话（≤40字，中文）概括最可能的根因；\n"
+            "2. severity：根据 p95 耗时和扫描/返回比判断严重度——"
+            "p95>5000ms 或扫描/返回比>1000 判为 high；p95 1000-5000ms 或比 100-1000 判为 medium；其余 low；\n"
+            "3. bottleneck_type：从 full_scan / missing_index / lock_wait / filesort / "
+            "tmp_table / type_cast / other 中选择最匹配的瓶颈类型；\n"
+            "4. evidence：列出支撑你判断的证据（2-4 条），如扫描/返回比异常、"
+            "执行计划中 COLLSCAN/type=ALL、趋势恶化起始日等；\n"
+            "5. suggestions：给出优化建议列表，每条含 type（index_ddl / rewrite / config）、"
+            "desc（描述）、index_ddl（如适用，给出可执行 DDL）、before（改写前 SQL）、"
+            "after（改写后 SQL）；before/after 仅在 type=rewrite 时提供；\n"
+            "6. report_markdown：可留空字符串（服务端会基于以上结构化字段自动生成完整报告），"
+            "不要额外编写；\n\n"
+            f"{mongo_guide}\n"
+            "请严格按如下 JSON 格式输出（仅输出 JSON，不要任何额外文字、不要 markdown 代码块）：\n"
+            "输出要求：使用专业、严谨的技术措辞，不要使用任何 emoji 表情符号，不要使用口语化表达。\n"
+            '{"root_cause": "一句话根因（≤40字，中文）", '
+            '"severity": "low|medium|high", '
+            '"bottleneck_type": "full_scan|missing_index|lock_wait|filesort|tmp_table|type_cast|other", '
+            '"evidence": ["证据1", "证据2"], '
+            '"suggestions": [{"type": "index_ddl|rewrite|config", '
+            '"desc": "建议描述", "index_ddl": "DDL语句或空串", '
+            '"before": "改写前SQL或空串", "after": "改写后SQL或空串"}], '
+            '"confidence": 0.0到1.0的数字, '
+            '"report_markdown": "可留空字符串"}\n\n'
+            f"数据库：{db_name}（{db_type}）\n\n"
+            f"【统计指标】\n{stats_text}\n"
+            f"【近期趋势】\n{trend_summary}\n\n"
+            f"【{schema_label}】\n{table_schemas}\n\n"
+            f"【执行计划摘要】\n{explain_text}\n\n"
+            f"【{sample_label}】\n{sample_sql}"
+        )
+        messages = [dict(role="user", content=prompt)]
+        logger.info(f"AI 慢查诊断 prompt 长度: {len(prompt)} 字符")
+        try:
+            # max_tokens 限制输出长度：报告结构固定（report_markdown 由服务端拼装），
+            # 无需超长输出，避免模型生成冗长内容导致耗时成倍增加。
+            # with_options(max_retries=0)：诊断对失败容忍（降级 DIAGNOSIS_FALLBACK），
+            # 重试只会把最长耗时从 60s 翻倍到 120s，逼近 django-q 任务超时（180s）导致
+            # 任务被硬杀、状态永久卡 running。故诊断路径强制单次尝试。
+            # extra_body thinking=disabled：DeepSeek 推理类模型（如 deepseek-v4-flash）
+            # 对复杂诊断 prompt 会陷入长思考，把 max_tokens 预算全耗在 reasoning_tokens 上，
+            # 导致 content 为空、finish=length、JSON 解析失败降级 fallback。显式关闭思考
+            # 让其直接输出结构化结果（实测耗时 42.8s→9s，JSON 完整）。
+            res = self.client.with_options(max_retries=0).chat.completions.create(
+                model=self.default_chat_model,
+                messages=messages,
+                max_tokens=2000,
+                extra_body={"thinking": {"type": "disabled"}},
+            )
+            content = res.choices[0].message.content
+            result = self._parse_diagnosis_json(content, db_type=db_type)
+            # 记录 token 使用量
+            if hasattr(res, "usage") and res.usage:
+                result["_prompt_tokens"] = res.usage.prompt_tokens or 0
+                result["_completion_tokens"] = res.usage.completion_tokens or 0
+            # 统计指标兜底严重度：模型可能忽略规则判低，以统计数据为准覆写
+            self._apply_stat_severity(result, stats)
+            return result
+        except Exception as e:
+            logger.warning(f"AI 慢查诊断失败，降级返回 fallback: {e}")
+            return dict(DIAGNOSIS_FALLBACK)
+
+    @staticmethod
+    def _apply_stat_severity(result: dict, stats: dict) -> None:
+        """用统计指标对严重度做规则兜底（与 prompt 判定规则一致）。
+
+        模型可能忽略统计规则判低严重度，此处以统计数据为准覆写：
+        p95>5000ms 或扫描/返回比>1000 → high；p95 1000-5000ms 或比 100-1000 → medium。
+        统计缺失时不覆写，保留模型判定。
+        """
+        if not stats:
+            return
+        try:
+            p95 = float(stats.get("query_time_p95") or 0)
+            examined = float(stats.get("parse_total_row_counts") or 0)
+            returned = float(stats.get("return_total_row_counts") or 0)
+        except (TypeError, ValueError):
+            return
+        ratio = examined / returned if returned and returned > 0 else 0
+        if p95 > 5000 or ratio > 1000:
+            result["severity"] = AI_RISK_HIGH
+        elif p95 > 1000 or ratio > 100:
+            result["severity"] = AI_RISK_MEDIUM
+
+    @staticmethod
+    def _parse_diagnosis_json(content: str, db_type: str = ""):
+        """解析 AI 返回的慢查诊断结果。
+
+        复用 _try_load_json 的多层容错（代码块去除、裸换行转义、尾逗号清理、
+        全角标点归一、单引号转双引号），额外做诊断字段校验与归一。
+        """
+        if not content:
+            return dict(DIAGNOSIS_FALLBACK)
+        text = content.strip()
+
+        data = OpenaiClient._try_load_json(text)
+        if data is None:
+            # 去掉代码块包裹后重试
+            stripped = text
+            if stripped.startswith("```"):
+                stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+                stripped = re.sub(r"\s*```$", "", stripped)
+            data = OpenaiClient._try_load_json(stripped)
+        if data is None:
+            # 抽取首个 {...} 片段（DOTALL 跨行）
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                data = OpenaiClient._try_load_json(match.group(0))
+        if data is None:
+            logger.warning(f"AI 诊断结果解析失败，原始内容: {content[:200]}")
+            return dict(DIAGNOSIS_FALLBACK)
+
+        # 字段校验与归一
+        root_cause = OpenaiClient._strip_emoji(
+            str(data.get("root_cause", ""))[:200]
+        ) or "AI 诊断完成"
+
+        severity = str(data.get("severity", "")).lower()
+        if severity not in (AI_RISK_LOW, AI_RISK_MEDIUM, AI_RISK_HIGH):
+            severity = AI_RISK_UNKNOWN
+
+        bottleneck = str(data.get("bottleneck_type", "")).lower()
+        if bottleneck not in DIAG_VALID_BOTTLENECKS:
+            bottleneck = DIAG_BOTTLENECK_OTHER
+
+        evidence_raw = data.get("evidence", [])
+        if not isinstance(evidence_raw, list):
+            evidence_raw = [str(evidence_raw)]
+        evidence = [
+            OpenaiClient._strip_emoji(str(e)) for e in evidence_raw if e
+        ]
+
+        suggestions_raw = data.get("suggestions", [])
+        if not isinstance(suggestions_raw, list):
+            suggestions_raw = []
+        suggestions = []
+        for s in suggestions_raw:
+            if not isinstance(s, dict):
+                continue
+            suggestions.append({
+                "type": str(s.get("type", "other")),
+                "desc": OpenaiClient._strip_emoji(str(s.get("desc", ""))),
+                "index_ddl": str(s.get("index_ddl", "") or ""),
+                "before": str(s.get("before", "") or ""),
+                "after": str(s.get("after", "") or ""),
+            })
+
+        try:
+            confidence = float(data.get("confidence", 0.0))
+            confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = 0.0
+
+        report_md = OpenaiClient._strip_emoji(
+            str(data.get("report_markdown") or "")
+        )
+
+        result = {
+            "root_cause": root_cause,
+            "severity": severity,
+            "bottleneck_type": bottleneck,
+            "evidence": evidence,
+            "suggestions": suggestions,
+            "confidence": confidence,
+            "report_markdown": report_md,
+        }
+        # 模型未编写 report_markdown 时，由服务端从结构化字段确定性拼装，
+        # 省去模型额外生成叙述性 markdown 的 ~300-600 输出 token。
+        # 注意：DIAGNOSIS_FALLBACK 的固定文案非空，不会走到拼装分支。
+        if not result["report_markdown"]:
+            result["report_markdown"] = OpenaiClient._build_diagnosis_markdown(
+                result, db_type
+            )
+        return result
+
+    @staticmethod
+    def _build_diagnosis_markdown(result: dict, db_type: str = "") -> str:
+        """基于结构化诊断字段确定性组装 markdown 完整报告。
+
+        替代让模型额外写一段叙述性 report_markdown：输出 token 更省、
+        解析失败率更低、格式稳定。仅当前端"完整报告"区无模型原文时使用。
+        """
+        severity_map = {
+            AI_RISK_LOW: "低危",
+            AI_RISK_MEDIUM: "中危",
+            AI_RISK_HIGH: "高危",
+            AI_RISK_UNKNOWN: "未知",
+        }
+        bottleneck_map = {
+            DIAG_BOTTLENECK_FULL_SCAN: "全表扫描",
+            DIAG_BOTTLENECK_MISSING_INDEX: "缺索引",
+            DIAG_BOTTLENECK_LOCK_WAIT: "锁等待",
+            DIAG_BOTTLENECK_FILESORT: "文件排序",
+            DIAG_BOTTLENECK_TMP_TABLE: "临时表",
+            DIAG_BOTTLENECK_TYPE_CAST: "类型转换",
+            DIAG_BOTTLENECK_OTHER: "其他",
+        }
+        suggestion_type_map = {
+            "index_ddl": "索引建议",
+            "rewrite": "SQL 改写",
+            "config": "配置建议",
+        }
+
+        lines = ["## 慢查根因诊断", ""]
+        root_cause = str(result.get("root_cause", "") or "").strip()
+        severity = severity_map.get(result.get("severity", ""), "未知")
+        bottleneck = bottleneck_map.get(result.get("bottleneck_type", ""), "其他")
+
+        lines.append(f"- **根因**：{root_cause or '未识别'}")
+        lines.append(f"- **严重度**：{severity}")
+        lines.append(f"- **瓶颈类型**：{bottleneck}")
+
+        evidence = result.get("evidence") or []
+        if evidence:
+            lines += ["", "### 证据", ""]
+            lines += [f"- {e}" for e in evidence]
+
+        suggestions = result.get("suggestions") or []
+        if suggestions:
+            lines += ["", "### 优化建议", ""]
+            for i, s in enumerate(suggestions, 1):
+                stype = suggestion_type_map.get(str(s.get("type", "")), "建议")
+                desc = str(s.get("desc", "") or "").strip()
+                title = f"**{i}. [{stype}] {desc}**" if desc else f"**{i}. [{stype}]**"
+                lines.append(title)
+                # MongoDB 的 createIndex/聚合管道是 JS shell 语法，代码块用 js 高亮
+                code_lang = "js" if db_type == "mongo" else "sql"
+                index_ddl = str(s.get("index_ddl", "") or "").strip()
+                if index_ddl:
+                    lines += ["", f"```{code_lang}", index_ddl, "```"]
+                before = str(s.get("before", "") or "").strip()
+                after = str(s.get("after", "") or "").strip()
+                if before and after:
+                    lines += [
+                        "", "**改写前**：", f"```{code_lang}", before, "```",
+                        "**改写后**：", f"```{code_lang}", after, "```",
+                    ]
+
+        lines += ["", "> 本报告由 AI 辅助生成，建议人工确认后再执行任何变更。"]
+        return "\n".join(lines)
 
     @staticmethod
     def _parse_review_json(content: str):
@@ -434,7 +793,7 @@ def test_openai_connection(base_url=None, api_key=None, model=None):
     if not api_key:
         return False, "AI API Key 未配置"
     try:
-        client = OpenAI(base_url=base_url, api_key=api_key)
+        client = OpenAI(base_url=base_url, api_key=api_key, timeout=15, max_retries=0)
         client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": "hi"}],

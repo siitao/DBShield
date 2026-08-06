@@ -8,9 +8,11 @@ import {
   fetchSlowSummaryV2,
   fetchSlowDetailV2,
   fetchSlowTrendV2,
+  getDiagnosedHashes,
 } from "@/api/phase2";
 import EChart from "@/components/EChart.vue";
 import TruncateCell from "@/components/TruncateCell.vue";
+import DiagnosisDrawer from "./DiagnosisDrawer.vue";
 
 const { instanceName, instanceGroups, currentInstance, loadInstances } =
   useInstanceSelect();
@@ -168,6 +170,8 @@ async function loadSummary() {
     summaryRows.value = r.rows;
     total.value = r.total;
     if (r.rows.length) summaryCols.value = Object.keys(r.rows[0]);
+    // 异步检查已诊断状态（不阻塞主流程）
+    checkDiagnosedStatus(r.rows);
   } catch {
     // 拦截器已提示
   } finally {
@@ -191,6 +195,8 @@ async function loadDetail() {
     detailRows.value = r.rows;
     total.value = r.total;
     if (r.rows.length) detailCols.value = Object.keys(r.rows[0]);
+    // 异步检查已诊断状态（不阻塞主流程）
+    checkDiagnosedStatus(r.rows);
   } catch {
     // 拦截器已提示
   } finally {
@@ -343,6 +349,68 @@ async function openTrend(row: Record<string, unknown>) {
   }
 }
 
+// ---- AI 诊断 ----
+
+const diagnosisVisible = ref(false);
+const diagnosisSqlHash = ref("");
+const diagnosisSqlText = ref("");
+const diagnosisDbName = ref("");
+// 已诊断的 sql_hash 集合（用于显示"已诊断"状态）
+const diagnosedHashes = ref<Set<string>>(new Set());
+
+/** 打开诊断抽屉 */
+function openDiagnosis(row: Record<string, unknown>) {
+  const sqlHash = String(row.SQLId || row.sql_hash || "");
+  if (!sqlHash) {
+    ElMessage.warning("该数据源无 SQL 指纹，不支持 AI 诊断（仅支持按指纹聚合的本地采集数据）");
+    return;
+  }
+  const sqlText = String(row.SQLText || row.fingerprint || row.sample_sql || sqlHash);
+
+  diagnosisSqlHash.value = sqlHash;
+  diagnosisSqlText.value = sqlText;
+  diagnosisDbName.value = String(row.DBName || row.db_name || dbName.value || "");
+  diagnosisVisible.value = true;
+}
+
+/** 行是否有可诊断的 SQL 指纹 */
+function hasDiagnosableId(row: Record<string, unknown>): boolean {
+  return Boolean(row.SQLId || row.sql_hash);
+}
+
+/** 批量检查已诊断状态（统计数据加载后调用，单次请求避免 N+1） */
+async function checkDiagnosedStatus(rows: Record<string, unknown>[]) {
+  if (!rows.length || !instanceName.value) return;
+  const hashes = rows
+    .map((r) => String(r.SQLId || r.sql_hash || ""))
+    .filter(Boolean)
+    .slice(0, 50);
+  if (!hashes.length) return;
+
+  try {
+    const data = await getDiagnosedHashes({
+      instance_name: instanceName.value,
+      db_name: dbName.value,
+      hashes,
+    });
+    diagnosedHashes.value = new Set(data?.diagnosed || []);
+  } catch {
+    // 接口失败时标记为空，不阻塞列表展示
+    diagnosedHashes.value = new Set();
+  }
+}
+
+/** 判断行是否已诊断 */
+function isDiagnosed(row: Record<string, unknown>): boolean {
+  const hash = String(row.SQLId || row.sql_hash || "");
+  return diagnosedHashes.value.has(hash);
+}
+
+/** 诊断完成：把该 SQL 指纹加入已诊断集合，行内按钮立即变"已诊断" */
+function onDiagnosed(sqlHash: string) {
+  if (sqlHash) diagnosedHashes.value.add(sqlHash);
+}
+
 onMounted(loadInstances);
 </script>
 
@@ -425,6 +493,24 @@ onMounted(loadInstances);
                 />
               </template>
             </el-table-column>
+            <el-table-column label="操作" width="100" fixed="right">
+              <template #default="{ row }">
+                <el-tooltip
+                  :disabled="hasDiagnosableId(row as Record<string, unknown>)"
+                  content="该数据源无 SQL 指纹，不支持 AI 诊断"
+                  placement="top"
+                >
+                  <el-button
+                    link
+                    :disabled="!hasDiagnosableId(row as Record<string, unknown>)"
+                    :type="isDiagnosed(row as Record<string, unknown>) ? 'success' : 'primary'"
+                    @click="openDiagnosis(row as Record<string, unknown>)"
+                  >
+                    {{ isDiagnosed(row as Record<string, unknown>) ? "已诊断" : "AI诊断" }}
+                  </el-button>
+                </el-tooltip>
+              </template>
+            </el-table-column>
           </el-table>
         </el-tab-pane>
 
@@ -452,7 +538,7 @@ onMounted(loadInstances);
                 />
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="90" fixed="right">
+            <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <el-button
                   link
@@ -461,6 +547,20 @@ onMounted(loadInstances);
                 >
                   趋势
                 </el-button>
+                <el-tooltip
+                  :disabled="hasDiagnosableId(row as Record<string, unknown>)"
+                  content="该数据源无 SQL 指纹，不支持 AI 诊断"
+                  placement="top"
+                >
+                  <el-button
+                    link
+                    :disabled="!hasDiagnosableId(row as Record<string, unknown>)"
+                    :type="isDiagnosed(row as Record<string, unknown>) ? 'success' : 'primary'"
+                    @click="openDiagnosis(row as Record<string, unknown>)"
+                  >
+                    {{ isDiagnosed(row as Record<string, unknown>) ? "已诊断" : "AI诊断" }}
+                  </el-button>
+                </el-tooltip>
               </template>
             </el-table-column>
           </el-table>
@@ -490,6 +590,16 @@ onMounted(loadInstances);
         height="420px"
       />
     </el-dialog>
+
+    <!-- AI 诊断抽屉 -->
+    <DiagnosisDrawer
+      v-model:visible="diagnosisVisible"
+      :instance-name="instanceName"
+      :db-name="diagnosisDbName"
+      :sql-hash="diagnosisSqlHash"
+      :sql-text="diagnosisSqlText"
+      @diagnosed="onDiagnosed"
+    />
   </div>
 </template>
 

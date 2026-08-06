@@ -22,6 +22,8 @@ export interface GroupInstanceRow {
   type: number;
   db_type: string;
   instance_name: string;
+  /** 后端 resource_service 附带的字段：实例是否已启用阿里云 RDS */
+  is_aliyun_rds?: boolean;
 }
 
 /** 用户可访问实例（GET /api/v1/group/user_instances/，旧信封 {status,msg,data}） */
