@@ -4,7 +4,7 @@
 - POST /api/v1/authenticate/  账号密码校验（AllowAny）
 - POST /api/v1/logout/        退出登录（IsAuthenticated）
 
-复用 common.auth.ArcheryAuth 的校验/锁定/2FA 临时会话逻辑，仅把传输层从
+复用 common.auth.DBShieldAuth 的校验/锁定/2FA 临时会话逻辑，仅把传输层从
 HttpResponse(json) 换成 JsonResponse，并保持旧 {status,msg,data} 信封不变，
 SPA Login.vue 的状态机（status=0 且 data=null → 已登录；data=sessionKey → 需 2FA；
 1 失败；3 锁定）无需改动。
@@ -19,7 +19,7 @@ from django.conf import settings
 from drf_spectacular.utils import extend_schema
 from rest_framework import views, permissions
 
-from common.auth import ArcheryAuth
+from common.auth import DBShieldAuth
 from common.config import SysConfig
 from sql.models import TwoFactorAuthConfig
 from common.utils.ding_api import get_ding_user_id
@@ -44,9 +44,9 @@ class AuthenticateView(views.APIView):
         "支持 form-encoded 与 JSON 两种 body。",
     )
     def post(self, request):
-        # ArcheryAuth 内部用 request.POST 取字段。DRF 对 form-encoded 会正确填充 request.POST；
+        # DBShieldAuth 内部用 request.POST 取字段。DRF 对 form-encoded 会正确填充 request.POST；
         # 但 JSON body 时 request.POST 为空。这里把 JSON 字段合并进一份可写 QueryDict，
-        # 让 ArcheryAuth 能统一通过 request.POST 读到（不污染原始 request）。
+        # 让 DBShieldAuth 能统一通过 request.POST 读到（不污染原始 request）。
         if not request.POST and request.data:
             from django.http import QueryDict
 
@@ -55,7 +55,7 @@ class AuthenticateView(views.APIView):
                 qd[k] = "" if v is None else str(v)
             request.POST = qd
 
-        result = ArcheryAuth(request).authenticate()
+        result = DBShieldAuth(request).authenticate()
         if result["status"] == 0:
             authenticated_user = result["data"]
             twofa_enabled = TwoFactorAuthConfig.objects.filter(user=authenticated_user)

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢你花费时间来报告这个问题，在提交前请先查阅 [WIKI](https://github.com/hhyo/archery/wiki) | [FAQ](https://github.com/hhyo/archery/wiki/FAQ) 等文档，确保这是一个需要修复的问题🐛。如果是对于使用方法的咨询🤔🙏，或者你有好的想法和建议💡，请通过[Discussions](https://github.com/hhyo/Archery/discussions)来发布，再次感谢你对Archery的贡献 🎉🎉🎉
+        感谢你花费时间来报告这个问题，在提交前请先查阅 [WIKI](https://github.com/hhyo/archery/wiki) | [FAQ](https://github.com/hhyo/archery/wiki/FAQ) 等文档，确保这是一个需要修复的问题🐛。如果是对于使用方法的咨询🤔🙏，或者你有好的想法和建议💡，请通过[Discussions](https://github.com/hhyo/Archery/discussions)来发布，再次感谢你对DBShield的贡献 🎉🎉🎉
   - type: textarea
     id: what-happened
     attributes:
@@ -33,9 +33,9 @@ body:
       label: 日志文本
       description: |
         你可以将相关日志信息粘贴到此处，将会自动格式化处理，关于日志的查看方式
-        1. logs/archery.log
+        1. logs/dbshield.log
         2. logs/qcluster.log
-        3. docker logs archery -f --tail=10
+        3. docker logs dbshield -f --tail=10
       render: shell
     validations:
       required: false
@@ -43,7 +43,7 @@ body:
     id: version
     attributes:
       label: 版本
-      description: 请告诉我们你正在使用的Archery版本
+      description: 请告诉我们你正在使用的DBShield版本
       placeholder: 1.9.1
     validations:
       required: true
@@ -63,7 +63,7 @@ body:
     attributes:
       label: 是否还有其他可以辅助定位问题的信息？比如数据库版本等
       description: |
-        部分信息可以在Archery的debug api中获取：[参考debug地址](https://demo.archerydms.com/api/debug?full=true)
+        部分信息可以在DBShield的debug api中获取：[参考debug地址](https://demo.archerydms.com/api/debug?full=true)
         - **MySQL**: 5.7.26
         - **Browsers**: Chrome
         - **goInception**: v1.2.5-49

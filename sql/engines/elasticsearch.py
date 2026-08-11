@@ -535,7 +535,7 @@ class ElasticsearchEngineBase(EngineBase):
         #post 有索引，有_doc,  有或没有id 均可。
         #post 有索引，api-endpoint=_search时，这是查询，报错。
 
-        #delete 有索引，没有_doc，解释为删除表。 archery禁止此操作,需要报错。
+        #delete 有索引，没有_doc，解释为删除表。 dbshield禁止此操作,需要报错。
         #delete 有索引，有_doc，没有id，删除必须包含id，需要报错。
 
         # api-endpoint为_update时，只能post，不能put，错误写法，报错。

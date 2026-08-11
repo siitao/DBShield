@@ -27,7 +27,7 @@ def add_sql_schedule(name, run_date, workflow_id):
 def add_kill_conn_schedule(name, run_date, instance_id, thread_id):
     """添加/修改终止数据库连接的定时任务"""
     del_schedule(name)
-    cluster_name = settings.Q_CLUSTER.get("name", "archery")
+    cluster_name = settings.Q_CLUSTER.get("name", "dbshield")
     schedule(
         "sql.query.kill_query_conn",
         instance_id,

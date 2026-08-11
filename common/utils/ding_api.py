@@ -74,12 +74,12 @@ def get_dept_list_id_fetch_child(token, parent_dept_id):
 
 def sync_ding_user_id():
     """
-    使用工号（username）登陆archery，并且工号对应钉钉系统中字段 "jobnumber"。
+    使用工号（username）登陆dbshield，并且工号对应钉钉系统中字段 "jobnumber"。
     所以可根据钉钉中 jobnumber 查到该用户的 ding_user_id。
     """
     sys_config = SysConfig()
     ding_dept_ids = sys_config.get("ding_dept_ids", "")
-    username2ding = sys_config.get("ding_archery_username")
+    username2ding = sys_config.get("ding_dbshield_username")
     token = get_access_token()
     if not token:
         return False
@@ -109,7 +109,7 @@ def sync_ding_user_id():
             if resp.get("errcode") == 0:
                 if not resp.get(username2ding):
                     raise Exception(
-                        f"钉钉用户信息不包含{username2ding}字段，无法获取id信息，请确认ding_archery_username配置{resp}"
+                        f"钉钉用户信息不包含{username2ding}字段，无法获取id信息，请确认ding_dbshield_username配置{resp}"
                     )
                 rs.execute_command(
                     f"SETEX {resp.get(username2ding).lower()} 86400 {resp.get('userid')}"

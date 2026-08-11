@@ -572,7 +572,7 @@ class DatabaseCreateView(APIView):
             try:
                 conn = engine.get_connection()
                 db = conn[db_name]
-                db.create_collection(name=f"archery-{db_name}")
+                db.create_collection(name=f"dbshield-{db_name}")
             except Exception as e:
                 exec_result.error = f"创建数据库失败, 错误信息：{str(e)}"
 

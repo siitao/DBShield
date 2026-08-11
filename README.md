@@ -1,6 +1,6 @@
 <div align="center">
 
-# Archery
+# DBShield
 <h4>SQL 审核查询平台 · Vue3 SPA 现代化分支</h4>
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
@@ -85,12 +85,12 @@
 
 ### Docker
 
-多阶段构建：`node:22-alpine` 阶段执行 `npm ci && npm run build` 产出 SPA `dist/`，再与 Archery 基础镜像合并，由 nginx 托管前端、反代后端。
+多阶段构建：`node:22-alpine` 阶段执行 `npm ci && npm run build` 产出 SPA `dist/`，再与 DBShield 基础镜像合并，由 nginx 托管前端、反代后端。
 
 **1. 构建镜像**
 
 ```bash
-docker build -f src/docker/Dockerfile -t archery-vue3:v1 .
+docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .
 ```
 
 **2. 准备 `.env` 与挂载目录**
@@ -103,7 +103,7 @@ cp .env .env            # 仓库自带示例，按需修改数据库密码、NGI
 `.env` 同时承担两个职责（见下文「认证配置机制」），**不要遗漏**：
 
 - 供 `startup.sh` 读取 `NGINX_PORT` 等 shell 变量（通过 docker-compose 的 `env_file` 注入）；
-- 供 `settings.py` 的 `environ.read_env()` 与「认证配置」重载逻辑读写（通过 `./.env:/opt/archery/.env` 文件挂载）。
+- 供 `settings.py` 的 `environ.read_env()` 与「认证配置」重载逻辑读写（通过 `./.env:/opt/dbshield/.env` 文件挂载）。
 
 **3. 启动**
 
@@ -111,7 +111,7 @@ cp .env .env            # 仓库自带示例，按需修改数据库密码、NGI
 docker compose up -d
 ```
 
-初始化账号：`docker exec -it archery /opt/venv4archery/bin/python3 /opt/archery/manage.py createsuperuser`
+初始化账号：`docker exec -it dbshield /opt/venv4dbshield/bin/python3 /opt/dbshield/manage.py createsuperuser`
 
 > 更多细节可参考上游 [docker 部署文档](https://github.com/hhyo/archery/wiki/docker)。
 
@@ -125,7 +125,7 @@ docker compose up -d
                                    ▼
         common/auth_settings_reload.py
           1. 把 DB 中的认证配置写回 .env 的「受管标记块」
-             (# === auth config (managed by Archery) === … # === end managed ===)
+             (# === auth config (managed by DBShield) === … # === end managed ===)
           2. 同步 os.environ
           3. importlib.reload(settings 模块) → AUTHENTICATION_BACKENDS /
              AUTH_LDAP_* / ENABLE_LDAP 等重新求值
@@ -267,7 +267,7 @@ npm run type-check
 
 ```
 .
-├── archery/          # Django 项目配置（settings / urls / wsgi）
+├── dbshield/         # Django 项目配置（settings / urls / wsgi）
 ├── sql/              # 核心业务：多数据库引擎、审核工作流、查询/优化/分析
 ├── sql_api/          # DRF 接口层（本分支新增）
 ├── common/           # 通用工具、认证、OpenAI 客户端封装

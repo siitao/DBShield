@@ -1080,7 +1080,7 @@ class TestOptimize(TestCase):
             json.loads(r.content),
             {"status": 1, "msg": "请配置SQLAdvisor路径！", "data": []},
         )
-        self.sys_config.set("sqladvisor", "/opt/archery/src/plugins/sqladvisor")
+        self.sys_config.set("sqladvisor", "/opt/dbshield/src/plugins/sqladvisor")
         self.sys_config.get_all_config()
         r = self.client.post(
             path="/slowquery/optimize_sqladvisor/",
@@ -1135,7 +1135,7 @@ class TestOptimize(TestCase):
             json.loads(r.content),
             {"status": 1, "msg": "请配置soar_path和test_dsn！", "data": []},
         )
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.set("soar_test_dsn", "root:@127.0.0.1:3306/information_schema")
         self.sys_config.get_all_config()
         r = self.client.post(
@@ -1299,7 +1299,7 @@ class TestSQLAnalyze(TestCase):
         测试解析SQL，text为空
         :return:
         """
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         r = self.client.post(path="/sql_analyze/generate/", data={})
         self.assertEqual(json.loads(r.content), {"rows": [], "total": 0})
 
@@ -1308,7 +1308,7 @@ class TestSQLAnalyze(TestCase):
         测试解析SQL，text不为空
         :return:
         """
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         text = "select * from sql_user;select * from sql_workflow;"
         r = self.client.post(path="/sql_analyze/generate/", data={"text": text})
         self.assertEqual(
@@ -1340,7 +1340,7 @@ class TestSQLAnalyze(TestCase):
             "some_stdout",
             "some_stderr",
         )
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         text = "select * from sql_user;select * from sql_workflow;"
         instance_name = self.master.instance_name
         db_name = settings.DATABASES["default"]["TEST"]["NAME"]
@@ -1364,7 +1364,7 @@ class TestSQLAnalyze(TestCase):
             "some_stderr",
         )
         mock_path.return_value.exists.return_value = True
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         text = "/etc/passwd"
         instance_name = self.master.instance_name
         db_name = settings.DATABASES["default"]["TEST"]["NAME"]
@@ -1461,7 +1461,7 @@ class TestBinLog(TestCase):
         :param _subprocess:
         :return:
         """
-        self.sys_config.set("my2sql", "/opt/archery/src/plugins/my2sql")
+        self.sys_config.set("my2sql", "/opt/dbshield/src/plugins/my2sql")
         self.sys_config.get_all_config()
         data = {
             "instance_name": "test_instance",
@@ -1498,7 +1498,7 @@ class TestBinLog(TestCase):
             "some_stdout",
             "some_stderr",
         )
-        self.sys_config.set("my2sql", "/opt/archery/src/plugins/my2sql")
+        self.sys_config.set("my2sql", "/opt/dbshield/src/plugins/my2sql")
         args = {
             "instance_name": "test_instance",
             "save_sql": "1",

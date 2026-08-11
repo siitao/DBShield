@@ -254,8 +254,8 @@ onMounted(loadCharts);
     <el-card shadow="never" class="hero">
       <div class="hero-row">
         <div class="hero-greet">
-          <h2>{{ greeting }}，{{ auth.displayName || "Archery" }}</h2>
-          <p>欢迎使用 Archery SQL 审核查询平台</p>
+          <h2>{{ greeting }}，{{ auth.displayName || "DBShield" }}</h2>
+          <p>欢迎使用 DBShield SQL 审核查询平台</p>
         </div>
         <div class="hero-date">
           <div class="hero-date-day">{{ weekday }}</div>

@@ -16,7 +16,7 @@ from django.utils import timezone
 
 from common.utils.aes_decryptor import Prpcrypt
 from common.utils.permission import superuser_required
-import archery
+import dbshield
 from sql.models import Instance
 from mirage.tools import Migrator
 
@@ -26,7 +26,7 @@ def info(request):
     django_q_version = ".".join(str(i) for i in django_q.VERSION)
 
     system_info = {
-        "archery": {"version": archery.display_version},
+        "dbshield": {"version": dbshield.display_version},
         "django_q": {
             "version": django_q_version,
         },
@@ -192,7 +192,7 @@ def debug(request):
 
     # 最终集合
     system_info = {
-        "archery": {"version": archery.display_version},
+        "dbshield": {"version": dbshield.display_version},
         "django_q": django_q_info,
         "inception": {
             "goinception_info": full_goinception_info if full else goinception_info,

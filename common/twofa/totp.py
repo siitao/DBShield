@@ -80,7 +80,7 @@ def generate_qrcode(request, data):
 
     # 生成二维码
     qr_data = pyotp.totp.TOTP(secret_key).provisioning_uri(
-        username, issuer_name="Archery"
+        username, issuer_name="DBShield"
     )
     qrcode = QRCode(
         version=1, error_correction=constants.ERROR_CORRECT_L, box_size=6, border=4

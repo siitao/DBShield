@@ -159,7 +159,7 @@ function backToLogin() {
   <div class="login-page">
     <div class="login-card">
       <div class="login-brand">
-        <h1>Archery</h1>
+        <h1>DBShield</h1>
         <p>SQL 审核查询平台</p>
       </div>
 
@@ -273,15 +273,16 @@ function backToLogin() {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  background: linear-gradient(135deg, #1e3a8a 0%, #0f172a 100%);
+  // 品牌深蓝渐变：与侧边栏导航同一色系
+  background: linear-gradient(135deg, #1e40af 0%, #0f172a 100%);
 }
 
 .login-card {
   width: 380px;
   padding: 40px 36px 28px;
   background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.3);
 }
 
 .login-brand {
@@ -292,7 +293,10 @@ function backToLogin() {
     margin: 0;
     font-size: 30px;
     font-weight: 700;
-    color: #1e3a8a;
+    background: linear-gradient(120deg, #2563eb 0%, #60a5fa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
   }
   p {
     margin: 8px 0 0;
@@ -306,7 +310,7 @@ function backToLogin() {
   margin-bottom: 20px;
   font-size: 18px;
   font-weight: 600;
-  color: #1e3a8a;
+  color: var(--dbshield-primary-dark);
 }
 
 .login-btn {
@@ -322,12 +326,12 @@ function backToLogin() {
   text-align: center;
   font-size: 15px;
   color: #fff;
-  background: #1e3a8a;
-  border-radius: 6px;
+  background: var(--dbshield-primary);
+  border-radius: 8px;
   text-decoration: none;
-  transition: background 0.2s;
+  transition: background var(--dbshield-transition);
   &:hover {
-    background: #1e40af;
+    background: var(--dbshield-primary-dark);
   }
 }
 

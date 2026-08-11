@@ -6,7 +6,7 @@
 #########################################################################
 
 function init() {
-    echo "Initing archery"
+    echo "Initing dbshield"
     echo "----------------"
     echo "安装/更新可能缺少的依赖: mysql-community-devel gcc gcc-c++ python-devel"
     sudo yum install -y epel-release
@@ -20,26 +20,26 @@ function init() {
     source ./venv/bin/activate
     ./venv/bin/python3 -m pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
     echo "************************************************"
-    echo -e "\033[32m init archery success \033[0m"
-    echo -e "\033[32m welcome to archery 2.0 \033[0m"
+    echo -e "\033[32m init dbshield success \033[0m"
+    echo -e "\033[32m welcome to dbshield 2.0 \033[0m"
 }
 
 function start() {
-    echo "Starting archery"
+    echo "Starting dbshield"
     echo "----------------"
     source ./venv/bin/activate
     python3 manage.py collectstatic -v0 --noinput
     supervisord -c supervisord.conf
-    echo -e "Start archery:                 [\033[32m ok \033[0m]"
+    echo -e "Start dbshield:                 [\033[32m ok \033[0m]"
 }
 
 function stop() {
-    echo "Stoping archery"
+    echo "Stoping dbshield"
     echo "----------------"
     source ./venv/bin/activate
     supervisorctl -c supervisord.conf stop all
-    kill -9 $(ps -ef | grep "Archery" | grep -v grep | awk '{print $2}')
-    echo -e "Stop archery:                  [\033[32m ok \033[0m]"
+    kill -9 $(ps -ef | grep "DBShield" | grep -v grep | awk '{print $2}')
+    echo -e "Stop dbshield:                  [\033[32m ok \033[0m]"
 }
 
 function restart() {
@@ -56,7 +56,7 @@ function adduser() {
 }
 
 function migration() {
-    echo "Migration archery"
+    echo "Migration dbshield"
     echo "----------------"
     source ./venv/bin/activate
     python3 manage.py makemigrations sql

@@ -1,0 +1,49 @@
+/* ============================================================
+   DBShield 品牌主题（整体主题升级）
+   统一色板 / Element Plus 变量覆盖 / 全局细节
+   ============================================================ */
+
+// ── 品牌色板（全局 CSS 变量，供各组件引用）────────────────
+:root {
+  // 主色（蓝）
+  --dbshield-primary: #2563eb;
+  --dbshield-primary-dark: #1e4fbc;
+  --dbshield-primary-light: #5a8bf1;
+
+  // 深色导航
+  --dbshield-nav-bg: #0f172a;
+  --dbshield-nav-bg-2: #1e293b;
+  --dbshield-nav-text: #cbd5e1;
+  --dbshield-nav-text-active: #ffffff;
+
+  // 背景 / 圆角 / 阴影 / 过渡
+  --dbshield-bg-page: #f3f6fb;
+  --dbshield-card-radius: 10px;
+  --dbshield-shadow-card: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --dbshield-shadow-hover: 0 10px 28px rgba(15, 23, 42, 0.1);
+  --dbshield-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+// ── Element Plus 主题变量覆盖 ─────────────────────────────
+:root {
+  // 主色（含 light/dark 色阶，hover / 选中 / 标签等自动生效）
+  --el-color-primary: #2563eb;
+  --el-color-primary-light-3: #6692f1;
+  --el-color-primary-light-5: #92b1f5;
+  --el-color-primary-light-7: #bed0f9;
+  --el-color-primary-light-8: #d3e0fb;
+  --el-color-primary-light-9: #e9effd;
+  --el-color-primary-dark-2: #1e4fbc;
+
+  // 圆角 / 阴影
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --el-box-shadow-light: var(--dbshield-shadow-card);
+  --el-box-shadow: var(--dbshield-shadow-hover);
+
+  // 卡片圆角（el-card 单独使用该变量）
+  --el-card-border-radius: var(--dbshield-card-radius);
+
+  // 页面背景
+  --el-bg-color-page: var(--dbshield-bg-page);
+}

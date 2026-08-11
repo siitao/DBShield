@@ -48,4 +48,4 @@ ln -snf /usr/share/zoneinfo/$TZ /etc/localtime
 echo $TZ > /etc/timezone
 chmod +x sqladvisor soar my2sql
 chmod +x /usr/local/bin/mongo
-python3 -m venv venv4archery
+python3 -m venv venv4dbshield

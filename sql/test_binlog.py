@@ -794,7 +794,7 @@ def test_my2sql_no_permission(db_instance):
 @patch("sql.binlog.os.makedirs")
 def test_my2sql_file_success(mock_makedirs, mock_my2sql_cls, db_instance, settings):
     """my2sql_file 正常执行"""
-    settings.BASE_DIR = "/tmp/archery_test"
+    settings.BASE_DIR = "/tmp/dbshield_test"
 
     mock_my2sql = MagicMock()
     mock_my2sql.generate_args2cmd.return_value = ["my2sql", "-output-dir", "/tmp"]
@@ -809,7 +809,7 @@ def test_my2sql_file_success(mock_makedirs, mock_my2sql_cls, db_instance, settin
     }
 
     result = my2sql_file(args, user)
-    assert result == (user, os.path.join("/tmp/archery_test", "downloads/my2sql/"))
+    assert result == (user, os.path.join("/tmp/dbshield_test", "downloads/my2sql/"))
     # 验证参数中 instance 被弹出
     call_args = mock_my2sql.generate_args2cmd.call_args[0][0]
     assert "instance" not in call_args
@@ -824,7 +824,7 @@ def test_my2sql_file_args_updated(
     mock_makedirs, mock_my2sql_cls, db_instance, settings
 ):
     """my2sql_file 参数正确更新"""
-    settings.BASE_DIR = "/tmp/archery_test"
+    settings.BASE_DIR = "/tmp/dbshield_test"
 
     mock_my2sql = MagicMock()
     mock_my2sql.generate_args2cmd.return_value = ["my2sql"]
@@ -851,7 +851,7 @@ def test_my2sql_file_execute_cmd_called(
     mock_makedirs, mock_my2sql_cls, db_instance, settings
 ):
     """my2sql_file 正确调用 execute_cmd"""
-    settings.BASE_DIR = "/tmp/archery_test"
+    settings.BASE_DIR = "/tmp/dbshield_test"
 
     mock_my2sql = MagicMock()
     mock_my2sql.generate_args2cmd.return_value = ["my2sql", "-output-dir", "/tmp"]

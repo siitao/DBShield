@@ -8,7 +8,7 @@ LDAPSearch 等。这些都在 settings 模块首次 import 时固化，纯改数
 本模块是项目中唯一的「运行时改 settings」入口，集中处理：
 
 1. 把数据库里的认证配置（SysConfig）写回 .env 的受管标记块
-   （# === auth config (managed by Archery) === ... # === end managed ===），
+   （# === auth config (managed by DBShield) === ... # === end managed ===），
    只覆盖这一段，不动用户其它手写内容。
 2. 用 importlib.reload 重新执行 settings 模块，使 AUTHENTICATION_BACKENDS /
    INSTALLED_APPS / MIDDLEWARE 重新求值。
@@ -32,7 +32,7 @@ from common.config import SysConfig
 logger = logging.getLogger("default")
 
 # .env 受管标记块边界
-_ENV_MANAGED_BEGIN = "# === auth config (managed by Archery) ==="
+_ENV_MANAGED_BEGIN = "# === auth config (managed by DBShield) ==="
 _ENV_MANAGED_END = "# === end managed ==="
 
 # os.environ 快照的「key 原本不存在」哨兵
@@ -196,11 +196,11 @@ def _reload_settings_module():
 
 
 def _clear_url_caches():
-    """清 URL resolver 缓存，使 archery/urls.py 里的 if settings.ENABLE_* 重新求值。
+    """清 URL resolver 缓存，使 dbshield/urls.py 里的 if settings.ENABLE_* 重新求值。
 
     Django 4.2+/5.x 用 functools.cache 包装 _get_cached_resolver，调用其
     cache_clear() 即可丢弃缓存的 URLResolver，下一次请求会重新 import urlconf，
-    从而重新执行 archery/urls.py 顶部的 if settings.ENABLE_* 块。
+    从而重新执行 dbshield/urls.py 顶部的 if settings.ENABLE_* 块。
     """
     from django.urls import resolvers as _resolvers
 

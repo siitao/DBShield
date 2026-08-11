@@ -128,7 +128,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   { key: "soar_test_dsn", label: "SOAR 测试DSN", type: "text", section: "功能模块配置", subsection: "SQL优化" },
 
   // ── 通知配置 / 基础通知 ──────────────────────────────────
-  { key: "archery_base_url", label: "Archery 访问地址", type: "text", section: "通知配置", subsection: "基础通知" },
+  { key: "dbshield_base_url", label: "DBShield 访问地址", type: "text", section: "通知配置", subsection: "基础通知" },
   { key: "ddl_notify_auth_group", label: "DDL通知权限组", type: "select", section: "通知配置", subsection: "基础通知", dynamic: "groups" },
   { key: "notify_phase_control", label: "通知阶段控制", type: "select", section: "通知配置", subsection: "基础通知", options: [
     { value: "true", label: "全流程通知" },
@@ -147,7 +147,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   { key: "ding_agent_id", label: "Agent ID", type: "text", section: "通知配置", subsection: "钉钉通知", showWhen: { key: "ding", value: true } },
   { key: "ding_app_key", label: "App Key", type: "text", section: "通知配置", subsection: "钉钉通知", showWhen: { key: "ding", value: true } },
   { key: "ding_app_secret", label: "App Secret", type: "password", section: "通知配置", subsection: "钉钉通知", showWhen: { key: "ding", value: true } },
-  { key: "ding_archery_username", label: "钉钉用户名字段", type: "text", section: "通知配置", subsection: "钉钉通知", showWhen: { key: "ding_to_person", value: true } },
+  { key: "ding_dbshield_username", label: "钉钉用户名字段", type: "text", section: "通知配置", subsection: "钉钉通知", showWhen: { key: "ding_to_person", value: true } },
   { key: "ding_dept_ids", label: "部门ID", type: "text", section: "通知配置", subsection: "钉钉通知", desc: "多个用逗号分隔", showWhen: { key: "ding", value: true } },
 
   // ── 通知配置 / 企业微信 ──────────────────────────────────

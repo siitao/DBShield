@@ -1,6 +1,6 @@
 [tool.pytest.ini_options]
 python_files = "tests.py test_*.py *_tests.py"
-DJANGO_SETTINGS_MODULE = "archery.settings"
+DJANGO_SETTINGS_MODULE = "dbshield.settings"
 
 [tool.coverage.run]
 source = [

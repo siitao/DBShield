@@ -48,7 +48,7 @@ class VaultMixin(DummyMixin):
                     password_cache[self.instance_name]["password"],
                 )
 
-        vault_role = f"{self.instance_name}-archery-rw"
+        vault_role = f"{self.instance_name}-dbshield-rw"
         response = requests.get(
             f"http://{self.vault_server}/v1/database/static-creds/{vault_role}",
             headers={"X-Vault-Token": self.vault_token},

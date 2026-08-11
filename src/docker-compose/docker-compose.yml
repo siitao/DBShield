@@ -41,13 +41,13 @@ services:
     volumes:
       - "./inception/config.toml:/etc/config.toml"
 
-  archery:
+  dbshield:
     # 下方的镜像地址仅为示例, 请前往以下地址确认你需要的版本:
     # dockerhub https://hub.docker.com/r/hhyo/archery
     # github packages https://github.com/hhyo/Archery/pkgs/container/archery
     # 如有需要, 也可以自行build docker 镜像, 替换为自己的镜像
     image: hhyo/archery:v1.14.0
-    container_name: archery
+    container_name: dbshield
     restart: always
     depends_on:
       redis:
@@ -57,13 +57,13 @@ services:
     ports:
       - "9123:9123"
     volumes:
-      - "./.env:/opt/archery/.env"
-      - "./archery/soar.yaml:/etc/soar.yaml"
-      - "./archery/docs.md:/opt/archery/docs/docs.md"
-      - "./archery/downloads:/opt/archery/downloads"
-      - "./archery/sql/migrations:/opt/archery/sql/migrations"
-      - "./archery/logs:/opt/archery/logs"
-      - "./archery/keys:/opt/archery/keys"
-    entrypoint: "bash /opt/archery/src/docker/startup.sh"
+      - "./.env:/opt/dbshield/.env"
+      - "./dbshield/soar.yaml:/etc/soar.yaml"
+      - "./dbshield/docs.md:/opt/dbshield/docs/docs.md"
+      - "./dbshield/downloads:/opt/dbshield/downloads"
+      - "./dbshield/sql/migrations:/opt/dbshield/sql/migrations"
+      - "./dbshield/logs:/opt/dbshield/logs"
+      - "./dbshield/keys:/opt/dbshield/keys"
+    entrypoint: "bash /opt/dbshield/src/docker/startup.sh"
     env_file:
       - .env

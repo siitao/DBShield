@@ -38,7 +38,7 @@ def init_user(user):
         ]
 
 
-class ArcheryAuth(object):
+class DBShieldAuth(object):
     def __init__(self, request):
         self.request = request
         self.sys_config = SysConfig()

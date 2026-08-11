@@ -40,12 +40,12 @@ class InfoTest(TestCase):
     def test_info_api(self):
         r = self.client.get("/api/info")
         r_json = r.json()
-        self.assertIsInstance(r_json["archery"]["version"], str)
+        self.assertIsInstance(r_json["dbshield"]["version"], str)
 
     def test_debug_api(self):
         r = self.client.get("/api/debug")
         r_json = r.json()
-        self.assertIsInstance(r_json["archery"]["version"], str)
+        self.assertIsInstance(r_json["dbshield"]["version"], str)
 
 
 class TestUser(APITestCase):

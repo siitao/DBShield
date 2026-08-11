@@ -6,7 +6,7 @@
   - /、/index/        根路径重定向（兼容旧书签）
   - /jsi18n/          Django admin 内部 i18n catalog
 
-SSO 登录入口（/oidc/、/dingding/、/cas/）由 archery/urls.py 条件注册，
+SSO 登录入口（/oidc/、/dingding/、/cas/）由 dbshield/urls.py 条件注册，
 callback 由第三方库处理，不在此处。
 """
 

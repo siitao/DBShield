@@ -6,7 +6,7 @@ import { ElementPlusResolver } from "unplugin-vue-components/resolvers";
 import { fileURLToPath, URL } from "node:url";
 
 // 后端 Django 地址（开发期）。生产期 SPA 与 API 同源，无需代理。
-const apiTarget = process.env.ARCHERY_API_TARGET || "http://localhost:8000";
+const apiTarget = process.env.DBSHIELD_API_TARGET || "http://localhost:8000";
 
 // 仅代理 API 与少量非 /api 的接口。
 // 注意：不要代理与 SPA 路由同前缀的路径（如 /dashboard、/instance、/login），

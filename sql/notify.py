@@ -144,7 +144,7 @@ class LegacyRender(Notifier):
         # 获取审核信息
         audit_id = self.audit.audit_id
         base_url = self.sys_config.get(
-            "archery_base_url", "http://127.0.0.1:8000"
+            "dbshield_base_url", "http://127.0.0.1:8000"
         ).rstrip("/")
         workflow_url = "{base_url}/workflow/{audit_id}".format(
             base_url=base_url, audit_id=self.audit.audit_id
@@ -281,7 +281,7 @@ class LegacyRender(Notifier):
 
     def render_execute(self):
         base_url = self.sys_config.get(
-            "archery_base_url", "http://127.0.0.1:8000"
+            "dbshield_base_url", "http://127.0.0.1:8000"
         ).rstrip("/")
         audit_handler = AuditV2(workflow=self.workflow, audit=self.audit)
         review_info = audit_handler.get_review_info()
@@ -321,7 +321,7 @@ class LegacyRender(Notifier):
             # 判断上线语句是否存在DDL，存在则通知相关人员
             if self.workflow.syntax_type == 1:
                 # 消息内容通知
-                msg_title = "[Archery]有新的DDL语句执行完成#{}".format(audit_id)
+                msg_title = "[DBShield]有新的DDL语句执行完成#{}".format(audit_id)
                 msg_content = f"""发起人：{Users.objects.get(username=self.workflow.engineer).display}
 变更组：{self.workflow.group_name}
 变更实例：{self.workflow.instance.instance_name}
@@ -339,10 +339,10 @@ class LegacyRender(Notifier):
     def render_m2sql(self):
         submitter_in_db = Users.objects.get(username=self.workflow.submitter)
         if self.workflow.success:
-            title = "[Archery 通知]My2SQL执行结束"
+            title = "[DBShield 通知]My2SQL执行结束"
             content = f"解析的SQL文件在{self.workflow.file_path}目录下，请前往查看"
         else:
-            title = "[Archery 通知]My2SQL执行失败"
+            title = "[DBShield 通知]My2SQL执行失败"
             content = self.workflow.error
         self.messages = [
             LegacyMessage(

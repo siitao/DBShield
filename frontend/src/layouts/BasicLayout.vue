@@ -60,7 +60,29 @@ function openUrl(url: string) {
 <template>
   <el-container class="layout">
     <el-aside width="220px" class="layout-aside">
-      <div class="layout-brand">Archery</div>
+      <div class="layout-brand">
+        <svg class="brand-logo" viewBox="0 0 24 24" width="26" height="26" aria-hidden="true">
+          <defs>
+            <linearGradient id="brandShieldGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#60a5fa" />
+              <stop offset="1" stop-color="#2563eb" />
+            </linearGradient>
+          </defs>
+          <path
+            d="M12 2l8 3.2V11c0 5.1-3.4 9.7-8 11-4.6-1.3-8-5.9-8-11V5.2L12 2z"
+            fill="url(#brandShieldGrad)"
+          />
+          <path
+            d="M8.8 12.2l2.2 2.2 4.2-4.4"
+            stroke="#fff"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            fill="none"
+          />
+        </svg>
+        <span>DBShield</span>
+      </div>
       <el-menu
         :default-active="activeIndex"
         class="layout-menu"
@@ -141,7 +163,8 @@ function openUrl(url: string) {
 }
 
 .layout-aside {
-  background: #1f2937;
+  // 深色导航渐变：从深海军蓝过渡到墨蓝
+  background: linear-gradient(180deg, #0f172a 0%, #111827 55%, #1e293b 100%);
   overflow-x: hidden;
   overflow-y: auto;
 
@@ -174,50 +197,86 @@ function openUrl(url: string) {
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 10px;
   color: #fff;
-  font-size: 22px;
+  font-size: 20px;
   font-weight: 700;
   letter-spacing: 1px;
-  background: #111827;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+
+  .brand-logo {
+    display: block;
+    filter: drop-shadow(0 2px 6px rgba(37, 99, 235, 0.45));
+  }
 }
 
 // 深色侧边栏菜单样式
 .layout-menu {
   border-right: none;
   background: transparent;
+  padding: 6px 8px 12px;
 
   :deep(.el-menu-item),
   :deep(.el-sub-menu__title) {
-    color: #d1d5db;
-    height: 46px;
-    line-height: 46px;
+    height: 44px;
+    line-height: 44px;
+    margin-bottom: 2px;
+    border-radius: 8px;
+    color: var(--dbshield-nav-text);
+    transition: background var(--dbshield-transition),
+      color var(--dbshield-transition), box-shadow var(--dbshield-transition);
   }
   :deep(.el-menu-item:hover),
   :deep(.el-sub-menu__title:hover) {
-    background: #374151;
+    background: rgba(255, 255, 255, 0.08);
     color: #fff;
   }
   :deep(.el-menu-item.is-active) {
-    background: #2563eb;
+    background: linear-gradient(90deg, #2563eb 0%, #3b82f6 100%);
     color: #fff;
+    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
   }
   :deep(.el-sub-menu .el-menu) {
-    background: #111827;
+    background: transparent;
   }
 }
 
 .layout-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   background: #fff;
   border-bottom: 1px solid var(--el-border-color-light);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
+
+  // 顶部品牌色细线
+  &::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%);
+  }
 }
 
 .page-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 16px;
   font-weight: 600;
+
+  &::before {
+    content: "";
+    width: 6px;
+    height: 16px;
+    border-radius: 3px;
+    background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
+  }
 }
 
 .header-right {

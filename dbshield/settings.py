@@ -165,7 +165,7 @@ MIDDLEWARE = (
     "common.middleware.exception_logging_middleware.ExceptionLoggingMiddleware",
 )
 
-ROOT_URLCONF = "archery.urls"
+ROOT_URLCONF = "dbshield.urls"
 
 TEMPLATES = [
     {
@@ -184,7 +184,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "archery.wsgi.application"
+WSGI_APPLICATION = "dbshield.wsgi.application"
 
 # Internationalization
 LANGUAGE_CODE = "zh-hans"
@@ -258,7 +258,7 @@ DATABASES = {
 
 # Django-Q
 Q_CLUSTER = {
-    "name": "archery",
+    "name": "dbshield",
     "workers": env("Q_CLUSTER_WORKERS", default=8),
     "recycle": 500,
     "timeout": env("Q_CLUSTER_TIMEOUT", default=60),
@@ -324,7 +324,7 @@ REST_FRAMEWORK = {
 
 # Swagger UI
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Archery API",
+    "TITLE": "DBShield API",
     "DESCRIPTION": "OpenAPI 3.0",
     "VERSION": "1.0.0",
 }
@@ -538,7 +538,7 @@ LOGGING = {
         "default": {
             "level": "DEBUG",
             "class": "logging.handlers.RotatingFileHandler",
-            "filename": "logs/archery.log",
+            "filename": "logs/dbshield.log",
             "maxBytes": 1024 * 1024 * 100,  # 5 MB
             "backupCount": 5,
             "formatter": "verbose",
@@ -590,7 +590,7 @@ LOGGING = {
     },
 }
 
-# 在网站标题及登录页面追加此内容, 可用于多archery实例的区分。Archery后台也有相同配置，如都做了配置，以后台配置为准
+# 在网站标题及登录页面追加此内容, 可用于多dbshield实例的区分。DBShield后台也有相同配置，如都做了配置，以后台配置为准
 CUSTOM_TITLE_SUFFIX = env("CUSTOM_TITLE_SUFFIX", default="")
 
 MEDIA_ROOT = os.path.join(BASE_DIR, "media")

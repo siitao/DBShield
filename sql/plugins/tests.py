@@ -65,7 +65,7 @@ class TestPlugin(TestCase):
             {"status": 1, "msg": "可执行文件路径不能为空！", "data": {}},
         )
         # 路径不为空
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.get_all_config()
         soar = Soar()
         args_check_result = soar.check_args(args)
@@ -83,7 +83,7 @@ class TestPlugin(TestCase):
             "report-type": "markdown",
             "query": "select 1;",
         }
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.get_all_config()
         soar = Soar()
         soar.disable_args = ["allow-online-as-test"]
@@ -104,7 +104,7 @@ class TestPlugin(TestCase):
             "allow-online-as-test": "false",
             "report-type": "markdown",
         }
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.get_all_config()
         soar = Soar()
         soar.required_args = ["query"]
@@ -130,7 +130,7 @@ class TestPlugin(TestCase):
             "report-type": "markdown",
             "query": "select 1;",
         }
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.get_all_config()
         soar = Soar()
         cmd_args = soar.generate_args2cmd(args)
@@ -150,7 +150,7 @@ class TestPlugin(TestCase):
             "v": 1,
             "q": "select 1;",
         }
-        self.sys_config.set("sqladvisor", "/opt/archery/src/plugins/SQLAdvisor")
+        self.sys_config.set("sqladvisor", "/opt/dbshield/src/plugins/SQLAdvisor")
         self.sys_config.get_all_config()
         sql_advisor = SQLAdvisor()
         cmd_args = sql_advisor.generate_args2cmd(args)
@@ -203,7 +203,7 @@ class TestPlugin(TestCase):
             "do-not-add-prifixDb": "false",
             "file-per-table": "false",
         }
-        self.sys_config.set("my2sql", "/opt/archery/src/plugins/my2sql")
+        self.sys_config.set("my2sql", "/opt/dbshield/src/plugins/my2sql")
         self.sys_config.get_all_config()
         my2sql = My2SQL()
         cmd_args = my2sql.generate_args2cmd(args)
@@ -238,7 +238,7 @@ class TestPlugin(TestCase):
             "report-type": "markdown",
             "query": "select 1;",
         }
-        self.sys_config.set("soar", "/opt/archery/src/plugins/soar")
+        self.sys_config.set("soar", "/opt/dbshield/src/plugins/soar")
         self.sys_config.get_all_config()
         soar = Soar()
         cmd_args = soar.generate_args2cmd(args)
@@ -266,7 +266,7 @@ class TestSoar(TestCase):
 
     @classmethod
     def setUpClass(cls):
-        soar_path = "/opt/archery/src/plugins/soar"  # 修改为本机的soar路径
+        soar_path = "/opt/dbshield/src/plugins/soar"  # 修改为本机的soar路径
         cls.superuser = User(username="super", is_superuser=True)
         cls.superuser.save()
         cls.client = Client()

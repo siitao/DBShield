@@ -5,7 +5,7 @@ from django.db import connection
 
 
 class ChartDao(object):
-    # 直接在Archery数据库查询数据，用于报表
+    # 直接在DBShield数据库查询数据，用于报表
     @staticmethod
     def __query(sql):
         cursor = connection.cursor()

@@ -5,7 +5,7 @@
   - /login、/login/2fa  → SPA Login.vue（含 SSO 入口 + 2FA 验证）
   - /config             → SPA config/Index.vue（超管配置项管理）
 
-后端不再渲染任何业务 HTML 模板。SSO callback 由第三方库处理（archery/urls.py）。
+后端不再渲染任何业务 HTML 模板。SSO callback 由第三方库处理（dbshield/urls.py）。
 """
 import logging
 

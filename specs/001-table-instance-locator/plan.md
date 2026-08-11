@@ -63,7 +63,7 @@ sql/
 └── templates/
     └── sqlquery.html           # US4: #div-table-locator widget + locateTable() JS + click autofill
 
-archery/
+dbshield/
 └── urls.py                     # Root: path("api/", include(sql_api.urls)) — full URL /api/v1/...
 ```
 

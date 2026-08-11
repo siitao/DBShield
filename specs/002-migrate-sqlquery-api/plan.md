@@ -13,7 +13,7 @@
 
 **Language/Version**: Python 3.x, Django 4.x, Django REST Framework；前端为 jQuery 3 + Bootstrap 3 + Bootstrap Table  
 **Primary Dependencies**: djangorestframework, drf-spectacular, django_filters, django-q, mysqlclient, `sql.engines` adapter layer  
-**Storage**: 复用现有 Archery MySQL（查询日志等）与外部数据库连接；不引入新存储  
+**Storage**: 复用现有 DBShield MySQL（查询日志等）与外部数据库连接；不引入新存储  
 **Testing**: pytest + Django test client + DRF APIClient；保留现有 `sql/tests.py` 页面回归，新增 `sql_api` 聚焦测试  
 **Target Platform**: Linux server 上的 Django Web 应用
 **Project Type**: 服务端渲染 Web 应用 + DRF backend  

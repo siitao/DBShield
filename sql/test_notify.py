@@ -407,7 +407,7 @@ class TestNotify(TestCase):
         )
         notifier.render()
         self.assertEqual(len(notifier.messages), 1)
-        self.assertEqual(notifier.messages[0].msg_title, "[Archery 通知]My2SQL执行结束")
+        self.assertEqual(notifier.messages[0].msg_title, "[DBShield 通知]My2SQL执行结束")
         # 失败
         failed_workflow = My2SqlResult(
             submitter=self.user.username, success=False, error="Traceback blahblah"
@@ -419,7 +419,7 @@ class TestNotify(TestCase):
         )
         notifier.render()
         self.assertEqual(len(notifier.messages), 1)
-        self.assertEqual(notifier.messages[0].msg_title, "[Archery 通知]My2SQL执行失败")
+        self.assertEqual(notifier.messages[0].msg_title, "[DBShield 通知]My2SQL执行失败")
 
     def test_general_webhook(self):
         # SQL 上线工单

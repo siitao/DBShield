@@ -13,19 +13,19 @@ masking_rules="$masking_rule_phone|$masking_rule_idno|$masking_rule_bankcardno|$
 
 DIR="$( cd "$( dirname "$0"  )" && pwd  )"
 cd $DIR
-archery_host=127.0.0.1
-archery_port=3306 
-archery_user=
-archery_db=archery
-archery_pw=
+dbshield_host=127.0.0.1
+dbshield_port=3306 
+dbshield_user=
+dbshield_db=archery
+dbshield_pw=
 
-# 获取archery所有slave实例信息
-mysql -h$archery_host -P$archery_port -u$archery_user -p$archery_pw $archery_db -N -e "select 
+# 获取dbshield所有slave实例信息
+mysql -h$dbshield_host -P$dbshield_port -u$dbshield_user -p$dbshield_pw $dbshield_db -N -e "select 
 id,instance_name,host,port 
 from sql_instance  where type='slave';">instances.list
 
 # 清空表
-mysql -h$archery_host -P$archery_port -u$archery_user -p$archery_pw $archery_db -N -e "truncate table data_masking_columns;"
+mysql -h$dbshield_host -P$dbshield_port -u$dbshield_user -p$dbshield_pw $dbshield_db -N -e "truncate table data_masking_columns;"
 
 # 临时账号密码（因实例账号&密码为加密，写死使用）
 # 此方式只适用单个实例或多个实例账号密码一致
@@ -62,5 +62,5 @@ AND TABLE_SCHEMA != 'performance_schema'
 AND TABLE_SCHEMA != 'information_schema';">$instance_name.txt
 
 # 更新表数据
-mysql -h$archery_host -P$archery_port -u$archery_user -p$archery_pw $archery_db -N -e "load data local infile '$instance_name.txt' replace into table data_masking_columns fields terminated by '\t' ( rule_type,active,instance_id,table_schema,table_name,column_name,column_comment);"
+mysql -h$dbshield_host -P$dbshield_port -u$dbshield_user -p$dbshield_pw $dbshield_db -N -e "load data local infile '$instance_name.txt' replace into table data_masking_columns fields terminated by '\t' ( rule_type,active,instance_id,table_schema,table_name,column_name,column_comment);"
 done

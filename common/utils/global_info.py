@@ -1,6 +1,6 @@
 # -*- coding: UTF-8 -*-
 from sql.utils.workflow_audit import Audit
-from archery import display_version, settings
+from dbshield import display_version, settings
 from common.config import SysConfig
 from sql.models import TwoFactorAuthConfig
 
@@ -31,7 +31,7 @@ def global_info(request):
 
     return {
         "todo": todo,
-        "archery_version": display_version,
+        "dbshield_version": display_version,
         "watermark_enabled": watermark_enabled,
         "announcement_content_enabled": announcement_content_enabled,
         "custom_title_suffix": custom_title_suffix,
