@@ -41,14 +41,20 @@ jobs:
         uses: docker/metadata-action@v3
         with:
           images: |
-            hhyo/archery
             ghcr.io/${{ github.repository }}
+
+      # 两级构建：应用镜像 FROM 的 base 镜像在本次构建中现产现用，
+      # 保证 base（venv4dbshield + 外部工具）与应用代码同步
+      - name: Build base image
+        run: docker build -f src/docker/Dockerfile-base -t dbshield-base:v1 .
 
       - name: Build and push Docker images
         uses: docker/build-push-action@v2
         with:
           context: .
           file: src/docker/Dockerfile
+          build-args: |
+            BASE_IMAGE=dbshield-base:v1
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

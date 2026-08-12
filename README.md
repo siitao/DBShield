@@ -85,11 +85,15 @@
 
 ### Docker
 
-多阶段构建：`node:22-alpine` 阶段执行 `npm ci && npm run build` 产出 SPA `dist/`，再与 DBShield 基础镜像合并，由 nginx 托管前端、反代后端。
+两级镜像构建：`Dockerfile-base`（基础镜像：创建 `/opt/venv4dbshield` 并安装 SQLAdvisor / SOAR / my2sql 等外部工具）→ `Dockerfile`（应用镜像：`node:22-alpine` 阶段构建 SPA `dist/`，与基础镜像合并，由 nginx 托管前端、反代后端）。
 
-**1. 构建镜像**
+**1. 构建镜像（先 base，再应用镜像）**
 
 ```bash
+# 1) 基础镜像（含 venv4dbshield 与外部工具，耗时较长，只依赖 Dockerfile-base/setup.sh）
+docker build -f src/docker/Dockerfile-base -t dbshield-base:v1 .
+
+# 2) 应用镜像（默认引用 dbshield-base:v1，也可 --build-arg BASE_IMAGE=<其他镜像> 覆盖）
 docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .
 ```
 

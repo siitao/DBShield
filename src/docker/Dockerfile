@@ -1,6 +1,12 @@
 # 基础镜像 ARG 必须声明在第一个 FROM 之前（全局 ARG），
 # 否则后续 FROM 无法解析（报 base name should not be blank）
-ARG BASE_IMAGE="hhyo/archery-base:sha-d8159f4"
+#
+# 两级构建：先构建基础镜像（含 /opt/venv4dbshield 与 SQLAdvisor/SOAR/my2sql 等外部工具），
+# 再以此为基础构建应用镜像：
+#   docker build -f src/docker/Dockerfile-base -t dbshield-base:v1 .
+#   docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .   # 默认引用 dbshield-base:v1
+# 也可用 --build-arg BASE_IMAGE=<其他镜像> 覆盖（如 ghcr.io/<owner>/<repo>-base:sha-xxx）
+ARG BASE_IMAGE="dbshield-base:v1"
 
 # ---- 前端构建阶段：Vue3 SPA ----
 FROM node:22-alpine AS frontend
