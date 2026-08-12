@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 import type { ReviewRow } from "@/api/sqlworkflow";
 import TruncateCell from "@/components/TruncateCell.vue";
+
+marked.setOptions({ gfm: true, breaks: false });
+
+/** AI 建议 markdown → 消毒后的 HTML（XSS 防护，与 document/DiagnosisDrawer 一致） */
+function aiSuggestionHtml(md?: string): string {
+  if (!md) return "";
+  const raw = marked.parse(md, { async: false }) as string;
+  return DOMPurify.sanitize(raw);
+}
 
 const props = defineProps<{
   rows: ReviewRow[];
@@ -177,7 +188,7 @@ function levelText(lvl: unknown): string {
             <template #reference>
               <el-button link type="primary" size="small">详情</el-button>
             </template>
-            <div class="ai-suggestion" v-html="(row as ReviewRow).ai_suggestion"></div>
+            <div class="ai-suggestion" v-html="aiSuggestionHtml((row as ReviewRow).ai_suggestion)"></div>
           </el-popover>
         </div>
       </template>

@@ -180,10 +180,18 @@ class AliyunRdsList(generics.ListAPIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class AliyunRdsConfigPermission(permissions.BasePermission):
+    """AliyunRDS 配置含云账号密钥，仅超管可读写（H6）"""
+
+    def has_permission(self, request, view):
+        u = request.user
+        return u and u.is_authenticated and u.is_superuser
+
+
 class AliyunRdsDetail(views.APIView):
     """单个 AliyunRDS 配置：按 pk 查 / 改 / 删。OneToOne 到 Instance。"""
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [AliyunRdsConfigPermission]
 
     def get_object(self, pk):
         try:
@@ -206,11 +214,21 @@ class AliyunRdsDetail(views.APIView):
         data = request.data
         obj.rds_dbinstanceid = data.get("rds_dbinstanceid", obj.rds_dbinstanceid)
         obj.is_enable = data.get("is_enable", obj.is_enable)
-        ak_data = data.get("ak")
-        if ak_data:
-            obj.ak.key_id = ak_data.get("key_id", obj.ak.key_id)
-            obj.ak.key_secret = ak_data.get("key_secret", obj.ak.key_secret)
-            obj.ak.remark = ak_data.get("remark", obj.ak.remark)
+        ak_data = data.get("ak") or {}
+        # H6：修复二次加密损坏——key_secret 不回显（write_only），只接受新值；
+        # key_id 客户端回传的是明文（序列化器已解密），仅当显式提供时才落库，
+        # 避免把库中密文再次加密
+        ak_changed = False
+        if ak_data.get("key_id"):
+            obj.ak.key_id = ak_data["key_id"]
+            ak_changed = True
+        if ak_data.get("key_secret"):
+            obj.ak.key_secret = ak_data["key_secret"]
+            ak_changed = True
+        if ak_data.get("remark") is not None:
+            obj.ak.remark = ak_data["remark"]
+            ak_changed = True
+        if ak_changed:
             obj.ak.save()
         obj.save()
         return Response(AliyunRdsSerializer(obj).data)
@@ -226,7 +244,7 @@ class AliyunRdsByInstance(views.APIView):
     """按实例查其 AliyunRDS 配置（OneToOne）。
     GET /api/v1/instance/rds/by_instance/?instance=<id> → 配置或 404。供 SPA 实例表单回填。"""
 
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [AliyunRdsConfigPermission]
 
     @extend_schema(summary="按实例查AliyunRDS", description="按 instance_id 查 RDS 配置，无则 404。")
     def get(self, request):

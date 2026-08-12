@@ -111,6 +111,12 @@ class SchemasyncPermission(BasePermission):
         return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_schemasync"))
 
 
+class My2sqlPermission(BasePermission):
+    def has_permission(self, request, view):
+        u = request.user
+        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_my2sql"))
+
+
 # ========== 审计 ==========
 
 class AuditLogView(APIView):
@@ -270,7 +276,7 @@ class BinlogListView(APIView):
 
 
 class My2sqlView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [My2sqlPermission]
 
     def post(self, request):
         instance_name = request.data.get("instance_name")
@@ -296,7 +302,11 @@ class My2sqlView(APIView):
         if not instance_name:
             return JsonResponse({"status": 1, "msg": "缺少实例名"})
 
-        instance = Instance.objects.get(instance_name=instance_name)
+        # 资源组校验（H3）：仅可解析自己所在资源组内的实例
+        try:
+            instance = resolve_instance(request.user, instance_name=instance_name)
+        except Exception:
+            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
         my2sql = My2SQL()
         username, password = instance.get_username_password()
 
@@ -344,10 +354,12 @@ class My2sqlView(APIView):
             stdout, stderr = my2sql.execute_cmd(cmd_args).communicate()
         except Exception as e:
             logger.error(f"my2sql 执行失败: {traceback.format_exc()}")
-            return JsonResponse({"status": 1, "msg": str(e), "data": []})
+            # 通用错误文案，避免泄漏引擎/连接细节（H3）
+            return JsonResponse({"status": 1, "msg": "my2sql 解析失败，请检查实例连接与参数配置", "data": []})
 
         if stderr:
-            return JsonResponse({"status": 1, "msg": stderr, "data": []})
+            logger.error(f"my2sql stderr: {stderr}")
+            return JsonResponse({"status": 1, "msg": "my2sql 解析失败，请检查实例连接与参数配置", "data": []})
 
         # 读取输出文件
         rows = []
@@ -967,14 +979,34 @@ class DownloadFileView(APIView):
 
     def get(self, request):
         from sql.storage import DynamicStorage
-        from sql.models import AuditEntry
+        from sql.models import AuditEntry, SqlWorkflow
+
         try:
             from sql.offlinedownload import StorageFileResponse
         except ImportError:
             from django.http import FileResponse as StorageFileResponse
 
+        workflow_id = request.GET.get("workflow_id", "")
         file_name = request.GET.get("file_name", " ")
-        workflow_id = request.GET.get("workflow_id", " ")
+
+        # H4：归属校验——必须关联工单且通过访问控制，防止枚举下载他人文件
+        if not str(workflow_id).isdigit():
+            return JsonResponse({"error": "缺少工单ID"}, status=400)
+        workflow = SqlWorkflow.objects.filter(id=int(workflow_id)).first()
+        if workflow is None:
+            return JsonResponse({"error": "工单不存在"}, status=404)
+        user = request.user
+        if not (
+            user.is_superuser
+            or user.has_perm("sql.sqlexport_submit")
+            or user.has_perm("sql.offline_download")
+            or workflow.engineer == user.username
+        ):
+            return JsonResponse({"error": "无权下载该文件"}, status=403)
+        # 文件名以工单记录为准，防直接传参下载任意文件
+        if workflow.file_name and file_name != workflow.file_name:
+            return JsonResponse({"error": "文件与工单不匹配"}, status=403)
+
         action = "离线下载"
         extra_info = f"工单id：{workflow_id}，文件：{file_name}"
         config = SysConfig()

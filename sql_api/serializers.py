@@ -222,9 +222,25 @@ class TunnelSerializer(serializers.ModelSerializer):
 
 
 class CloudAccessKeySerializer(serializers.ModelSerializer):
+    """key_secret 只写不回显（防密文/密钥泄漏）；key_id 展示时解密为明文（AK ID 非机密）。"""
+
+    key_secret = serializers.CharField(
+        write_only=True, required=False, allow_blank=True
+    )
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data.pop("key_secret", None)
+        try:
+            data["key_id"] = instance.raw_key_id
+        except Exception:
+            # 解密失败（如历史脏数据）时原样返回，不阻断展示
+            pass
+        return data
+
     class Meta:
         model = CloudAccessKey
-        fields = "__all__"
+        fields = ("id", "type", "key_id", "key_secret", "remark")
 
 
 class AliyunRdsSerializer(serializers.ModelSerializer):

@@ -366,12 +366,15 @@ class TwoFA(views.APIView):
         user = Users.objects.get(username=engineer)
         request_user = request.session.get("user")
 
-        if not request.user.is_authenticated:
-            if request_user:
-                if request_user != engineer:
-                    return Response({"status": 1, "msg": "登录用户与校验用户不一致！"})
-            else:
-                return Response({"status": 1, "msg": "需先校验用户密码！"})
+        if request.user.is_authenticated:
+            # 已登录用户只能配置自己的 2FA（H2：防越权接管/禁用他人）
+            if engineer != request.user.username and not request.user.is_superuser:
+                return Response({"status": 1, "msg": "无权操作其他用户的2FA配置！"})
+        elif request_user:
+            if request_user != engineer:
+                return Response({"status": 1, "msg": "登录用户与校验用户不一致！"})
+        else:
+            return Response({"status": 1, "msg": "需先校验用户密码！"})
 
         authenticator = get_authenticator(user=user, auth_type=auth_type)
         if enable == "true":
@@ -482,13 +485,17 @@ class TwoFAVerify(views.APIView):
         user = Users.objects.get(username=engineer)
         request_user = request.session.get("user")
 
-        if not request.user.is_authenticated:
-            if request_user:
-                if request_user != engineer:
-                    return Response({"status": 1, "msg": "登录用户与校验用户不一致！"})
-            else:
-                return Response({"status": 1, "msg": "需先校验用户密码！"})
+        if request.user.is_authenticated:
+            # 已登录用户只能校验自己的 2FA（H2：防越权验证/接管他人会话）
+            if engineer != request.user.username and not request.user.is_superuser:
+                return Response({"status": 1, "msg": "无权校验其他用户的2FA！"})
+        elif request_user:
+            if request_user != engineer:
+                return Response({"status": 1, "msg": "登录用户与校验用户不一致！"})
+        else:
+            return Response({"status": 1, "msg": "需先校验用户密码！"})
 
+        if not request.user.is_authenticated:
             twofa_config = TwoFactorAuthConfig.objects.filter(user=user)
             if not twofa_config:
                 if not key:

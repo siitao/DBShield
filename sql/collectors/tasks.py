@@ -156,17 +156,18 @@ def cleanup_mysql_slow_log_task():
             total_deleted = 0
 
             while True:
-                # 删除一批数据
+                # 删除一批数据（SQL 必须走 sql= 关键字：execute 第一位置参数是 db_name）
                 result = engine.execute(
-                    f"""
+                    db_name="mysql",
+                    sql=f"""
                     DELETE FROM mysql.slow_log
                     WHERE start_time < DATE_SUB(NOW(), INTERVAL 7 DAY)
                     LIMIT {batch_size}
-                    """
+                    """,
                 )
 
-                # 检查删除的行数
-                deleted = result.rowcount if result else 0
+                # 检查删除的行数（ResultSet 无 rowcount 属性，实际行数为 affected_rows）
+                deleted = result.affected_rows if result else 0
                 total_deleted += deleted
 
                 # 如果删除的行数少于批次大小，说明已经删除完毕

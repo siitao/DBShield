@@ -252,7 +252,13 @@ class AuditWorkflow(views.APIView):
         )
         sys_config = SysConfig()
         auditor = get_auditor(audit=workflow_audit)
-        user = Users.objects.get(username=serializer.data["engineer"])
+        # 操作主体必须以 request.user 为准，engineer 仅超管可指定（H1：防冒名审核/撤回）
+        user = request.user
+        engineer = serializer.data.get("engineer")
+        if engineer and engineer != user.username and not user.is_superuser:
+            raise serializers.ValidationError({"errors": "无权以他人身份审核工单"})
+        if engineer and engineer != user.username:
+            user = Users.objects.get(username=engineer)
         if serializer.data["audit_type"] == "pass":
             action = WorkflowAction.PASS
             notify_config_key = "Pass"
@@ -260,7 +266,7 @@ class AuditWorkflow(views.APIView):
         elif serializer.data["audit_type"] == "cancel":
             notify_config_key = "Cancel"
             success_message = "canceled"
-            if auditor.workflow.engineer == serializer.data["engineer"]:
+            if auditor.workflow.engineer == user.username:
                 # 提交人终止自己的工单
                 action = WorkflowAction.ABORT
             elif Audit.can_review(
@@ -352,8 +358,13 @@ class ExecuteWorkflow(views.APIView):
         # 执行SQL上线工单
         if workflow_type == 2:
             mode = request.data["mode"]
-            engineer = request.data["engineer"]
-            user = Users.objects.get(username=engineer)
+            # 操作主体必须以 request.user 为准，engineer 仅超管可指定（H1：防冒名执行）
+            user = request.user
+            engineer = request.data.get("engineer")
+            if engineer and engineer != user.username and not user.is_superuser:
+                raise serializers.ValidationError({"errors": "无权以他人身份执行工单"})
+            if engineer and engineer != user.username:
+                user = Users.objects.get(username=engineer)
 
             # 校验多个权限
             if not (

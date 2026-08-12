@@ -1091,8 +1091,11 @@ class MysqlEngine(EngineBase):
         conn = self.get_connection(db_name=db_name)
         try:
             cursor = conn.cursor()
+            affected_rows = 0
             for statement in sqlparse.split(sql):
-                cursor.execute(statement, parameters)
+                affected_rows += cursor.execute(statement, parameters)
+            # 回填实际影响行数（此前恒为 0，导致依赖 affected_rows 的调用方误判）
+            result.affected_rows = affected_rows
             conn.commit()
             cursor.close()
         except Exception as e:
