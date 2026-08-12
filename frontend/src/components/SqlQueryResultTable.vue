@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import * as XLSX from "xlsx";
 import type { QueryResultEnvelope } from "@/api/sqlquery";
 import TruncateCell from "@/components/TruncateCell.vue";
@@ -46,6 +46,16 @@ const pagedRows = computed(() => {
   const start = (page.value - 1) * pageSize.value;
   return objectRows.value.slice(start, start + pageSize.value);
 });
+
+// 新查询结果到达时重置分页：
+// 结果 tab 组件实例按 key 复用，若停留在旧页码（如第 2 页），
+// 新结果行数少于旧页码起始行时切片为空，会出现“行数 N 但表格暂无数据”。
+watch(
+  () => props.envelope,
+  () => {
+    page.value = 1;
+  },
+);
 
 /** show create table 类结果（column_list 形如 ['table','create table']）：用 <pre> 展示 CREATE 文本，其余按结构化表格 */
 const isShowCreate = computed(() => {
@@ -129,7 +139,19 @@ function exportXlsx() {
     <!-- 结果 -->
     <template v-else-if="result">
       <div class="meta-row">
-        <el-tag size="small" type="info">行数 {{ result.affected_rows }}</el-tag>
+        <!--
+          有结果集（column_list 非空）：显示实际返回行数（rows.length）。
+          注意：MySQL 引擎的 affected_rows 是 cursor.execute() 返回值，
+          对 SELECT 为匹配总行数（可能被 limit 截断）、对 UPDATE/INSERT/DELETE 为影响行数且无结果集，
+          直接展示会造成“行数 N 但表格无数据”的误导，故有结果集时一律按 rows.length 展示。
+        -->
+        <el-tag size="small" type="info">
+          {{
+            columnList.length
+              ? `行数 ${objectRows.length}`
+              : `影响行数 ${result.affected_rows}`
+          }}
+        </el-tag>
         <el-tag size="small" type="info">耗时 {{ result.query_time }}s</el-tag>
         <el-tag v-if="result.is_masked" size="small" type="warning">
           已脱敏
@@ -173,7 +195,8 @@ function exportXlsx() {
           <template v-else #default="{ row }">{{ formatCell(row[col]) }}</template>
         </el-table-column>
       </el-table>
-      <el-empty v-else description="结果为空" />
+      <!-- 无结果集（UPDATE/INSERT/DELETE 等 DML、DDL）：执行成功但无数据返回，属正常情况 -->
+      <el-empty v-else description="语句执行成功，无结果集返回" />
 
       <div v-if="objectRows.length > pageSize" class="pager">
         <el-pagination
