@@ -28,6 +28,9 @@
 :root {
   // 主色（含 light/dark 色阶，hover / 选中 / 标签等自动生效）
   --el-color-primary: #2563eb;
+  // rgb 分量：部分组件（checkbox / switch / date-picker 悬停等）用
+  // rgba(var(--el-color-primary-rgb), x) 做半透明效果，必须同步覆盖
+  --el-color-primary-rgb: 37, 99, 235;
   --el-color-primary-light-3: #6692f1;
   --el-color-primary-light-5: #92b1f5;
   --el-color-primary-light-7: #bed0f9;

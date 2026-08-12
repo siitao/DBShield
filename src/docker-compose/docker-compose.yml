@@ -42,11 +42,12 @@ services:
       - "./inception/config.toml:/etc/config.toml"
 
   dbshield:
-    # 下方的镜像地址仅为示例, 请前往以下地址确认你需要的版本:
-    # dockerhub https://hub.docker.com/r/hhyo/archery
-    # github packages https://github.com/hhyo/Archery/pkgs/container/archery
-    # 如有需要, 也可以自行build docker 镜像, 替换为自己的镜像
-    image: hhyo/archery:v1.14.0
+    # 默认使用本仓库 Dockerfile 构建的镜像（应用位于 /opt/dbshield）：
+    #   docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .
+    # 若改用上游 hhyo/archery 镜像（应用位于 /opt/archery），
+    # 需同步把下方挂载路径与 entrypoint 改回 /opt/archery/...
+    # 上游镜像参考: dockerhub https://hub.docker.com/r/hhyo/archery
+    image: dbshield-vue3:v1
     container_name: dbshield
     restart: always
     depends_on:
