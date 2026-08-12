@@ -26,6 +26,15 @@ COPY --from=frontend /app/dist /opt/dbshield/frontend/dist
 WORKDIR /opt/
 
 RUN useradd nginx
+
+# 设置国内镜像源加速
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list \
+    && sed -i 's/security.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list
+
+# 配置 pip 使用国内镜像源
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
+ENV PIP_TRUSTED_HOST=mirrors.aliyun.com
+
 # dbshield
 # cx-Orable 安装需要低一点的 setuptools 版本，同时需要 --no-build-isolation 参数，否则会安装失败
 # 后续可能需要重新设计 engine 和相关依赖, 防止依赖过于复杂

@@ -9,7 +9,8 @@ services:
     expose:
       - "6379"
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      # requirepass 下必须带 -a 认证，否则 redis-cli ping 返回 NOAUTH 导致永远 unhealthy
+      test: [ "CMD", "redis-cli", "-a", "123456", "ping" ]
       interval: 5s
       timeout: 5s
       retries: 5

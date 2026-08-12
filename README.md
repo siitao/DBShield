@@ -101,8 +101,10 @@ docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .
 
 ```bash
 cd src/docker-compose
-cp .env .env            # 仓库自带示例，按需修改数据库密码、NGINX_PORT、CSRF_TRUSTED_ORIGINS
+cp .env.example .env   # 按需修改数据库密码、NGINX_PORT、CSRF_TRUSTED_ORIGINS
 ```
+
+> ⚠️ `.env` 会被容器内「认证配置重载」写入真实 LDAP/OIDC/钉钉密钥，已被 `.gitignore` 排除，**切勿 `git add -f` 提交**。
 
 `.env` 同时承担两个职责（见下文「认证配置机制」），**不要遗漏**：
 
