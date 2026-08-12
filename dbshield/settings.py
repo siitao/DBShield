@@ -301,7 +301,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.AutoField"
 # API Framework
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_RENDERER_CLASSES": ("rest_framework.renderers.JSONRenderer",),
+    # 安全 JSON 渲染器：序列化前将超出 JS Number 安全整数范围（2^53-1）的 int 转为字符串，
+    # 防止前端 JSON.parse 丢失精度（如 BIGINT 主键）
+    "DEFAULT_RENDERER_CLASSES": ("sql_api.renderers.BigIntSafeJSONRenderer",),
     # 鉴权
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
