@@ -144,10 +144,21 @@ class TunnelList(generics.ListAPIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+class AliyunRdsConfigPermission(permissions.BasePermission):
+    """AliyunRDS 配置含云账号密钥，仅超管可读写（H6）"""
+
+    def has_permission(self, request, view):
+        u = request.user
+        return u and u.is_authenticated and u.is_superuser
+
+
 class AliyunRdsList(generics.ListAPIView):
     """
     列出所有的AliyunRDS或者创建一个新的AliyunRDS配置
     """
+
+    # H6：与 Detail/ByInstance 一致，RDS 配置含云账号密钥，仅超管可读可建（防越权枚举/写入）
+    permission_classes = [AliyunRdsConfigPermission]
 
     pagination_class = CustomizedPagination
     serializer_class = AliyunRdsSerializer
@@ -178,14 +189,6 @@ class AliyunRdsList(generics.ListAPIView):
             serializer.save()
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class AliyunRdsConfigPermission(permissions.BasePermission):
-    """AliyunRDS 配置含云账号密钥，仅超管可读写（H6）"""
-
-    def has_permission(self, request, view):
-        u = request.user
-        return u and u.is_authenticated and u.is_superuser
 
 
 class AliyunRdsDetail(views.APIView):

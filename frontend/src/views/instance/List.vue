@@ -234,8 +234,12 @@ async function saveRds(instanceId: number) {
     if (rdsForm.id) await deleteRds(rdsForm.id).catch(() => {});
     return;
   }
-  if (!rdsForm.rds_dbinstanceid.trim() || !rdsForm.key_id.trim() || !rdsForm.key_secret.trim()) {
-    throw new Error("RDS 配置不完整：需填实例ID、AccessKey ID、Secret");
+  if (!rdsForm.rds_dbinstanceid.trim() || !rdsForm.key_id.trim()) {
+    throw new Error("RDS 配置不完整：需填实例ID、AccessKey ID");
+  }
+  // 新增必须填 Secret；编辑留空 = 保持原值（key_secret 后端 write_only 不回显，无法回填）
+  if (!rdsForm.id && !rdsForm.key_secret.trim()) {
+    throw new Error("RDS 配置不完整：需填 AccessKey Secret");
   }
   const payload = {
     rds_dbinstanceid: rdsForm.rds_dbinstanceid.trim(),
