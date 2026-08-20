@@ -227,6 +227,9 @@ class ResourceGroupList(generics.ListAPIView):
         description="创建一个资源组",
     )
     def post(self, request):
+        # 资源组属平台级配置，创建/变更仅超管（前端按钮守卫不构成安全边界）
+        if not request.user.is_superuser:
+            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
         serializer = ResourceGroupSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -240,7 +243,7 @@ class ResourceGroupDetail(views.APIView):
     """
 
     # 与 ResourceGroupList 对齐：GET 详情对普通登录用户开放；
-    # PUT/DELETE 的写操作由前端按钮的 isSuperuser 守卫限制
+    # PUT/DELETE 属平台级写操作，仅超管（此前仅靠前端按钮守卫，不构成安全边界）
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = ResourceGroupSerializer
 
@@ -267,6 +270,8 @@ class ResourceGroupDetail(views.APIView):
         description="更新一个资源组",
     )
     def put(self, request, pk):
+        if not request.user.is_superuser:
+            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
         group = self.get_object(pk)
         serializer = ResourceGroupSerializer(group, data=request.data)
         if serializer.is_valid():
@@ -276,6 +281,8 @@ class ResourceGroupDetail(views.APIView):
 
     @extend_schema(summary="删除资源组", description="软删除一个资源组（is_deleted=1）")
     def delete(self, request, pk):
+        if not request.user.is_superuser:
+            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
         group = self.get_object(pk)
         # 软删除，对齐旧版语义，避免误删导致关联数据丢失
         group.is_deleted = 1

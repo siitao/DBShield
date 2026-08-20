@@ -32,7 +32,7 @@ const form = reactive({
 const sqlContent = ref("");
 const groupOptions = ref<ResourceGroupRow[]>([]);
 const instanceOptions = ref<GroupInstanceRow[]>([]);
-const dbOptions = ref<string[]>([]);
+const dbOptions = ref<Array<string | { value: string; text: string }>>([]);
 const auditorsDisplay = ref("");
 
 // SQL 检测结果
@@ -270,7 +270,12 @@ onMounted(() => {
             :disabled="!form.instance"
             style="width: 280px"
           >
-            <el-option v-for="d in dbOptions" :key="d" :label="d" :value="d" />
+            <el-option
+              v-for="d in dbOptions"
+              :key="typeof d === 'object' ? d.value : d"
+              :label="typeof d === 'object' ? d.text : d"
+              :value="typeof d === 'object' ? d.value : d"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="是否备份">

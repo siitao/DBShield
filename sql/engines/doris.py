@@ -67,11 +67,9 @@ class DorisEngine(MysqlEngine):
     ):
         return super(DorisEngine, self).processlist(command_type, base_sql)
 
-    def get_kill_command(self, thread_ids, thread_ids_check=False):
-        return super(DorisEngine, self).get_kill_command(thread_ids, thread_ids_check)
-
-    def kill(self, thread_ids, thread_ids_check=False):
-        return super(DorisEngine, self).kill(thread_ids, thread_ids_check)
+    # 不再覆盖 get_kill_command/kill 的 thread_ids_check 默认值：
+    # 父类默认开启类型校验，覆盖为 False 会让用户可控的 thread_ids 直接拼进
+    # information_schema 查询形成 SQL 注入（H2，2026-08-20 审查）
 
     def execute_check(self, db_name=None, sql=""):
         """上线单执行前的检查, 返回Review set"""

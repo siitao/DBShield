@@ -17,6 +17,7 @@ from common.config import SysConfig
 from common.utils.const import WorkflowStatus, WorkflowType, WorkflowAction
 from sql.engines import get_engine
 from sql.models import (
+    Instance,
     SqlWorkflow,
     SqlWorkflowContent,
     WorkflowAudit,
@@ -27,7 +28,7 @@ from sql.models import (
 )
 from sql.notify import notify_for_audit, notify_for_execute
 from sql_api.api_misc import _query_apply_audit_call_back
-from sql.utils.resource_group import user_groups
+from sql.utils.resource_group import user_groups, user_instances
 from sql.utils.sql_review import (
     can_cancel,
     can_execute,
@@ -71,6 +72,14 @@ class ExecuteCheck(views.APIView):
         serializer = ExecuteCheckSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         instance = serializer.get_instance()
+        # 归属校验：仅可对自己所在组拥有写权限的实例发起检测，
+        # 防止借 goInception 检测探测任意实例（2026-08-20 审查 N4）
+        try:
+            user_instances(request.user, tag_codes=["can_write"]).get(
+                id=instance.id
+            )
+        except Instance.DoesNotExist:
+            raise serializers.ValidationError({"errors": "你所在组未关联该实例！"})
         # 交给engine进行检测
         try:
             db_name = request.data["db_name"]
@@ -197,8 +206,11 @@ class WorkflowAuditList(generics.ListAPIView):
         description="列出指定用户待审核清单（过滤，分页）",
     )
     def post(self, request):
-        # 未传 engineer 时默认取当前登录用户，避免前端可随意查询他人待办
+        # 未传 engineer 时默认取当前登录用户，避免前端可随意查询他人待办；
+        # 显式传参时仅超管可查他人（防枚举任意用户待办工单，2026-08-20 审查 N2）
         engineer = request.data.get("engineer") or request.user.username
+        if engineer != request.user.username and not request.user.is_superuser:
+            engineer = request.user.username
 
         # 参数验证
         serializer = WorkflowAuditSerializer(data={"engineer": engineer})
@@ -447,6 +459,24 @@ class ExecuteWorkflow(views.APIView):
                     )
         # 执行数据归档工单
         elif workflow_type == 3:
+            # 归档是删除/搬迁源表数据的破坏性操作，权限与正规触发口
+            # ArchiveOnceView（ArchiveMgtPermission）对齐，且仅允许执行已审核通过的工单
+            if not (
+                request.user.is_superuser
+                or request.user.has_perm("sql.archive_mgt")
+            ):
+                raise serializers.ValidationError({"errors": "你无权执行当前归档工单！"})
+            try:
+                archive_workflow = ArchiveConfig.objects.get(id=workflow_id)
+            except ArchiveConfig.DoesNotExist:
+                raise serializers.ValidationError({"errors": "归档工单不存在！"})
+            if not (
+                archive_workflow.state
+                and archive_workflow.status == WorkflowStatus.PASSED
+            ):
+                raise serializers.ValidationError(
+                    {"errors": "归档工单未审核通过，禁止执行！"}
+                )
             async_task(
                 "sql.archiver.archive",
                 workflow_id,
@@ -471,6 +501,31 @@ class WorkflowLogList(generics.ListAPIView):
     def get(self, request):
         return Response({"detail": "方法 “GET” 不被允许。"})
 
+    @staticmethod
+    def _can_view_workflow(user, workflow_id, workflow_type):
+        """工单日志归属校验：防止任意登录用户按 workflow_id 枚举他人审批日志"""
+        if user.is_superuser:
+            return True
+        group_ids = [group.group_id for group in user_groups(user)]
+        if workflow_type == WorkflowType.SQL_REVIEW:
+            try:
+                return can_view(user, workflow_id)
+            except SqlWorkflow.DoesNotExist:
+                return False
+        elif workflow_type == WorkflowType.ARCHIVE:
+            try:
+                archive = ArchiveConfig.objects.get(id=workflow_id)
+            except ArchiveConfig.DoesNotExist:
+                return False
+            return archive.resource_group_id in group_ids
+        elif workflow_type == WorkflowType.QUERY:
+            try:
+                apply_obj = QueryPrivilegesApply.objects.get(apply_id=workflow_id)
+            except QueryPrivilegesApply.DoesNotExist:
+                return False
+            return apply_obj.user_name == user.username or apply_obj.group_id in group_ids
+        return False
+
     @extend_schema(
         summary="工单日志",
         request=WorkflowLogSerializer,
@@ -483,10 +538,18 @@ class WorkflowLogList(generics.ListAPIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        audit_id = WorkflowAudit.objects.get(
-            workflow_id=request.data["workflow_id"],
-            workflow_type=request.data["workflow_type"],
-        ).audit_id
+        try:
+            audit_id = WorkflowAudit.objects.get(
+                workflow_id=request.data["workflow_id"],
+                workflow_type=request.data["workflow_type"],
+            ).audit_id
+        except WorkflowAudit.DoesNotExist:
+            return Response({"errors": "工单不存在"}, status=status.HTTP_404_NOT_FOUND)
+        # 归属校验：SQL 工单复用 can_view，归档/查询申请按资源组/提交人判断
+        if not self._can_view_workflow(
+            request.user, request.data["workflow_id"], request.data["workflow_type"]
+        ):
+            raise PermissionDenied
         workflow_logs = self.queryset.filter(audit_id=audit_id).order_by("-id")
         page_log = self.paginate_queryset(queryset=workflow_logs)
         serializer_obj = self.get_serializer(page_log, many=True)

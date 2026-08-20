@@ -48,7 +48,17 @@ class QueryPrivApplyDetail(views.APIView):
         description="返回申请信息、审批流节点、当前审核人、是否可审核、审核日志等，供 SPA 详情页渲染。",
     )
     def get(self, request, apply_id):
-        workflow_detail = QueryPrivilegesApply.objects.get(apply_id=apply_id)
+        # IDOR 收口：申请详情含库表/行数限制与审批信息，仅超管/提交人/同资源组用户可见
+        workflow_detail = QueryPrivilegesApply.objects.filter(apply_id=apply_id).first()
+        if workflow_detail is None:
+            return Response({"errors": "申请不存在"}, status=404)
+        if not request.user.is_superuser:
+            user_group_ids = [g.group_id for g in user_groups(request.user)]
+            if (
+                workflow_detail.user_name != request.user.username
+                and workflow_detail.group_id not in user_group_ids
+            ):
+                return Response({"errors": "无权查看该申请"}, status=403)
         audit_handler = AuditV2(workflow=workflow_detail)
         review_info = audit_handler.get_review_info()
 

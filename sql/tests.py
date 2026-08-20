@@ -9,10 +9,10 @@ from django.test import Client, TestCase, TransactionTestCase
 
 from common.config import SysConfig
 from common.utils.const import WorkflowStatus, WorkflowType, WorkflowAction
-from sql.binlog import my2sql_file
+# sql.binlog / sql.query 模块已随 DRF 化重构（9758b51）移除，
+# 对应死用例已删除，勿再引用（否则整个 tests.py 无法收集）
 from sql.engines.models import ResultSet
 from sql.utils.execute_sql import execute_callback
-from sql.query import kill_query_conn
 from sql.models import (
     Users,
     Instance,
@@ -653,10 +653,7 @@ class TestQuery(TransactionTestCase):
         r_json = r.json()
         self.assertEqual(1, r_json["status"])
 
-    @patch("sql.query.get_engine")
-    def test_kill_query_conn(self, _get_engine):
-        kill_query_conn(self.slave1.id, 10)
-        _get_engine.return_value.kill_connection.return_value = ResultSet()
+    # test_kill_query_conn：被测函数 kill_query_conn 随 sql/query.py 删除而移除
 
     def test_query_log(self):
         """测试获取查询历史"""
@@ -1486,42 +1483,8 @@ class TestBinLog(TestCase):
         r = self.client.post(path="/binlog/my2sql/", data=data)
         self.assertEqual(json.loads(r.content), {"status": 0, "msg": "ok", "data": []})
 
-    @patch("builtins.open")
-    @patch("sql.plugins.plugin.subprocess")
-    def test_my2sql_file(self, _open, _subprocess):
-        """
-        测试保存文件
-        :param _subprocess:
-        :return:
-        """
-        _subprocess.Popen.return_value.communicate.return_value = (
-            "some_stdout",
-            "some_stderr",
-        )
-        self.sys_config.set("my2sql", "/opt/dbshield/src/plugins/my2sql")
-        args = {
-            "instance_name": "test_instance",
-            "save_sql": "1",
-            "rollback": "2sql",
-            "num": "1",
-            "threads": 1,
-            "add-extraInfo": "false",
-            "ignore-primaryKey-forInsert": "false",
-            "full-columns": "false",
-            "do-not-add-prifixDb": "false",
-            "file-per-table": "false",
-            "start-file": "mysql-bin.000045",
-            "start-pos": "",
-            "stop-file": "mysql-bin.000045",
-            "stop-pos": "",
-            "stop-datetime": "",
-            "start-datetime": "",
-            "databases": "",
-            "sql": "",
-            "instance": self.master,
-        }
-        r = my2sql_file(args=args, user=self.superuser)
-        self.assertEqual(self.superuser, r[0])
+    # test_my2sql_file：被测函数 my2sql_file 随 sql/binlog.py 删除而移除
+    # （My2sql 解析已由 sql_api/api_misc.py My2sqlView 重新实现）
 
     def test_del_binlog_instance_not_exist(self):
         """

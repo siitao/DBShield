@@ -37,6 +37,7 @@ import datetime as _dt
 import json as _json
 import logging
 import os
+import re
 import time
 import traceback
 from pathlib import Path
@@ -66,6 +67,7 @@ from sql.plugins.my2sql import My2SQL
 from sql.plugins.soar import Soar
 from sql.services.instance_service import resolve_instance
 from sql.utils.resource_group import user_groups, user_instances
+from sql.utils.sql_review import can_execute, can_view
 from sql.utils.sql_utils import extract_tables, generate_sql
 from sql.utils.tasks import task_info
 from sql.utils.workflow_audit import Audit, AuditException, get_auditor
@@ -455,6 +457,12 @@ class GenerateSqlView(APIView):
         table_schema = ""
         sample_data = ""
         if instance_name and db_name and tb_name:
+            # 标识符白名单：tb_name 会拼接进 describe_table / SELECT 样本查询，
+            # 拒绝反引号/引号等逃逸字符（2026-08-20 审查）
+            if not re.fullmatch(r"[\w$.]{1,128}", tb_name):
+                return JsonResponse(
+                    {"status": 1, "msg": "表名仅允许字母、数字、下划线、点号", "data": ""}
+                )
             # pgsql 默认 schema 为 public（避免 WHERE schema = NULL 永远匹配不到）
             if db_type == "pgsql" and not schema_name:
                 schema_name = "public"
@@ -492,6 +500,15 @@ class GenerateSqlView(APIView):
                         db_name=db_name, sql=sample_sql,
                         **({"schema_name": schema_name} if schema_name else {})
                     )
+                    # 与正规查询链路同口径：开启数据脱敏时对样本结果先脱敏再喂给外部 AI
+                    if sample_rs.rows and SysConfig().get("data_masking"):
+                        try:
+                            sample_rs = engine.query_masking(
+                                db_name, sample_sql, sample_rs
+                            )
+                        except Exception as mask_e:
+                            logger.warning("generate_sql 样本脱敏失败: %s", mask_e)
+                            sample_rs.rows = []
                     sample_rows = getattr(sample_rs, "rows", None) or []
                     sample_cols = getattr(sample_rs, "column_list", None) or []
                     if sample_rows:
@@ -766,6 +783,13 @@ class BackupSqlView(APIView):
         except SqlWorkflow.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "工单不存在"})
 
+        # 回滚 SQL 含变更前数据镜像，与工单详情同口径做归属校验
+        try:
+            if not can_view(request.user, workflow_id):
+                return JsonResponse({"status": 1, "msg": "你无权查看该工单的备份信息"})
+        except SqlWorkflow.DoesNotExist:
+            return JsonResponse({"status": 1, "msg": "工单不存在"})
+
         query_engine = get_engine(instance=workflow.instance)
         sql_list = query_engine.get_rollback(workflow=workflow)
         rows = []
@@ -791,6 +815,13 @@ class OscControlView(APIView):
 
         try:
             workflow = SqlWorkflow.objects.get(id=workflow_id)
+        except SqlWorkflow.DoesNotExist:
+            return JsonResponse({"status": 1, "msg": "工单不存在"})
+
+        # OSC pause/resume/kill 属执行控制，与执行工单同口径校验
+        try:
+            if not can_execute(request.user, workflow_id):
+                return JsonResponse({"status": 1, "msg": "你无权控制该工单的 OSC 进度"})
         except SqlWorkflow.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "工单不存在"})
 
@@ -996,15 +1027,21 @@ class DownloadFileView(APIView):
         if workflow is None:
             return JsonResponse({"error": "工单不存在"}, status=404)
         user = request.user
+        # H4b 收口：放行条件为 超管 / 离线下载管理权限 / 工单提交人本人。
+        # 不再放行 sqlexport_submit（提交导出的业务权限，与下载他人文件无关，
+        # 曾导致持该权限的普通用户可下载任意用户的导出文件）
         if not (
             user.is_superuser
-            or user.has_perm("sql.sqlexport_submit")
             or user.has_perm("sql.offline_download")
             or workflow.engineer == user.username
         ):
             return JsonResponse({"error": "无权下载该文件"}, status=403)
-        # 文件名以工单记录为准，防直接传参下载任意文件
-        if workflow.file_name and file_name != workflow.file_name:
+        # 文件名以工单记录为准，防直接传参下载任意文件；
+        # 工单未记录文件名（导出未完成/历史数据）时一律拒绝，
+        # 避免用户可控文件名直通 sftp/s3 等无 safe_join 兜底的后端
+        if not workflow.file_name:
+            return JsonResponse({"error": "该工单无可下载文件"}, status=404)
+        if file_name != workflow.file_name:
             return JsonResponse({"error": "文件与工单不匹配"}, status=403)
 
         action = "离线下载"

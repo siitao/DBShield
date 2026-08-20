@@ -29,6 +29,13 @@ logger = logging.getLogger("default")
 
 # ---------- helpers ----------
 
+def _safe_int(value, default):
+    """安全转整数，空/非数字入参返回默认值（避免非法入参触发 HTTP 500）"""
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
 def _serialize_review_info(review_info):
     """ReviewInfo.nodes → 可 JSON 序列化的列表。"""
     nodes = []
@@ -62,7 +69,14 @@ class ArchiveDetail(views.APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, pk):
-        archive_config = ArchiveConfig.objects.get(pk=pk)
+        # IDOR 收口：归档详情含源/目标实例、条件与审批人，仅超管/组内用户可见
+        archive_config = ArchiveConfig.objects.filter(pk=pk).first()
+        if archive_config is None:
+            return Response({"errors": "归档配置不存在"}, status=404)
+        if not request.user.is_superuser:
+            user_group_ids = [g.group_id for g in user_groups(request.user)]
+            if archive_config.resource_group_id not in user_group_ids:
+                return Response({"errors": "无权查看该归档配置"}, status=403)
         audit_handler = AuditV2(workflow=archive_config, resource_group=archive_config.resource_group)
         review_info = audit_handler.get_review_info()
         try:
@@ -171,8 +185,8 @@ class ArchiveListView(APIView):
         user = request.user
         filter_instance_id = request.GET.get("filter_instance_id")
         state = request.GET.get("state")
-        limit = int(request.GET.get("limit", 0))
-        offset = int(request.GET.get("offset", 0))
+        limit = _safe_int(request.GET.get("limit"), 0)
+        offset = _safe_int(request.GET.get("offset"), 0)
         limit = offset + limit
         search = request.GET.get("search", "")
 
@@ -287,10 +301,19 @@ class ArchiveLogView(APIView):
     permission_classes = [IsAuthenticated, ArchivePermission]
 
     def get(self, request):
-        limit = int(request.GET.get("limit", 0))
-        offset = int(request.GET.get("offset", 0))
+        limit = _safe_int(request.GET.get("limit"), 0)
+        offset = _safe_int(request.GET.get("offset"), 0)
         limit = offset + limit
         archive_id = request.GET.get("archive_id")
+
+        # IDOR 收口：日志含完整归档命令与错误信息，仅超管/该归档配置所属组内用户可读
+        if not request.user.is_superuser:
+            archive = ArchiveConfig.objects.filter(id=archive_id).first()
+            if archive is None:
+                return JsonResponse({"status": 1, "msg": "归档配置不存在", "data": []})
+            user_group_ids = [g.group_id for g in user_groups(request.user)]
+            if archive.resource_group_id not in user_group_ids:
+                return JsonResponse({"status": 1, "msg": "无权查看该归档日志", "data": []})
 
         archive_logs = ArchiveLog.objects.filter(archive=archive_id).annotate(
             info=Concat("cmd", V("\n"), "statistics", output_field=TextField())

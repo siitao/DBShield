@@ -1158,9 +1158,10 @@ class MysqlEngine(EngineBase):
 
     def get_kill_command(self, thread_ids, thread_ids_check=True):
         """由传入的线程列表生成kill命令"""
-        # 校验传参
+        # 校验传参：thread_ids 会拼接进 information_schema 查询，
+        # 仅接受 int 或纯数字字符串，其余一律拒绝（防 SQL 注入）
         if thread_ids_check:
-            if [i for i in thread_ids if not isinstance(i, int)]:
+            if [i for i in thread_ids if not self._is_valid_thread_id(i)]:
                 return None
         sql = "select concat('kill ', id, ';') from information_schema.processlist where id in ({});".format(
             ",".join(str(tid) for tid in thread_ids)
@@ -1172,11 +1173,16 @@ class MysqlEngine(EngineBase):
 
         return kill_sql
 
+    @staticmethod
+    def _is_valid_thread_id(tid):
+        return isinstance(tid, int) or (isinstance(tid, str) and tid.isdigit())
+
     def kill(self, thread_ids, thread_ids_check=True):
         """kill线程"""
-        # 校验传参
+        # 校验传参：thread_ids 会拼接进 information_schema 查询，
+        # 仅接受 int 或纯数字字符串，其余一律拒绝（防 SQL 注入）
         if thread_ids_check:
-            if [i for i in thread_ids if not isinstance(i, int)]:
+            if [i for i in thread_ids if not MysqlEngine._is_valid_thread_id(i)]:
                 return ResultSet(full_sql="")
         sql = "select concat('kill ', id, ';') from information_schema.processlist where id in ({});".format(
             ",".join(str(tid) for tid in thread_ids)

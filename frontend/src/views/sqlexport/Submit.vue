@@ -35,7 +35,7 @@ const sqlContent = ref("");
 const groupOptions = ref<ResourceGroupRow[]>([]);
 const instanceOptions = ref<GroupInstanceRow[]>([]);
 const auditorsDisplay = ref("");
-const dbOptions = ref<string[]>([]);
+const dbOptions = ref<Array<string | { value: string; text: string }>>([]);
 
 // 导出校验结果
 const checkResult = ref<ExportPreCheckResult | null>(null);
@@ -262,7 +262,12 @@ onMounted(loadGroups);
             :disabled="!form.instance"
             style="width: 280px"
           >
-            <el-option v-for="d in dbOptions" :key="d" :label="d" :value="d" />
+            <el-option
+              v-for="d in dbOptions"
+              :key="typeof d === 'object' ? d.value : d"
+              :label="typeof d === 'object' ? d.text : d"
+              :value="typeof d === 'object' ? d.value : d"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="可执行时间">

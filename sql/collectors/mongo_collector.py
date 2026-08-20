@@ -7,7 +7,7 @@ MongoDB 慢查询采集器
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from .base import BaseSlowQueryCollector, CursorManager
 
@@ -16,6 +16,37 @@ logger = logging.getLogger("default")
 
 class MongoSlowQueryCollector(BaseSlowQueryCollector):
     """MongoDB 慢查询采集器"""
+
+    @staticmethod
+    def _local_naive_to_utc(local_naive: datetime) -> datetime:
+        """本地 naive 时间 → UTC aware 时间。
+
+        Mongo system.profile 的 ts 是 UTC，而游标/任务侧时间统一为
+        本地 naive（settings.TIME_ZONE）。pymongo 会把 naive 编码为
+        UTC、aware 按时区换算，此前直接用本地 naive 游标查询导致
+        每轮漏采（时区差）数据，必须显式换算后再比较（H5，2026-08-20 审查）。
+        """
+        from django.utils import timezone as dj_timezone
+
+        if local_naive is None:
+            return local_naive
+        return (
+            dj_timezone.make_aware(local_naive, dj_timezone.get_current_timezone())
+            .astimezone(timezone.utc)
+        )
+
+    @staticmethod
+    def _utc_naive_to_local_naive(utc_naive: datetime) -> datetime:
+        """Mongo 返回的 UTC naive 时间 → 本地 naive 时间（入库/游标存储语义）"""
+        from django.utils import timezone as dj_timezone
+
+        if utc_naive is None:
+            return utc_naive
+        return (
+            dj_timezone.make_aware(utc_naive, timezone.utc)
+            .astimezone(dj_timezone.get_current_timezone())
+            .replace(tzinfo=None)
+        )
 
     def _get_mongo_client(self):
         """获取 MongoDB 连接"""
@@ -106,11 +137,14 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
                     except Exception:
                         continue
 
-                    # 聚合查询
+                    # 聚合查询（start/end 为本地 naive，须换算为 UTC aware 再与 ts 比较）
                     pipeline = [
                         {
                             "$match": {
-                                "ts": {"$gte": start_time, "$lte": end_time},
+                                "ts": {
+                                    "$gte": self._local_naive_to_utc(start_time),
+                                    "$lte": self._local_naive_to_utc(end_time),
+                                },
                                 "op": {"$ne": "command"},  # 排除 profiler 命令本身
                             }
                         },
@@ -147,15 +181,11 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
                         first_seen = doc.get("first_seen")
                         last_seen = doc.get("last_seen")
 
-                        # MongoDB 的时间是 UTC，转换为本地时间
-                        import pytz
-                        utc_tz = pytz.utc
-                        local_tz = pytz.timezone('Asia/Shanghai')
-
+                        # MongoDB 的时间是 UTC，转换为本地时间（入库/游标统一本地 naive）
                         if first_seen and first_seen.tzinfo is None:
-                            first_seen = utc_tz.localize(first_seen).astimezone(local_tz).replace(tzinfo=None)
+                            first_seen = self._utc_naive_to_local_naive(first_seen)
                         if last_seen and last_seen.tzinfo is None:
-                            last_seen = utc_tz.localize(last_seen).astimezone(local_tz).replace(tzinfo=None)
+                            last_seen = self._utc_naive_to_local_naive(last_seen)
 
                         # 解析集合名
                         collection_name = ns.split(".")[-1] if "." in ns else ns
@@ -226,9 +256,13 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
                     except Exception:
                         continue
 
-                    # 查询慢操作（使用游标管理器的 cursor 属性）
+                    # 查询慢操作（使用游标管理器的 cursor 属性；
+                    # 游标与 end_time 均为本地 naive，统一换算为 UTC aware 再比较）
                     query = {
-                        "ts": {"$gt": cursor_mgr.cursor, "$lte": end_time},
+                        "ts": {
+                            "$gt": self._local_naive_to_utc(cursor_mgr.cursor),
+                            "$lte": self._local_naive_to_utc(end_time),
+                        },
                         "millis": {"$gte": 100},  # 慢查询阈值
                         "op": {"$ne": "command"},
                     }
@@ -243,12 +277,9 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
                         command = doc.get("command", {})
                         ts = doc.get("ts")
 
-                        # MongoDB 的 ts 是 UTC 时间，转换为本地时间
+                        # MongoDB 的 ts 是 UTC 时间，转换为本地时间（入库/游标统一本地 naive）
                         if ts and ts.tzinfo is None:
-                            import pytz
-                            utc_tz = pytz.utc
-                            local_tz = pytz.timezone('Asia/Shanghai')  # 或使用 settings.TIME_ZONE
-                            ts = utc_tz.localize(ts).astimezone(local_tz).replace(tzinfo=None)
+                            ts = self._utc_naive_to_local_naive(ts)
 
                         # 使用游标管理器判断是否是新数据
                         if not cursor_mgr.is_new_data(ts):

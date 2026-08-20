@@ -19,6 +19,60 @@ logger = logging.getLogger("default")
 class MySQLSlowQueryCollector(BaseSlowQueryCollector):
     """MySQL 慢查询采集器"""
 
+    # 明细表 sql_text 列上限（managed=False，真实列类型由部署侧建表脚本决定，
+    # 常见为 varchar(2048)）。超长 SQL 原样入库会触发 DataError 1406 崩掉整批
+    SQL_TEXT_MAX = 2048
+    # 每片入库行数：片内单个事务，commit 小、被超时打断只丢当前片
+    INSERT_CHUNK_SIZE = 200
+
+    def _insert_detail_rows(self, rows):
+        """分片批量入库，失败时逐条降级，单条仍失败则跳过并记日志。
+
+        保证：单条超长/非法数据不能拖垮整批、更不能让游标无法提交
+        （否则同一批数据每 5 分钟重扫，形成死循环且明细全部丢失）；
+        分片提交避免单个超大事务在慢库上 commit 超时（TimeoutException）。
+        """
+        from sql.models import MySQLSlowQueryDetail
+
+        saved = 0
+        for chunk_start in range(0, len(rows), self.INSERT_CHUNK_SIZE):
+            chunk = rows[chunk_start : chunk_start + self.INSERT_CHUNK_SIZE]
+            try:
+                MySQLSlowQueryDetail.objects.bulk_create(chunk, batch_size=500)
+                saved += len(chunk)
+                continue
+            except Exception as chunk_e:
+                logger.warning(
+                    f"[{self.instance_name}] 明细分片({len(chunk)}条)入库失败，降级逐条插入: {chunk_e}"
+                )
+            for r in chunk:
+                r.sql_text = (r.sql_text or "")[: self.SQL_TEXT_MAX]
+                try:
+                    MySQLSlowQueryDetail.objects.create(
+                        instance_id=r.instance_id,
+                        sql_hash=r.sql_hash,
+                        execution_start_time=r.execution_start_time,
+                        host_address=r.host_address,
+                        user_name=r.user_name,
+                        db_name=r.db_name,
+                        sql_text=r.sql_text,
+                        query_time=r.query_time,
+                        lock_time=r.lock_time,
+                        rows_sent=r.rows_sent,
+                        rows_examined=r.rows_examined,
+                    )
+                    saved += 1
+                except Exception as row_e:
+                    logger.warning(
+                        f"[{self.instance_name}] 跳过无法入库的慢查询明细: {row_e}"
+                    )
+        if saved != len(rows):
+            logger.warning(
+                f"[{self.instance_name}] 明细入库 {saved}/{len(rows)} 条，"
+                f"其余因列超长/非法数据被跳过"
+            )
+        return saved
+
     def collect_summary(self, start_time: datetime, end_time: datetime):
         """
         从 performance_schema 采集统计数据
@@ -196,6 +250,11 @@ class MySQLSlowQueryCollector(BaseSlowQueryCollector):
                     if isinstance(sql_text, bytes):
                         sql_text = sql_text.decode("utf-8", errors="replace")
 
+                    # 截断超长 SQL：目标明细表列可能为 varchar(2048)，
+                    # 原样入库会 DataError 1406 崩掉整批（2026-08-20 线上故障）
+                    if sql_text:
+                        sql_text = sql_text[: self.SQL_TEXT_MAX]
+
                     # 计算 sql_hash
                     sql_hash = self.generate_hash(sql_text) if sql_text else ""
 
@@ -238,10 +297,9 @@ class MySQLSlowQueryCollector(BaseSlowQueryCollector):
                     if execution_time:
                         cursor_mgr.update_max_cursor(execution_time)
 
-                # 批量插入（每批1000条）
+                # 批量插入（每批1000条；批量失败自动降级逐条，防单条超长拖垮全批）
                 if detail_list:
-                    MySQLSlowQueryDetail.objects.bulk_create(detail_list, batch_size=500)
-                    total_count += len(detail_list)
+                    total_count += self._insert_detail_rows(detail_list)
 
                 # 如果本批数据少于 batch_size，说明已采集完毕
                 if len(result.rows) < batch_size:

@@ -21,6 +21,7 @@ sql/instance.py 中的 param_* 函数，共 15 个端点。
   POST /api/v1/instance/params/compare/       — 参数对比
 """
 import json as _json
+import re
 import time
 
 import MySQLdb
@@ -57,6 +58,39 @@ logger = logging.getLogger("default")
 
 
 # ---------- shared helpers ----------
+
+# GRANT/REVOKE 权限名白名单（MySQL 5.7/8.0 静态权限），防止权限名拼接注入
+MYSQL_PRIVILEGE_WHITELIST = {
+    "ALL", "ALL PRIVILEGES", "ALTER", "ALTER ROUTINE", "CREATE",
+    "CREATE ROUTINE", "CREATE TABLESPACE", "CREATE TEMPORARY TABLES",
+    "CREATE USER", "CREATE VIEW", "DELETE", "DROP", "EVENT", "EXECUTE",
+    "FILE", "GRANT OPTION", "INDEX", "INSERT", "LOCK TABLES", "PROCESS",
+    "PROXY", "REFERENCES", "RELOAD", "REPLICATION CLIENT",
+    "REPLICATION SLAVE", "SELECT", "SHOW DATABASES", "SHOW VIEW",
+    "SHUTDOWN", "SUPER", "TRIGGER", "UPDATE", "USAGE",
+}
+
+
+def _sanitize_privs(privs):
+    """清洗权限名列表：统一大小写、GRANT→GRANT OPTION，白名单外直接拒绝"""
+    cleaned = []
+    for p in privs:
+        p_up = str(p).strip().upper()
+        if p_up == "GRANT":
+            p_up = "GRANT OPTION"
+        if p_up not in MYSQL_PRIVILEGE_WHITELIST:
+            raise ValueError(f"不支持的权限名：{p}")
+        cleaned.append(p_up)
+    return cleaned
+
+
+def _quote_ident(name):
+    """GRANT/DDL 标识符（库/表/列名）白名单校验 + 反引号包裹，防标识符逃逸"""
+    name = str(name).strip()
+    if not re.fullmatch(r"[\w$]+", name):
+        raise ValueError("库名/表名/列名仅允许字母、数字、下划线")
+    return f"`{name}`"
+
 
 def _get_instance(request):
     """从 request.data 获取 instance_id，鉴权后返回 Instance。"""
@@ -307,59 +341,66 @@ class AccountGrantView(APIView):
 
             user_host = engine.escape_string(user_host)
 
-            if priv_type == 0:
-                global_privs = _extract("global_privs")
-                if not global_privs:
-                    return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
-                global_privs = ["GRANT OPTION" if g == "GRANT" else g for g in global_privs]
-                if op_type == 0:
-                    grant_sql = f"GRANT {','.join(global_privs)} ON *.* TO {user_host};"
-                elif op_type == 1:
-                    grant_sql = f"REVOKE {','.join(global_privs)} ON *.* FROM {user_host};"
-
-            elif priv_type == 1:
-                db_privs = _extract("db_privs")
-                db_names = _getlist("db_name[]")
-                if not db_privs or not db_names:
-                    return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
-                for db in db_names:
-                    pl = ["GRANT OPTION" if d == "GRANT" else d for d in db_privs]
+            try:
+                if priv_type == 0:
+                    global_privs = _sanitize_privs(_extract("global_privs"))
+                    if not global_privs:
+                        return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
                     if op_type == 0:
-                        grant_sql += f"GRANT {','.join(pl)} ON `{db}`.* TO {user_host};"
+                        grant_sql = f"GRANT {','.join(global_privs)} ON *.* TO {user_host};"
                     elif op_type == 1:
-                        grant_sql += f"REVOKE {','.join(pl)} ON `{db}`.* FROM {user_host};"
+                        grant_sql = f"REVOKE {','.join(global_privs)} ON *.* FROM {user_host};"
 
-            elif priv_type == 2:
-                tb_privs = _extract("tb_privs")
-                db_name = _get("db_name")
-                tb_names = _getlist("tb_name[]")
-                if not tb_privs or not db_name or not tb_names:
-                    return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
-                for tb in tb_names:
-                    pl = ["GRANT OPTION" if t == "GRANT" else t for t in tb_privs]
-                    if op_type == 0:
-                        grant_sql += f"GRANT {','.join(pl)} ON `{db_name}`.`{tb}` TO {user_host};"
-                    elif op_type == 1:
-                        grant_sql += f"REVOKE {','.join(pl)} ON `{db_name}`.`{tb}` FROM {user_host};"
+                elif priv_type == 1:
+                    db_privs = _sanitize_privs(_extract("db_privs"))
+                    db_names = _getlist("db_name[]")
+                    if not db_privs or not db_names:
+                        return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
+                    for db in db_names:
+                        if op_type == 0:
+                            grant_sql += f"GRANT {','.join(db_privs)} ON {_quote_ident(db)}.* TO {user_host};"
+                        elif op_type == 1:
+                            grant_sql += f"REVOKE {','.join(db_privs)} ON {_quote_ident(db)}.* FROM {user_host};"
 
-            elif priv_type == 3:
-                col_privs = _extract("col_privs")
-                db_name = _get("db_name")
-                tb_name = _get("tb_name")
-                col_names = _getlist("col_name[]")
-                if not col_privs or not db_name or not tb_name or not col_names:
-                    return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
-                for priv in col_privs:
-                    if op_type == 0:
-                        grant_sql += (
-                            f"GRANT {priv}(`{'`,`'.join(col_names)}`) "
-                            f"ON `{db_name}`.`{tb_name}` TO {user_host};"
-                        )
-                    elif op_type == 1:
-                        grant_sql += (
-                            f"REVOKE {priv}(`{'`,`'.join(col_names)}`) "
-                            f"ON `{db_name}`.`{tb_name}` FROM {user_host};"
-                        )
+                elif priv_type == 2:
+                    tb_privs = _sanitize_privs(_extract("tb_privs"))
+                    db_name = _get("db_name")
+                    tb_names = _getlist("tb_name[]")
+                    if not tb_privs or not db_name or not tb_names:
+                        return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
+                    for tb in tb_names:
+                        if op_type == 0:
+                            grant_sql += (
+                                f"GRANT {','.join(tb_privs)} ON "
+                                f"{_quote_ident(db_name)}.{_quote_ident(tb)} TO {user_host};"
+                            )
+                        elif op_type == 1:
+                            grant_sql += (
+                                f"REVOKE {','.join(tb_privs)} ON "
+                                f"{_quote_ident(db_name)}.{_quote_ident(tb)} FROM {user_host};"
+                            )
+
+                elif priv_type == 3:
+                    col_privs = _sanitize_privs(_extract("col_privs"))
+                    db_name = _get("db_name")
+                    tb_name = _get("tb_name")
+                    col_names = _getlist("col_name[]")
+                    if not col_privs or not db_name or not tb_name or not col_names:
+                        return JsonResponse({"status": 1, "msg": "信息不完整，请确认后提交", "data": []})
+                    for priv in col_privs:
+                        quoted_cols = ",".join(_quote_ident(c) for c in col_names)
+                        if op_type == 0:
+                            grant_sql += (
+                                f"GRANT {priv}({quoted_cols}) "
+                                f"ON {_quote_ident(db_name)}.{_quote_ident(tb_name)} TO {user_host};"
+                            )
+                        elif op_type == 1:
+                            grant_sql += (
+                                f"REVOKE {priv}({quoted_cols}) "
+                                f"ON {_quote_ident(db_name)}.{_quote_ident(tb_name)} FROM {user_host};"
+                            )
+            except ValueError as e:
+                return JsonResponse({"status": 1, "msg": str(e), "data": []})
             exec_result = engine.execute(db_name="mysql", sql=grant_sql)
 
         elif instance.db_type == "mongo":
@@ -563,9 +604,13 @@ class DatabaseCreateView(APIView):
 
         engine = get_engine(instance=instance)
         if instance.db_type == "mysql":
-            db_name = engine.escape_string(db_name)
+            # 标识符白名单 + 反引号包裹（escape_string 不转义反引号，无法防标识符逃逸）
+            try:
+                quoted_db = _quote_ident(db_name)
+            except ValueError as e:
+                return JsonResponse({"status": 1, "msg": str(e), "data": []})
             exec_result = engine.execute(
-                db_name="information_schema", sql=f"create database {db_name};"
+                db_name="information_schema", sql=f"create database {quoted_db};"
             )
         elif instance.db_type == "mongo":
             exec_result = ResultSet()
@@ -638,10 +683,11 @@ class ParamListView(APIView):
         except (TypeError, ValueError):
             return JsonResponse({"status": 1, "msg": "实例ID不合法", "data": []})
 
+        # 资源组归属校验：防止跨组读取/修改任意实例参数
         try:
-            ins = Instance.objects.get(id=instance_id)
+            ins = resolve_instance(request.user, instance_id=instance_id)
         except Instance.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "实例不存在", "data": []})
+            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联该实例", "data": []})
 
         cnf_params = {}
         for param in ParamTemplate.objects.filter(
@@ -678,15 +724,24 @@ class ParamHistoryView(APIView):
     permission_classes = [IsAuthenticated, ParamViewPermission]
 
     def post(self, request):
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        try:
+            limit = int(request.data.get("limit", 0))
+            offset = int(request.data.get("offset", 0))
+        except (TypeError, ValueError):
+            return JsonResponse({"status": 1, "msg": "分页参数不合法", "data": []})
         limit = offset + limit
         instance_id = request.data.get("instance_id")
         search = request.data.get("search", "")
 
-        phs = ParamHistory.objects.filter(instance__id=instance_id)
+        # 资源组归属校验：仅可查本组实例的参数变更历史
+        try:
+            ins = resolve_instance(request.user, instance_id=instance_id)
+        except Instance.DoesNotExist:
+            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联该实例", "data": []})
+
+        phs = ParamHistory.objects.filter(instance__id=ins.id)
         if search:
-            phs = ParamHistory.objects.filter(variable_name__contains=search)
+            phs = phs.filter(variable_name__contains=search)
 
         count = phs.count()
         phs = phs[offset:limit].values(
@@ -717,10 +772,11 @@ class ParamEditView(APIView):
         except (TypeError, ValueError):
             return JsonResponse({"status": 1, "msg": "实例ID不合法", "data": []})
 
+        # 资源组归属校验：SET GLOBAL 属实例级变更，仅限本组实例
         try:
-            ins = Instance.objects.get(id=instance_id)
+            ins = resolve_instance(request.user, instance_id=instance_id)
         except Instance.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "实例不存在", "data": []})
+            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联该实例", "data": []})
 
         engine = get_engine(instance=ins)
         variable_name = engine.escape_string(variable_name)
@@ -769,14 +825,15 @@ class ParamCompareView(APIView):
             except (TypeError, ValueError):
                 return JsonResponse({"status": 1, "msg": f"{label}不合法", "data": []})
 
+        # 资源组归属校验：两侧实例均须在当前用户可访问组内
         try:
-            ins1 = Instance.objects.get(id=instance_id1)
+            ins1 = resolve_instance(request.user, instance_id=instance_id1)
         except Instance.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "源实例不存在", "data": []})
+            return JsonResponse({"status": 1, "msg": "源实例不存在或你所在组未关联该实例", "data": []})
         try:
-            ins2 = Instance.objects.get(id=instance_id2)
+            ins2 = resolve_instance(request.user, instance_id=instance_id2)
         except Instance.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "目标实例不存在", "data": []})
+            return JsonResponse({"status": 1, "msg": "目标实例不存在或你所在组未关联该实例", "data": []})
 
         if ins1.db_type != ins2.db_type:
             return JsonResponse({"status": 1, "msg": "两个实例的数据库类型不一致，无法对比", "data": []})

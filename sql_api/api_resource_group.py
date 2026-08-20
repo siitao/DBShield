@@ -28,6 +28,7 @@ from common.utils.convert import Convert
 from common.utils.extend_json_encoder import encode_json as _encode
 from sql.models import Instance, ResourceGroup, Users
 from sql.services.resource_service import list_user_accessible_instances
+from sql.utils.resource_group import user_groups
 from sql.utils.workflow_audit import Audit
 
 logger = logging.getLogger("default")
@@ -145,16 +146,36 @@ class UnassociatedView(APIView):
         )
 
 
+def _check_group_access(user, group_name):
+    """按组名校验访问权限：超管放行，普通用户仅可访问自己所在资源组。
+
+    返回 (group, error JsonResponse)；group 为 None 时 error 非 None。
+    工单提交等常规流程只查本人所在组，收口后不影响正常使用。
+    """
+    group = ResourceGroup.objects.filter(group_name=group_name, is_deleted=0).first()
+    if group is None:
+        return None, JsonResponse({"status": 1, "msg": "资源组不存在"})
+    if not user.is_superuser:
+        user_group_ids = [g.group_id for g in user_groups(user)]
+        if group.group_id not in user_group_ids:
+            return None, JsonResponse({"status": 1, "msg": "无权访问该资源组"})
+    return group, None
+
+
 class InstancesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         group_name = request.data.get("group_name")
-        group_id = ResourceGroup.objects.get(group_name=group_name).group_id
         tag_code = request.data.get("tag_code")
         db_type = request.data.get("db_type")
 
-        ins = ResourceGroup.objects.get(group_id=group_id).instance_set.all()
+        # 收口：此前任意登录用户可按 group_name 枚举任意资源组的实例清单
+        group, err = _check_group_access(request.user, group_name)
+        if err:
+            return err
+
+        ins = group.instance_set.all()
         filter_dict = {}
         if db_type:
             filter_dict["db_type"] = db_type
@@ -188,7 +209,10 @@ class AddRelationView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        group_id = int(request.data.get("group_id"))
+        try:
+            group_id = int(request.data.get("group_id"))
+        except (TypeError, ValueError):
+            return JsonResponse({"status": 1, "msg": "资源组ID不合法"})
         object_type = str(request.data.get("object_type", ""))
         object_info = request.data.get("object_info")
         if isinstance(object_info, str):
@@ -213,7 +237,10 @@ class RemoveRelationView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        group_id = int(request.data.get("group_id"))
+        try:
+            group_id = int(request.data.get("group_id"))
+        except (TypeError, ValueError):
+            return JsonResponse({"status": 1, "msg": "资源组ID不合法"})
         object_type = str(request.data.get("object_type", ""))
         object_info = request.data.get("object_info")
         if isinstance(object_info, str):
@@ -246,9 +273,12 @@ class AuditorsView(APIView):
             "data": {"auditors": "", "auditors_display": ""},
         }
         if group_name:
-            group_id = ResourceGroup.objects.get(group_name=group_name).group_id
+            # 收口：审批组结构仅本人所在资源组（或超管）可查
+            group, err = _check_group_access(request.user, group_name)
+            if err:
+                return err
             audit_auth_groups = Audit.settings(
-                group_id=group_id, workflow_type=workflow_type
+                group_id=group.group_id, workflow_type=workflow_type
             )
         else:
             return JsonResponse({"status": 1, "msg": "参数错误"})

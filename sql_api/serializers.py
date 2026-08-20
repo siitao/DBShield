@@ -22,6 +22,7 @@ from sql.utils.workflow_audit import Audit, get_auditor
 from sql.utils.resource_group import user_instances
 from common.utils.const import WorkflowType, WorkflowStatus
 from common.config import SysConfig
+import inspect
 import traceback
 import logging
 from sql.offlinedownload import OffLineDownLoad
@@ -516,11 +517,17 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
                 instance.selected_db_name = workflow_data["db_name"]
                 check_result = sql_export.pre_count_check(workflow=instance)
             else:
-                check_result = check_engine.execute_check(
-                    db_name=workflow_data["db_name"],
-                    sql=sql_content,
-                    run_ai_review=False,
-                )
+                # AI 风险审核仅 MySQL 引擎支持（execute_check 带 run_ai_review 参数），
+                # 其他引擎（redis/mongo/mssql/pgsql 等）传了会 TypeError，按签名动态传入
+                check_kwargs = {
+                    "db_name": workflow_data["db_name"],
+                    "sql": sql_content,
+                }
+                if "run_ai_review" in inspect.signature(
+                    check_engine.execute_check
+                ).parameters:
+                    check_kwargs["run_ai_review"] = False
+                check_result = check_engine.execute_check(**check_kwargs)
         except Exception as e:
             raise serializers.ValidationError({"errors": str(e)})
 

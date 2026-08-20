@@ -166,7 +166,7 @@ def _safe_int(value, default):
         return default
 
 
-def _mask_sql_literals(sql_text):
+def mask_sql_literals(sql_text):
     """对 SQL 中的字面量脱敏，供外发到外部 AI 时使用（H1）。
 
     慢查样本 SQL 含真实业务数据（user_id、手机号、日期等字面量），
@@ -174,6 +174,8 @@ def _mask_sql_literals(sql_text):
     字符串字面量替换为 '?'、数字字面量替换为 0，保留 SQL 结构语义
     （与 pg_stat_statements 等指纹归一化同思路），仅影响 AI prompt，
     不影响 EXPLAIN 等需要真实值的场景。
+
+    公共函数：api_slowquery.py 的 v1 AI 端点同样复用（2026-08-20 审查 H4 回灌）。
 
     注意：`\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
     """
@@ -184,6 +186,31 @@ def _mask_sql_literals(sql_text):
     # 数字字面量（整数/小数/科学计数法），替换为 0
     masked = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", masked)
     return masked
+
+
+def sanitize_explain_sql(sql_text):
+    """EXPLAIN 前安全闸门（H4）：截取第一条语句、剥离注释、SELECT/WITH
+    白名单、拒绝 INTO OUTFILE/DUMPFILE 等注入面（EXPLAIN ANALYZE 会真实执行）。
+
+    公共函数：v1 ExplainSqlView 与 v2 _collect_explain 共用，避免闸门只落新代码。
+
+    返回 (clean_sql, None) 或 (None, 拒绝原因)。
+    """
+    if not sql_text or not sql_text.strip():
+        return None, "SQL 文本为空"
+    # 截取 SQL 的第一条语句（避免多条 SQL 导致 EXPLAIN 失败/被注入第二条）
+    first_sql = sql_text.strip().split(";")[0].strip()
+    if not first_sql:
+        return None, "SQL 文本为空"
+    # 注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）
+    clean_sql = re.sub(
+        r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
+    )
+    if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
+        return None, "仅支持 SELECT/WITH 语句的 EXPLAIN"
+    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):
+        return None, "语句包含 INTO OUTFILE/DUMPFILE，已拒绝执行 EXPLAIN"
+    return clean_sql.strip(), None
 
 
 # ---------- 查询配置 ----------
@@ -1478,22 +1505,12 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
     try:
         from sql.engines import get_engine
         engine = get_engine(instance=instance)
-        # 截取 SQL 的第一条语句（避免多条 SQL 导致 EXPLAIN 失败）
-        first_sql = sql_text.strip().split(";")[0].strip()
-        if not first_sql:
-            return "（SQL 文本为空）"
-        # 安全红线（H4）：slow_log 条目/库内值为不可信来源，只对 SELECT/WITH 语句
-        # 做 EXPLAIN，拒绝任何写语句及 `/*!...*/` 版本注释、INTO OUTFILE/DUMPFILE
-        # 等注入面。注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）。
-        clean_sql = re.sub(
-            r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
-        )
-        if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
-            return "（仅支持 SELECT/WITH 语句的 EXPLAIN，已跳过该样本）"
-        if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):
-            return "（样本包含 INTO OUTFILE/DUMPFILE，已拒绝执行 EXPLAIN）"
-        # 用剥离注释后的语句执行：前导注释留在 EXPLAIN 后会被当作第二条语句导致失败
-        first_sql = clean_sql.strip()
+        # 安全红线（H4）：统一走 sanitize_explain_sql 公共闸门——
+        # 截首句、剥注释、SELECT/WITH 白名单、拒 INTO OUTFILE/DUMPFILE
+        clean_sql, reject_reason = sanitize_explain_sql(sql_text)
+        if clean_sql is None:
+            return f"（{reject_reason}）"
+        first_sql = clean_sql
         # 阿里云/参数化模板 SQL 含占位符（MySQL '?'、PgSQL '%s'），EXPLAIN 无法直接执行，
         # 统一替换为字面量 1（EXPLAIN 只做计划不执行，类型不匹配时后续兜底返回失败提示）
         if db_type == "mysql":
@@ -1612,7 +1629,7 @@ def diagnose_slowquery_task(task_id):
 
         # 外发脱敏：prompt 只携带字面量脱敏后的 SQL（H1），
         # 真实业务数据（手机号/日期/ID 等字面量）不出内网
-        prompt_sql = _mask_sql_literals(sample_sql)
+        prompt_sql = mask_sql_literals(sample_sql)
 
         result = client.diagnose_slowquery_by_openai(
             db_type=db_type,
@@ -1943,6 +1960,13 @@ class SlowQueryDiagnoseTaskView(APIView):
         u = request.user
         if not (u.is_superuser or task.user_id == u.id or u.has_perm("sql.menu_slowquery")):
             return error_response("无权查看此诊断任务")
+
+        # 防 IDOR：菜单权限分支还须校验任务所属实例在当前用户可访问组内，
+        # 否则仅持菜单权限即可枚举读取任意资源组的诊断报告（H3，2026-08-20 审查）
+        if not u.is_superuser and task.user_id != u.id:
+            instance = task.instance
+            if not user_instances(u, db_type=[instance.db_type]).filter(id=instance.id).exists():
+                return error_response("无权查看此诊断任务")
 
         # stale 任务自动判失败（worker 未运行/任务卡住时结束轮询）
         _mark_stale_task_failed(task)

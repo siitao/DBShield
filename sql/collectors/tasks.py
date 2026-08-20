@@ -120,11 +120,14 @@ def collect_all_slowquery_task():
     for instance in instances:
         try:
             # 使用 async_task 异步执行，避免阻塞
+            # 显式 timeout：async_task 不继承调度任务的 600s，默认走集群 60s，
+            # 慢实例采集/入库在 60s 内完不成会被 TimeoutException 打断
             async_task(
                 "sql.collectors.tasks.collect_slowquery_task",
                 instance.id,
                 "all",
                 group=f"slowquery_{instance.db_type}",
+                timeout=600,
             )
         except Exception as e:
             logger.error(f"[{instance.instance_name}] 调度采集任务失败: {e}")

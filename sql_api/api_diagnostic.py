@@ -9,7 +9,7 @@
   POST /api/v1/diagnostic/trxandlocks/          — 锁等待
   POST /api/v1/diagnostic/innodb_trx/           — 长事务
 """
-import _json as json
+import json
 import logging
 
 from django.http import JsonResponse
@@ -26,6 +26,24 @@ logger = logging.getLogger("default")
 # ---------- shared ----------
 
 from common.utils.extend_json_encoder import encode_json as _encode, encode_json_bytes as _encode_bytes
+
+
+def _safe_int(value, default):
+    """安全转整数，空/非数字入参返回默认值（避免非法入参触发 HTTP 500）"""
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_thread_ids(raw):
+    """ThreadIDs 兼容 JSON 字符串/列表两种传参；非法 JSON 返回 None 由调用方拒绝"""
+    if isinstance(raw, str):
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+    return raw
 
 # ---------- permissions ----------
 
@@ -105,8 +123,9 @@ class CreateKillSessionView(APIView):
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例", "data": []})
 
         query_engine = get_engine(instance=instance)
-        if isinstance(thread_ids, str):
-            thread_ids = json.loads(thread_ids)
+        thread_ids = _parse_thread_ids(thread_ids)
+        if not isinstance(thread_ids, list):
+            return JsonResponse({"status": 1, "msg": "ThreadIDs 参数不合法", "data": []})
         try:
             data = query_engine.get_kill_command(thread_ids)
             return JsonResponse({"status": 0, "msg": "ok", "data": data})
@@ -128,8 +147,9 @@ class KillSessionView(APIView):
         except Exception:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例", "data": []})
 
-        if isinstance(thread_ids, str):
-            thread_ids = json.loads(thread_ids)
+        thread_ids = _parse_thread_ids(thread_ids)
+        if not isinstance(thread_ids, list):
+            return JsonResponse({"status": 1, "msg": "ThreadIDs 参数不合法", "data": []})
 
         engine = get_engine(instance=instance)
         r = None
@@ -160,8 +180,8 @@ class TableSpaceView(APIView):
 
     def post(self, request):
         instance_name = request.data.get("instance_name")
-        offset = int(request.data.get("offset", 0))
-        limit = int(request.data.get("limit", 14))
+        offset = _safe_int(request.data.get("offset"), 0)
+        limit = _safe_int(request.data.get("limit"), 14)
         schema_search = request.data.get("schema_search", "")
 
         try:

@@ -2,7 +2,8 @@ version: '3'
 
 services:
   redis:
-    image: redis:5
+    # redis:5 已停止维护（EOL 无安全补丁），升级到 7.x
+    image: redis:7
     container_name: redis
     restart: always
     command: redis-server --requirepass 123456
@@ -16,9 +17,15 @@ services:
       retries: 5
 
   mysql:
-    image: mysql:5.7
+    # mysql:5.7 已于 2023-10 EOL，升级到 8.0。
+    # 注意：如 ./mysql/datadir 已有 5.7 数据卷，需先按官方流程做原地升级
+    # （8.0 容器首次启动会自动执行升级检查），或导出/导入重建数据卷。
+    # 保留 mysql_native_password 以兼容 mysqlclient / goinception 备份链路。
+    image: mysql:8.0
     container_name: mysql
     restart: always
+    command:
+      - --default-authentication-plugin=mysql_native_password
     ports:
       - "3306:3306"
     volumes:
@@ -28,7 +35,9 @@ services:
       MYSQL_DATABASE: archery
       MYSQL_ROOT_PASSWORD: 123456
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping"]
+      # 走 TCP 而非默认 socket：初始化阶段 socket 可用会造成健康假阳性，
+      # 早于正式实例就绪放行依赖方启动
+      test: [ "CMD", "mysqladmin", "ping", "-h", "127.0.0.1" ]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -63,7 +72,8 @@ services:
       - "./dbshield/soar.yaml:/etc/soar.yaml"
       - "./dbshield/docs.md:/opt/dbshield/docs/docs.md"
       - "./dbshield/downloads:/opt/dbshield/downloads"
-      - "./dbshield/sql/migrations:/opt/dbshield/sql/migrations"
+      # 不挂载 sql/migrations：宿主目录不存在时 Docker 会自动创建空目录，
+      # 反而遮蔽镜像内自带的迁移文件导致容器内 migrate 失效
       - "./dbshield/logs:/opt/dbshield/logs"
       - "./dbshield/keys:/opt/dbshield/keys"
     entrypoint: "bash /opt/dbshield/src/docker/startup.sh"

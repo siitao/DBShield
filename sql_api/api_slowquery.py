@@ -14,6 +14,7 @@ SQL 分析 / SQL 优化 DRF APIView 集
 注意：慢查询相关 API 已移至 api_slowquery_v2.py
 """
 import logging
+import re
 from pathlib import Path
 
 import sqlparse
@@ -31,6 +32,7 @@ from sql.services.instance_service import resolve_instance
 from sql.sql_tuning import SqlTuning
 from sql.utils.resource_group import user_instances
 from sql.utils.sql_utils import extract_tables, generate_sql
+from sql_api.api_slowquery_v2 import mask_sql_literals, sanitize_explain_sql
 
 logger = logging.getLogger("default")
 
@@ -147,12 +149,16 @@ class SqlAnalyzeAIView(APIView):
 
         try:
             client = OpenaiClient()
-            prompt = f"请分析以下 SQL 语句的性能问题并给出优化建议：\n\n```sql\n{text}\n```"
+            # H4 回灌：SQL 原样外发前先做字面量脱敏（与 v2 诊断链路口径一致）
+            prompt = (
+                f"请分析以下 SQL 语句的性能问题并给出优化建议：\n\n"
+                f"```sql\n{mask_sql_literals(text)}\n```"
+            )
             result = client.chat(prompt)
             return JsonResponse({"status": 0, "msg": "success", "data": result})
         except Exception as e:
             logger.error(f"AI 分析失败: {e}", exc_info=True)
-            return JsonResponse({"status": 1, "msg": f"AI 分析失败: {e}"})
+            return JsonResponse({"status": 1, "msg": "AI 分析失败，请查看服务端日志"})
 
 
 # ========== SQL 优化 ==========
@@ -268,7 +274,7 @@ class OptimizeSqlTuningView(APIView):
             return JsonResponse({"status": 0, "msg": "success", "data": result})
         except Exception as e:
             logger.error(f"SQL 调优失败: {e}", exc_info=True)
-            return JsonResponse({"status": 1, "msg": f"SQL 调优失败: {e}"})
+            return JsonResponse({"status": 1, "msg": "SQL 调优失败，请查看服务端日志"})
 
 
 class ExplainSqlView(APIView):
@@ -291,10 +297,21 @@ class ExplainSqlView(APIView):
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
-        # 执行 EXPLAIN
+        # 执行 EXPLAIN（H4 回灌：与 v2 共用 sanitize_explain_sql 闸门——
+        # 截首句、剥注释、SELECT/WITH 白名单、拒 INTO OUTFILE/DUMPFILE，
+        # 防 EXPLAIN ANALYZE 真实执行写文件等注入面）
+        clean_sql, reject_reason = sanitize_explain_sql(sql_content)
+        if clean_sql is None:
+            return JsonResponse({"status": 1, "msg": reject_reason})
+        # 参数化模板 SQL 的 '?' 占位符替换为字面量 1（EXPLAIN 只做计划不执行）
+        clean_sql = clean_sql.replace("?", "1")
         try:
             engine = get_engine(instance=instance)
-            result = engine.query(db_name=db_name, sql=f"EXPLAIN {sql_content}")
+            result = engine.query(
+                db_name=db_name,
+                sql=f"EXPLAIN {clean_sql}",
+                max_execution_time=30000,
+            )
             column_list = result.column_list
             rows = result.rows
             return JsonResponse({
@@ -304,7 +321,7 @@ class ExplainSqlView(APIView):
             })
         except Exception as e:
             logger.error(f"获取执行计划失败: {e}", exc_info=True)
-            return JsonResponse({"status": 1, "msg": f"获取执行计划失败: {e}"})
+            return JsonResponse({"status": 1, "msg": "获取执行计划失败，请查看服务端日志"})
 
 
 class OptimizeAIView(APIView):
@@ -331,7 +348,12 @@ class OptimizeAIView(APIView):
                 engine = get_engine(instance=instance)
                 tables = extract_tables(sql_content)
                 for table in tables:
-                    result = engine.query(db_name=db_name, sql=f"SHOW CREATE TABLE {table}")
+                    # 表名仅作标识符使用：白名单校验 + 反引号包裹，拒绝拼接注入
+                    if not re.fullmatch(r"[\w$.]+", table):
+                        continue
+                    result = engine.query(
+                        db_name=db_name, sql=f"SHOW CREATE TABLE `{table}`"
+                    )
                     if result.rows:
                         table_info += f"\n{result.rows[0][1]}\n"
             except Exception as e:
@@ -339,13 +361,14 @@ class OptimizeAIView(APIView):
 
         try:
             client = OpenaiClient()
+            # H4 回灌：SQL 与 DDL（COMMENT/DEFAULT 常含真实业务数据）外发前统一字面量脱敏
             prompt = f"""请分析以下 SQL 语句并给出优化建议：
 
 ```sql
-{sql_content}
+{mask_sql_literals(sql_content)}
 ```
 
-{f'表结构信息：{table_info}' if table_info else ''}
+{f'表结构信息：{mask_sql_literals(table_info)}' if table_info else ''}
 
 请从以下几个方面分析：
 1. 索引优化
@@ -357,4 +380,4 @@ class OptimizeAIView(APIView):
             return JsonResponse({"status": 0, "msg": "success", "data": result})
         except Exception as e:
             logger.error(f"AI 优化建议失败: {e}", exc_info=True)
-            return JsonResponse({"status": 1, "msg": f"AI 优化建议失败: {e}"})
+            return JsonResponse({"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"})
