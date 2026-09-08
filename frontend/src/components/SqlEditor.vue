@@ -26,15 +26,20 @@ interface AceCompletion {
   score: number;
 }
 
-const props = defineProps<{
-  modelValue: string;
-  completers?: SqlCompleters;
-  dbType?: string;
-  /** 是否在 toolbar 显示「美化」按钮（默认 true；查询页把它移到控制栏时传 false） */
-  showBeautify?: boolean;
-  /** 填满父容器高度（编辑器随父伸缩，需配合父级 flex 布局） */
-  fillHeight?: boolean;
-}>();
+// 可选 Boolean prop 不传时 Vue 会强转为 false，必须用 withDefaults 给出 true 默认值，
+// 否则「美化」按钮在未显式传参的页面永远不渲染
+const props = withDefaults(
+  defineProps<{
+    modelValue: string;
+    completers?: SqlCompleters;
+    dbType?: string;
+    /** 是否在 toolbar 显示「美化」按钮（默认 true；查询页把它移到控制栏时传 false） */
+    showBeautify?: boolean;
+    /** 填满父容器高度（编辑器随父伸缩，需配合父级 flex 布局） */
+    fillHeight?: boolean;
+  }>(),
+  { showBeautify: true }
+);
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
 
 const editorEl = ref<HTMLElement>();
@@ -199,6 +204,7 @@ defineExpose({
         <input type="file" accept=".sql" hidden @change="onUpload" />
         <el-button size="small" tag="span">上传 SQL 文件</el-button>
       </label>
+      <span class="upload-hint">仅 .sql 文本文件，≤10MB，超限将拒绝导入</span>
     </div>
     <div ref="editorEl" class="editor"></div>
   </div>
@@ -218,6 +224,13 @@ defineExpose({
   background: var(--el-fill-color-light);
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.upload-hint {
+  margin-left: auto;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .editor {

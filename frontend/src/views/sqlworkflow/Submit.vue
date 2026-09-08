@@ -24,7 +24,8 @@ const form = reactive({
   group_id: undefined as number | undefined,
   instance: undefined as number | undefined,
   db_name: "",
-  is_backup: false,
+  // 后端默认强制备份（enable_backup_switch 未开启时覆盖为 true），默认值与之对齐
+  is_backup: true,
   run_date_start: "",
   run_date_end: "",
 });
@@ -211,110 +212,119 @@ onMounted(() => {
 <template>
   <div class="submit-page">
     <el-card shadow="never">
-      <el-form :model="form" label-width="100px">
-        <el-form-item label="工单名称" required>
-          <el-input
-            v-model="form.workflow_name"
-            maxlength="50"
-            show-word-limit
-            placeholder="工单名称（≤50 字符）"
-            style="max-width: 480px"
-          />
-        </el-form-item>
-        <el-form-item label="需求链接">
-          <el-input
-            v-model="form.demand_url"
-            placeholder="需求链接（可选）"
-            style="max-width: 480px"
-          />
-        </el-form-item>
-        <el-form-item label="资源组" required>
-          <el-select
-            v-model="form.group_id"
-            placeholder="请选择资源组"
-            filterable
-            style="width: 280px"
-          >
-            <el-option
-              v-for="g in groupOptions"
-              :key="g.group_id"
-              :label="g.group_name"
-              :value="g.group_id"
-            />
-          </el-select>
-          <span v-if="auditorsDisplay" class="hint">
-            审批流：{{ auditorsDisplay }}
-          </span>
-        </el-form-item>
-        <el-form-item label="实例" required>
-          <el-select
-            v-model="form.instance"
-            placeholder="请选择实例"
-            filterable
-            :disabled="!form.group_id"
-            style="width: 280px"
-          >
-            <el-option
-              v-for="i in instanceOptions"
-              :key="i.id"
-              :label="i.instance_name"
-              :value="i.id"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="数据库" required>
-          <el-select
-            v-model="form.db_name"
-            placeholder="请选择数据库"
-            filterable
-            :disabled="!form.instance"
-            style="width: 280px"
-          >
-            <el-option
-              v-for="d in dbOptions"
-              :key="typeof d === 'object' ? d.value : d"
-              :label="typeof d === 'object' ? d.text : d"
-              :value="typeof d === 'object' ? d.value : d"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="是否备份">
-          <el-switch v-model="form.is_backup" />
-        </el-form-item>
-        <el-form-item label="可执行时间">
-          <el-date-picker
-            v-model="form.run_date_start"
-            type="datetime"
-            value-format="YYYY-MM-DD HH:mm"
-            placeholder="开始（可空=无限制）"
-            style="width: 200px"
-          />
-          <span class="tilde">~</span>
-          <el-date-picker
-            v-model="form.run_date_end"
-            type="datetime"
-            value-format="YYYY-MM-DD HH:mm"
-            placeholder="结束（可空=无限制）"
-            style="width: 200px"
-          />
-        </el-form-item>
-        <el-form-item label="SQL 内容" required>
-          <SqlEditor v-model="sqlContent" />
-        </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="checking" @click="onCheck">
-            {{ checking ? "检测中..." : "SQL 检测" }}
-          </el-button>
-          <el-button
-            type="success"
-            :disabled="!checked || checking"
-            :loading="submitting"
-            @click="onSubmit"
-          >
-            提交工单
-          </el-button>
-        </el-form-item>
-      </el-form>
+      <div class="submit-layout">
+        <!-- 左：SQL 内容 -->
+        <div class="pane-left">
+          <div class="pane-title required">SQL 内容</div>
+          <SqlEditor v-model="sqlContent" fill-height class="pane-editor" />
+        </div>
+        <!-- 右：选项与按钮 -->
+        <div class="pane-right">
+          <el-form :model="form" label-width="100px">
+            <el-form-item label="工单名称" required>
+              <el-input
+                v-model="form.workflow_name"
+                maxlength="50"
+                show-word-limit
+                placeholder="工单名称（≤50 字符）"
+              />
+            </el-form-item>
+            <el-form-item label="需求链接">
+              <el-input v-model="form.demand_url" placeholder="需求链接（可选）" />
+            </el-form-item>
+            <el-form-item label="资源组" required>
+              <div class="field-stack">
+                <el-select
+                  v-model="form.group_id"
+                  placeholder="请选择资源组"
+                  filterable
+                  style="width: 100%"
+                >
+                  <el-option
+                    v-for="g in groupOptions"
+                    :key="g.group_id"
+                    :label="g.group_name"
+                    :value="g.group_id"
+                  />
+                </el-select>
+                <span v-if="auditorsDisplay" class="hint">
+                  审批流：{{ auditorsDisplay }}
+                </span>
+              </div>
+            </el-form-item>
+            <el-form-item label="实例" required>
+              <el-select
+                v-model="form.instance"
+                placeholder="请选择实例"
+                filterable
+                :disabled="!form.group_id"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="i in instanceOptions"
+                  :key="i.id"
+                  :label="i.instance_name"
+                  :value="i.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="数据库" required>
+              <el-select
+                v-model="form.db_name"
+                placeholder="请选择数据库"
+                filterable
+                :disabled="!form.instance"
+                style="width: 100%"
+              >
+                <el-option
+                  v-for="d in dbOptions"
+                  :key="typeof d === 'object' ? d.value : d"
+                  :label="typeof d === 'object' ? d.text : d"
+                  :value="typeof d === 'object' ? d.value : d"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="是否备份">
+              <div class="field-stack">
+                <el-switch v-model="form.is_backup" />
+                <span class="hint">
+                  系统未开启「备份选项」配置时，提交后将强制备份，以工单详情为准
+                </span>
+              </div>
+            </el-form-item>
+            <el-form-item label="可执行时间">
+              <div class="date-range">
+                <el-date-picker
+                  v-model="form.run_date_start"
+                  type="datetime"
+                  value-format="YYYY-MM-DD HH:mm"
+                  placeholder="开始（可空=无限制）"
+                />
+                <span class="tilde">~</span>
+                <el-date-picker
+                  v-model="form.run_date_end"
+                  type="datetime"
+                  value-format="YYYY-MM-DD HH:mm"
+                  placeholder="结束（可空=无限制）"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" :loading="checking" @click="onCheck">
+                {{ checking ? "检测中..." : "SQL 检测" }}
+              </el-button>
+              <el-button
+                type="success"
+                :disabled="!checked || checking"
+                :loading="submitting"
+                @click="onSubmit"
+              >
+                提交工单
+              </el-button>
+            </el-form-item>
+          </el-form>
+        </div>
+      </div>
     </el-card>
 
     <el-card v-if="checked" shadow="never">
@@ -333,13 +343,78 @@ onMounted(() => {
   gap: 16px;
 }
 
+.submit-layout {
+  display: flex;
+  align-items: stretch;
+  gap: 24px;
+}
+
+.pane-left {
+  flex: 1 1 60%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane-title {
+  margin-bottom: 8px;
+  font-weight: 600;
+
+  &.required::before {
+    content: "*";
+    margin-right: 4px;
+    color: var(--el-color-danger);
+  }
+}
+
+.pane-editor {
+  flex: 1;
+  min-height: 420px;
+}
+
+.pane-right {
+  flex: 1 1 40%;
+  min-width: 320px;
+}
+
+.field-stack {
+  width: 100%;
+
+  .hint {
+    display: block;
+    margin-top: 4px;
+    line-height: 1.5;
+  }
+}
+
 .hint {
-  margin-left: 12px;
   color: var(--el-text-color-secondary);
   font-size: 13px;
 }
 
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+
+  :deep(.el-date-editor) {
+    flex: 1;
+    min-width: 0;
+  }
+}
+
 .tilde {
-  margin: 0 8px;
+  color: var(--el-text-color-secondary);
+}
+
+@media (max-width: 992px) {
+  .submit-layout {
+    flex-direction: column;
+  }
+
+  .pane-right {
+    min-width: 0;
+  }
 }
 </style>
