@@ -9,11 +9,71 @@
 """
 import hashlib
 import logging
+import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta
 from typing import List, Tuple
 
+from django.db import IntegrityError, OperationalError
+
 logger = logging.getLogger("default")
+
+# 并发 upsert 同一唯一键时，后到事务先撞 1062，Django 按 lock=True 重试
+# SELECT ... FOR UPDATE 又可能与对方未提交的插入锁成环报 1213；
+# 对方提交后重试即走 UPDATE 路径，故对 1062/1213 做有界重试
+UPSERT_MAX_RETRIES = 3
+UPSERT_RETRY_BASE_SLEEP = 0.2
+
+# 各慢查询统计表的唯一键（upsert 冲突目标，ON CONFLICT 用字段名）
+SUMMARY_UNIQUE_FIELDS = ["instance", "sql_hash"]
+
+
+def update_or_create_with_retry(model, lookup, defaults):
+    """带死锁/唯一键冲突重试的行级 upsert，返回 (obj, created)"""
+    for attempt in range(1, UPSERT_MAX_RETRIES + 1):
+        try:
+            return model.objects.update_or_create(**lookup, defaults=defaults)
+        except (IntegrityError, OperationalError):
+            if attempt == UPSERT_MAX_RETRIES:
+                raise
+            time.sleep(UPSERT_RETRY_BASE_SLEEP * attempt)
+
+
+def bulk_upsert(model, objs, update_fields, batch_size=500, log_label=""):
+    """批量 upsert 慢查询统计表（唯一键 instance_id + sql_hash），返回成功落库行数
+
+    MySQL 走 INSERT ... ON DUPLICATE KEY UPDATE（Django 不允许也不需要
+    conflict target）；支持 conflict target 的后端（如 PostgreSQL）走
+    ON CONFLICT，必须提供 SUMMARY_UNIQUE_FIELDS。
+    批量语句失败（如与并发写同键的事务死锁）时降级为逐行带重试 upsert，
+    单行失败仅跳过不阻断，其余行继续落库。
+    """
+    from django.db import connection
+
+    kwargs = {
+        "update_conflicts": True,
+        "update_fields": update_fields,
+        "batch_size": batch_size,
+    }
+    if connection.features.supports_update_conflicts_with_target:
+        kwargs["unique_fields"] = SUMMARY_UNIQUE_FIELDS
+
+    try:
+        model.objects.bulk_create(objs, **kwargs)
+        return len(objs)
+    except (IntegrityError, OperationalError) as e:
+        logger.warning(f"{log_label}批量upsert失败，降级逐行重试: {e}")
+
+    persisted = 0
+    for obj in objs:
+        lookup = {"instance_id": obj.instance_id, "sql_hash": obj.sql_hash}
+        defaults = {field: getattr(obj, field) for field in update_fields}
+        try:
+            update_or_create_with_retry(model, lookup, defaults)
+            persisted += 1
+        except Exception:
+            logger.warning(f"{log_label}单行upsert失败，跳过: {lookup}", exc_info=True)
+    return persisted
 
 
 class CursorManager:
@@ -178,9 +238,9 @@ class BaseSlowQueryCollector(ABC):
         """
         from sql.models import SlowQueryCursor
 
-        SlowQueryCursor.objects.update_or_create(
-            instance_id=self.instance_id,
-            db_type=self.db_type,
+        update_or_create_with_retry(
+            SlowQueryCursor,
+            lookup={"instance_id": self.instance_id, "db_type": self.db_type},
             defaults={"last_cursor": new_cursor},
         )
         logger.debug(f"[{self.instance_name}] 更新游标: {new_cursor}")

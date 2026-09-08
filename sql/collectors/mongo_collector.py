@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from .base import BaseSlowQueryCollector, CursorManager
+from .base import BaseSlowQueryCollector, CursorManager, update_or_create_with_retry
 
 logger = logging.getLogger("default")
 
@@ -197,26 +197,38 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
                         # 获取示例命令文本（处理特殊类型）
                         sample_sql = json.dumps(sample, default=self._serialize_mongo_value, ensure_ascii=False)[:2000]
 
-                        _, created = MongoSlowQuerySummary.objects.update_or_create(
-                            instance_id=self.instance_id,
-                            sql_hash=sql_hash,
-                            defaults={
-                                "fingerprint": fingerprint[:2000],
-                                "sample_sql": sample_sql,
-                                "db_name": db_name,
-                                "collection_name": collection_name,
-                                "operation_type": op,
-                                "total_execution_counts": doc.get("count", 0),
-                                "total_execution_times": doc.get("total_duration", 0),
-                                "query_time_avg": doc.get("avg_duration", 0),
-                                "query_time_p95": 0,  # 需要额外计算
-                                "docs_examined_avg": doc.get("docs_examined_avg", 0),
-                                "docs_returned_avg": doc.get("docs_returned_avg", 0),
-                                "has_sort": bool(doc.get("has_sort", 0)),
-                                "first_seen": first_seen,
-                                "last_seen": last_seen,
-                            },
-                        )
+                        # 带死锁/冲突重试与行级隔离
+                        try:
+                            _, created = update_or_create_with_retry(
+                                MongoSlowQuerySummary,
+                                lookup={
+                                    "instance_id": self.instance_id,
+                                    "sql_hash": sql_hash,
+                                },
+                                defaults={
+                                    "fingerprint": fingerprint[:2000],
+                                    "sample_sql": sample_sql,
+                                    "db_name": db_name,
+                                    "collection_name": collection_name,
+                                    "operation_type": op,
+                                    "total_execution_counts": doc.get("count", 0),
+                                    "total_execution_times": doc.get("total_duration", 0),
+                                    "query_time_avg": doc.get("avg_duration", 0),
+                                    "query_time_p95": 0,  # 需要额外计算
+                                    "docs_examined_avg": doc.get("docs_examined_avg", 0),
+                                    "docs_returned_avg": doc.get("docs_returned_avg", 0),
+                                    "has_sort": bool(doc.get("has_sort", 0)),
+                                    "first_seen": first_seen,
+                                    "last_seen": last_seen,
+                                },
+                            )
+                        except Exception:
+                            logger.warning(
+                                f"[{self.instance_name}] 统计单行upsert失败，跳过: "
+                                f"sql_hash={sql_hash}",
+                                exc_info=True,
+                            )
+                            continue
                         if created:
                             created_count += 1
 

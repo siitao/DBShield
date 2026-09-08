@@ -7,7 +7,7 @@ PgSQL 慢查询采集器
 import logging
 from datetime import datetime
 
-from .base import BaseSlowQueryCollector
+from .base import BaseSlowQueryCollector, update_or_create_with_retry
 
 logger = logging.getLogger("default")
 
@@ -96,24 +96,35 @@ class PgSQLSlowQueryCollector(BaseSlowQueryCollector):
                 if isinstance(fingerprint, bytes):
                     fingerprint = fingerprint.decode("utf-8", errors="replace")
 
-                # 使用 update_or_create，存在则更新，不存在则创建
-                obj, created = PgSQLSlowQuerySummary.objects.update_or_create(
-                    instance_id=self.instance_id,
-                    sql_hash=sql_hash,
-                    defaults={
-                        "fingerprint": fingerprint,
-                        "total_execution_counts": total_execution_counts,
-                        "total_execution_times": total_execution_times,
-                        "query_time_avg": query_time_avg,
-                        "rows_sum": rows_sum,
-                        "rows_avg": rows_avg,
-                        "shared_blks_hit": shared_blks_hit,
-                        "shared_blks_read": shared_blks_read,
-                        "first_seen": first_seen or now,
-                        "last_seen": last_seen or now,
-                        "db_name": db_name,
-                    },
-                )
+                # 使用 update_or_create，存在则更新，不存在则创建（带重试与行级隔离）
+                try:
+                    obj, created = update_or_create_with_retry(
+                        PgSQLSlowQuerySummary,
+                        lookup={
+                            "instance_id": self.instance_id,
+                            "sql_hash": sql_hash,
+                        },
+                        defaults={
+                            "fingerprint": fingerprint,
+                            "total_execution_counts": total_execution_counts,
+                            "total_execution_times": total_execution_times,
+                            "query_time_avg": query_time_avg,
+                            "rows_sum": rows_sum,
+                            "rows_avg": rows_avg,
+                            "shared_blks_hit": shared_blks_hit,
+                            "shared_blks_read": shared_blks_read,
+                            "first_seen": first_seen or now,
+                            "last_seen": last_seen or now,
+                            "db_name": db_name,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[{self.instance_name}] 统计单行upsert失败，跳过: "
+                        f"sql_hash={sql_hash}",
+                        exc_info=True,
+                    )
+                    continue
                 if created:
                     created_count += 1
                 else:
@@ -194,21 +205,33 @@ class PgSQLSlowQueryCollector(BaseSlowQueryCollector):
 
                 # 使用 update_or_create 避免重复记录
                 # 按 instance_id + sql_hash 去重，同一实例同一 SQL 只保留一条
-                obj, created = PgSQLSlowQueryDetail.objects.update_or_create(
-                    instance_id=self.instance_id,
-                    sql_hash=sql_hash,
-                    defaults={
-                        "execution_start_time": now,
-                        "host_address": "",
-                        "user_name": "",
-                        "db_name": db_name,
-                        "sql_text": sql_text,
-                        "query_time": mean_time,
-                        "rows_sent": rows_sent // calls if calls > 0 else 0,
-                        "shared_blks_hit": blks_hit // calls if calls > 0 else 0,
-                        "shared_blks_read": blks_read // calls if calls > 0 else 0,
-                    },
-                )
+                # （带死锁/冲突重试与行级隔离）
+                try:
+                    obj, created = update_or_create_with_retry(
+                        PgSQLSlowQueryDetail,
+                        lookup={
+                            "instance_id": self.instance_id,
+                            "sql_hash": sql_hash,
+                        },
+                        defaults={
+                            "execution_start_time": now,
+                            "host_address": "",
+                            "user_name": "",
+                            "db_name": db_name,
+                            "sql_text": sql_text,
+                            "query_time": mean_time,
+                            "rows_sent": rows_sent // calls if calls > 0 else 0,
+                            "shared_blks_hit": blks_hit // calls if calls > 0 else 0,
+                            "shared_blks_read": blks_read // calls if calls > 0 else 0,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[{self.instance_name}] 明细单行upsert失败，跳过: "
+                        f"sql_hash={sql_hash}",
+                        exc_info=True,
+                    )
+                    continue
                 if created:
                     created_count += 1
                 else:

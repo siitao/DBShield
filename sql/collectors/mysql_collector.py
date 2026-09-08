@@ -11,7 +11,7 @@ from datetime import datetime
 
 from django.utils import timezone
 
-from .base import BaseSlowQueryCollector, CursorManager
+from .base import BaseSlowQueryCollector, CursorManager, update_or_create_with_retry
 
 logger = logging.getLogger("default")
 
@@ -148,26 +148,37 @@ class MySQLSlowQueryCollector(BaseSlowQueryCollector):
                     )
                 )
 
-            # 使用 update_or_create 处理重复数据
+            # 使用 update_or_create 处理重复数据（带死锁/冲突重试与行级隔离）
             created_count = 0
             for summary in summary_list:
-                _, created = MySQLSlowQuerySummary.objects.update_or_create(
-                    instance_id=self.instance_id,
-                    sql_hash=summary.sql_hash,
-                    defaults={
-                        "fingerprint": summary.fingerprint,
-                        "total_execution_counts": summary.total_execution_counts,
-                        "total_execution_times": summary.total_execution_times,
-                        "query_time_avg": summary.query_time_avg,
-                        "parse_total_row_counts": summary.parse_total_row_counts,
-                        "return_total_row_counts": summary.return_total_row_counts,
-                        "parse_row_avg": summary.parse_row_avg,
-                        "return_row_avg": summary.return_row_avg,
-                        "first_seen": summary.first_seen,
-                        "last_seen": summary.last_seen,
-                        "db_name": summary.db_name,
-                    },
-                )
+                try:
+                    _, created = update_or_create_with_retry(
+                        MySQLSlowQuerySummary,
+                        lookup={
+                            "instance_id": self.instance_id,
+                            "sql_hash": summary.sql_hash,
+                        },
+                        defaults={
+                            "fingerprint": summary.fingerprint,
+                            "total_execution_counts": summary.total_execution_counts,
+                            "total_execution_times": summary.total_execution_times,
+                            "query_time_avg": summary.query_time_avg,
+                            "parse_total_row_counts": summary.parse_total_row_counts,
+                            "return_total_row_counts": summary.return_total_row_counts,
+                            "parse_row_avg": summary.parse_row_avg,
+                            "return_row_avg": summary.return_row_avg,
+                            "first_seen": summary.first_seen,
+                            "last_seen": summary.last_seen,
+                            "db_name": summary.db_name,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[{self.instance_name}] 统计单行upsert失败，跳过: "
+                        f"sql_hash={summary.sql_hash}",
+                        exc_info=True,
+                    )
+                    continue
                 if created:
                     created_count += 1
 

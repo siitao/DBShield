@@ -7,7 +7,7 @@ Redis 慢查询采集器
 import logging
 from datetime import datetime
 
-from .base import BaseSlowQueryCollector, CursorManager
+from .base import BaseSlowQueryCollector, CursorManager, update_or_create_with_retry
 
 logger = logging.getLogger("default")
 
@@ -87,20 +87,32 @@ class RedisSlowQueryCollector(BaseSlowQueryCollector):
                 sample_sql = sample_detail.command_text if sample_detail else ""
                 fingerprint = self._normalize_command(sample_sql.split()) if sample_sql else ""
 
-                _, created = RedisSlowQuerySummary.objects.update_or_create(
-                    instance_id=self.instance_id,
-                    sql_hash=stat["sql_hash"],
-                    defaults={
-                        "fingerprint": fingerprint,
-                        "sample_sql": sample_sql,
-                        "total_execution_counts": stat["total_count"],
-                        "total_execution_times": stat["total_duration"] or 0,
-                        "query_time_avg": stat["avg_duration"] or 0,
-                        "query_time_p95": 0,  # 需要额外计算
-                        "first_seen": stat["first_seen"],
-                        "last_seen": stat["last_seen"],
-                    },
-                )
+                # 带死锁/冲突重试与行级隔离
+                try:
+                    _, created = update_or_create_with_retry(
+                        RedisSlowQuerySummary,
+                        lookup={
+                            "instance_id": self.instance_id,
+                            "sql_hash": stat["sql_hash"],
+                        },
+                        defaults={
+                            "fingerprint": fingerprint,
+                            "sample_sql": sample_sql,
+                            "total_execution_counts": stat["total_count"],
+                            "total_execution_times": stat["total_duration"] or 0,
+                            "query_time_avg": stat["avg_duration"] or 0,
+                            "query_time_p95": 0,  # 需要额外计算
+                            "first_seen": stat["first_seen"],
+                            "last_seen": stat["last_seen"],
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        f"[{self.instance_name}] 统计单行upsert失败，跳过: "
+                        f"sql_hash={stat['sql_hash']}",
+                        exc_info=True,
+                    )
+                    continue
                 if created:
                     created_count += 1
 
