@@ -14,6 +14,7 @@ from MySQLdb.constants import FIELD_TYPE
 from schemaobject.connection import build_database_url
 
 from sql.engines.goinception import GoInceptionEngine
+from sql.utils import ai_review
 from sql.utils.sql_utils import get_syntax_type, remove_comments, extract_tables
 from . import EngineBase
 from .models import ResultSet, ReviewResult, ReviewSet
@@ -880,13 +881,15 @@ class MysqlEngine(EngineBase):
             mask_result = resultset
         return mask_result
 
-    def execute_check(self, db_name=None, sql="", run_ai_review=True):
+    def execute_check(self, db_name=None, sql="", run_ai_review=True, ai_user_name=""):
         """上线单执行前的检查, 返回Review set
 
         :param run_ai_review: 是否触发 AI 风险审核。检测接口默认 True；
             提交工单时由调用方传 False 以避免与检测阶段重复调用 AI
             （AI 建议对同一 SQL 幂等，二次调用纯属浪费 token 和时间）。
             注意：Inception 规则检查始终执行，该参数仅影响 AI 建议部分。
+        :param ai_user_name: 触发检测的用户名，用于 AI 用量记账归属；
+            引擎内部不使用，仅透传给 AI 审核记账。
         """
         # 进行Inception检查，获取检测结果
         try:
@@ -947,118 +950,20 @@ class MysqlEngine(EngineBase):
         # 仅在检测接口触发；提交工单时由调用方传 run_ai_review=False 跳过，
         # 避免对同一 SQL 重复调用 AI（建议幂等，重复调用浪费 token）。
         if run_ai_review:
-            self._ai_review_check(check_result, db_name)
+            self._ai_review_check(check_result, db_name, user_name=ai_user_name)
         return check_result
 
-    # AI 审核相关常量
-    AI_REVIEW_MAX_TABLES = 5  # 单条 SQL 最多收集 N 张表的上下文，防 prompt 过长
-    AI_REVIEW_MAX_STATEMENTS = 20  # 工单内最多对前 N 条 SQL 调用 AI，防累积超时
+    # AI 审核相关常量（口径引用，实现收敛在 sql/utils/ai_review.py）
+    AI_REVIEW_MAX_TABLES = ai_review.MAX_CONTEXT_OBJECTS
+    AI_REVIEW_MAX_STATEMENTS = ai_review.MAX_STATEMENTS
 
-    def _ai_review_check(self, check_result, db_name):
-        """对检测结果的每条 SQL 调用 AI 给出风险建议，挂到 row 的自定义属性上。
+    def _ai_review_check(self, check_result, db_name, user_name=""):
+        """对检测结果的每条 SQL 调用 AI 给出风险建议（批量评审 + 降级兜底）。
 
-        设计为"可降级增强"：开关关闭 / API Key 缺失 / 客户端异常 / 单条解析失败，
-        均静默跳过，绝不影响现有检测流程（errlevel/warning_count/error_count 不变）。
+        实现（批量评审/上下文收集/缓存/记账）收敛在 sql/utils/ai_review.py，
+        mysql/pgsql/mongo 三个引擎共用同一套口径。
         """
-        if not self.config.get("ai_review_enabled", False):
-            return
-        from common.utils.openai import (
-            OpenaiClient,
-            check_openai_config,
-            AI_RISK_UNKNOWN,
-            AI_LOCK_NONE,
-        )
-
-        if not check_openai_config():
-            return
-        try:
-            client = OpenaiClient()
-        except Exception as e:
-            logger.warning(f"AI 审核客户端初始化失败，整体跳过: {e}")
-            return
-
-        for idx, row in enumerate(check_result.rows):
-            # 已 dict 化或超过条数上限的，标记 unknown 跳过
-            if isinstance(row, dict):
-                continue
-            if idx >= self.AI_REVIEW_MAX_STATEMENTS:
-                row.ai_risk_level = AI_RISK_UNKNOWN
-                row.ai_risk_score = 0
-                row.ai_summary = "AI 审核跳过（超过审核条数上限）"
-                row.ai_suggestion = ""
-                row.ai_ddl_lock_risk = AI_LOCK_NONE
-                row.ai_affected_rows_estimate = ""
-                row.ai_use_osc = False
-                continue
-            try:
-                sql_text = row.sql or ""
-                tables = extract_tables(sql_text)
-                schema_ctx, rows_ctx = self._collect_ai_context(db_name, tables)
-                result = client.review_sql_by_openai(
-                    db_type="mysql",
-                    db_name=db_name,
-                    sql_text=sql_text,
-                    table_schemas=schema_ctx,
-                    table_rows=rows_ctx,
-                )
-                row.ai_risk_level = result["risk_level"]
-                row.ai_risk_score = result["risk_score"]
-                row.ai_summary = result["summary"]
-                row.ai_suggestion = result["suggestion"]
-                row.ai_ddl_lock_risk = result["ddl_lock_risk"]
-                row.ai_affected_rows_estimate = result["affected_rows_estimate"]
-                row.ai_use_osc = result["use_osc"]
-            except Exception as e:
-                logger.warning(f"AI 审核单条 SQL 失败，降级为 unknown: {e}")
-                row.ai_risk_level = AI_RISK_UNKNOWN
-                row.ai_risk_score = 0
-                row.ai_summary = "AI 审核失败"
-                row.ai_suggestion = ""
-                row.ai_ddl_lock_risk = AI_LOCK_NONE
-                row.ai_affected_rows_estimate = ""
-                row.ai_use_osc = False
-
-    def _collect_ai_context(self, db_name, tables):
-        """收集 AI 审核所需的上下文：相关表的 DDL + 行数。
-
-        复用 describe_table / get_table_meta_data，限 AI_REVIEW_MAX_TABLES 张表，
-        防止 prompt 过长。任何单表查询失败仅跳过该表。
-        """
-        if not tables:
-            return "(无法解析出表名，仅依据 SQL 文本给出建议)", "（未解析到表名）"
-
-        escaped_db = self.escape_string(db_name)
-        schema_parts = []
-        rows_parts = []
-        for tb in tables[: self.AI_REVIEW_MAX_TABLES]:
-            tb_name = tb.get("name", "").strip("`")
-            if not tb_name:
-                continue
-            # 拉 DDL
-            try:
-                rs = self.describe_table(escaped_db, tb_name).to_sep_dict()
-                create_ddl = ""
-                if rs["rows"]:
-                    create_ddl = rs["rows"][0][1] if len(rs["rows"][0]) > 1 else ""
-                schema_parts.append(f"-- 表 {tb_name}\n{create_ddl};")
-            except Exception as e:
-                logger.debug(f"AI 审核拉取 {tb_name} DDL 失败: {e}")
-            # 拉行数
-            try:
-                meta = self.get_table_meta_data(escaped_db, tb_name)
-                col_idx = meta["column_list"].index("table_rows")
-                table_rows = meta["rows"][col_idx]
-                rows_parts.append(f"{tb_name}: 约 {table_rows} 行")
-            except Exception as e:
-                logger.debug(f"AI 审核拉取 {tb_name} 行数失败: {e}")
-
-        schema_ctx = (
-            "\n\n".join(schema_parts)
-            if schema_parts
-            else "(表结构拉取失败，仅依据 SQL 文本给出建议)"
-        )
-        rows_ctx = "\n".join(rows_parts) if rows_parts else "（行数获取失败）"
-        return schema_ctx, rows_ctx
+        ai_review.run_ai_review(self, check_result, "mysql", db_name, user_name=user_name)
 
     def execute_workflow(self, workflow):
         """执行上线单，返回Review set"""

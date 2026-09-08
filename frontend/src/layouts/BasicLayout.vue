@@ -11,6 +11,7 @@ const router = useRouter();
 const route = useRoute();
 
 function childVisible(c: MenuItem): boolean {
+  if (c.superuserOnly && !auth.isSuperuser) return false;
   return !c.perm || auth.hasPerm(c.perm);
 }
 

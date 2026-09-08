@@ -120,6 +120,12 @@ const routes: RouteRecordRaw[] = [
         meta: { title: "认证配置", requireSuperuser: true },
       },
       {
+        path: "aiusage",
+        name: "aiusage",
+        component: () => import("@/views/aiusage/Index.vue"),
+        meta: { title: "AI 用量", requireSuperuser: true },
+      },
+      {
         path: "sqlquery",
         name: "sqlquery-index",
         component: () => import("@/views/sqlquery/Index.vue"),

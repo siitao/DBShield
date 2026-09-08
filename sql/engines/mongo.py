@@ -838,8 +838,13 @@ class MongoEngine(EngineBase):
             # result_set.column_list = [i[0] for i in fields] if fields else []
         return execute_result
 
-    def execute_check(self, db_name=None, sql=""):
-        """上线单执行前的检查, 返回Review set"""
+    def execute_check(self, db_name=None, sql="", run_ai_review=True, ai_user_name=""):
+        """上线单执行前的检查, 返回Review set
+
+        :param run_ai_review: 是否触发 AI 风险审核（纯参考不阻断，批量评审与
+            降级口径见 sql/utils/ai_review.py）；提交工单时由调用方传 False
+        :param ai_user_name: 触发检测的用户名，透传给 AI 用量记账
+        """
         line = 1
         count = 0
         check_result = ReviewSet(full_sql=sql)
@@ -1123,6 +1128,13 @@ class MongoEngine(EngineBase):
                 check_result.warning_count += 1
             if r.errlevel == 2:
                 check_result.error_count += 1
+        # AI 风险审核（纯参考，不改 errlevel；任何异常均静默降级为 unknown）
+        if run_ai_review:
+            from sql.utils import ai_review
+
+            ai_review.run_ai_review(
+                self, check_result, "mongo", db_name, user_name=ai_user_name
+            )
         return check_result
 
     def get_connection(self, db_name=None):

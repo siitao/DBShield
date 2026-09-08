@@ -278,7 +278,7 @@ class PgSQLEngine(EngineBase):
             filtered_result = resultset
         return filtered_result
 
-    def execute_check(self, db_name=None, sql=""):
+    def execute_check(self, db_name=None, sql="", run_ai_review=True, ai_user_name=""):
         """上线单执行前的检查, 返回Review set
 
         基于 pglast（PostgreSQL 原生语法树）做 AST 级审核：
@@ -288,6 +288,10 @@ class PgSQLEngine(EngineBase):
         - UPDATE/DELETE 缺少 WHERE 子句告警（errlevel=1）
         - 命中 critical_ddl_regex 的语句拦截（errlevel=2）
         - 其余正常放行（errlevel=0）
+
+        :param run_ai_review: 是否触发 AI 风险审核（纯参考不阻断，批量评审与
+            降级口径见 sql/utils/ai_review.py）；提交工单时由调用方传 False
+        :param ai_user_name: 触发检测的用户名，透传给 AI 用量记账
         """
         config = SysConfig()
         check_result = ReviewSet(full_sql=sql)
@@ -317,6 +321,13 @@ class PgSQLEngine(EngineBase):
                 check_result.warning_count += 1
             if r.errlevel == 2:
                 check_result.error_count += 1
+        # AI 风险审核（纯参考，不改 errlevel；任何异常均静默降级为 unknown）
+        if run_ai_review:
+            from sql.utils import ai_review
+
+            ai_review.run_ai_review(
+                self, check_result, "pgsql", db_name, user_name=ai_user_name
+            )
         return check_result
 
     def _check_single_statement(self, statement, line, critical_regex, critical_ddl_regex):

@@ -1725,7 +1725,6 @@ class AIDiagnosisReport(models.Model):
     )  # full_scan / missing_index / lock_wait / filesort / tmp_table / type_cast / other
     evidence = models.JSONField(default=list, blank=True, verbose_name="证据列表")
     suggestions = models.JSONField(default=list, blank=True, verbose_name="优化建议")
-    report_markdown = models.TextField(blank=True, default="", verbose_name="Markdown报告")
     confidence = models.FloatField(default=0.0, verbose_name="置信度")
     model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
@@ -1755,3 +1754,93 @@ class AIDiagnosisFeedback(models.Model):
         db_table = "ai_diagnosis_feedback"
         verbose_name = "AI慢查诊断反馈"
         verbose_name_plural = verbose_name
+
+
+# ===================== AI 用量记账 =====================
+
+
+class AIUsageLog(models.Model):
+    """AI 用量流水：各 AI 能力链路的调用/Token/耗时统一记账。
+
+    记录的是"次"为单位的调用事件：缓存命中也记（cache_hit=True，tokens 为 0），
+    供成本观测、命中率分析与后续限流/预算控制使用。由
+    common.utils.openai.record_ai_usage 旁路写入，失败不影响业务主流程。
+    """
+
+    CAPABILITY_NL2SQL = "nl2sql"
+    CAPABILITY_SQL_OPTIMIZE = "sql_optimize"
+    CAPABILITY_SQL_REVIEW = "sql_review"
+    CAPABILITY_SLOWQUERY_DIAGNOSIS = "slowquery_diagnosis"
+    CAPABILITY_CHOICES = (
+        (CAPABILITY_NL2SQL, "自然语言生成SQL"),
+        (CAPABILITY_SQL_OPTIMIZE, "SQL优化建议"),
+        (CAPABILITY_SQL_REVIEW, "SQL工单AI审核"),
+        (CAPABILITY_SLOWQUERY_DIAGNOSIS, "AI慢查诊断"),
+    )
+
+    capability = models.CharField(
+        max_length=32, choices=CAPABILITY_CHOICES, verbose_name="AI能力",
+    )
+    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    db_type = models.CharField(max_length=32, blank=True, default="", verbose_name="数据库类型")
+    instance_name = models.CharField(max_length=128, blank=True, default="", verbose_name="实例名")
+    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
+    user_name = models.CharField(max_length=128, blank=True, default="", verbose_name="触发用户")
+    prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
+    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
+    latency_ms = models.IntegerField(default=0, verbose_name="耗时(毫秒)")
+    cache_hit = models.BooleanField(default=False, verbose_name="是否命中缓存")
+    status = models.CharField(
+        max_length=16, default="success", verbose_name="调用状态",
+    )  # success / failed
+    error = models.CharField(max_length=500, blank=True, default="", verbose_name="错误信息")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="创建时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_usage_log"
+        verbose_name = "AI用量记账"
+        verbose_name_plural = verbose_name
+
+
+# ===================== AI 优化异步任务 =====================
+
+
+class AIOptimizeTask(models.Model):
+    """AI 优化建议异步任务（P2：Agent 取证在后台线程执行，前端轮询取报告）。
+
+    替代同步 HTTP 挂 240s 的模式：提交即返回 task_id，前端轮询状态；
+    report_markdown/steps 在 success 后可读。sql_text 存脱敏后的 SQL，
+    与 24h 报告缓存（redis ai_sql_report:*）同键口径，任务成功后回填缓存。
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        verbose_name="发起用户",
+    )
+    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, verbose_name="实例")
+    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
+    db_type = models.CharField(max_length=32, blank=True, default="", verbose_name="数据库类型")
+    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="脱敏SQL指纹")
+    sql_text = models.TextField(blank=True, default="", verbose_name="脱敏后SQL")
+    table_names = models.JSONField(default=list, blank=True, verbose_name="解析出的表/集合名")
+    status = models.CharField(
+        max_length=16, default="pending", verbose_name="任务状态",
+    )  # pending / running / success / failed
+    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    report_markdown = models.TextField(blank=True, default="", verbose_name="优化报告")
+    steps = models.JSONField(default=list, blank=True, verbose_name="Agent取证轨迹")
+    prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
+    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
+    error = models.CharField(max_length=500, blank=True, default="", verbose_name="错误信息")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_optimize_task"
+        indexes = [
+            models.Index(fields=["instance", "db_name", "sql_hash"], name="idx_aiopt_inst_db_hash"),
+        ]
+        verbose_name = "AI优化任务"
+        verbose_name_plural = "AI优化任务"

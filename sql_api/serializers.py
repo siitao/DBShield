@@ -517,8 +517,8 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
                 instance.selected_db_name = workflow_data["db_name"]
                 check_result = sql_export.pre_count_check(workflow=instance)
             else:
-                # AI 风险审核仅 MySQL 引擎支持（execute_check 带 run_ai_review 参数），
-                # 其他引擎（redis/mongo/mssql/pgsql 等）传了会 TypeError，按签名动态传入
+                # AI 风险审核支持 mysql/pgsql/mongo（execute_check 带 run_ai_review 参数）；
+                # 其他引擎传了会 TypeError，按签名动态传入
                 check_kwargs = {
                     "db_name": workflow_data["db_name"],
                     "sql": sql_content,

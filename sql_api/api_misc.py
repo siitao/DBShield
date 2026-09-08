@@ -398,36 +398,10 @@ class My2sqlView(APIView):
 
 
 def _pg_rows_to_ddl(tb_name: str, rows: list) -> str:
-    """把 pgsql information_schema.columns 的查询结果转成 CREATE TABLE DDL 格式。
+    """pgsql information_schema 行 → DDL（实现下沉 sql/utils/sql_utils.py，此处兼容别名）。"""
+    from sql.utils.sql_utils import pg_rows_to_ddl
 
-    输入 rows 每行: (column_name, data_type, char_max_len, num_precision,
-                     num_scale, is_nullable, column_default, description)
-    输出: LLM 可直接理解的建表语句风格文本。
-    """
-    cols = []
-    for row in rows:
-        col_name, data_type = row[0], row[1]
-        char_max_len = row[2]
-        # numeric_precision = row[3]
-        # numeric_scale = row[4]
-        is_nullable = row[5]
-        col_default = row[6]
-        description = row[7]
-
-        # 拼类型：varchar(255) / decimal(10,2) / text / integer ...
-        type_str = data_type or "text"
-        if char_max_len and type_str in ("character varying", "varchar", "char"):
-            type_str = f"{type_str}({char_max_len})"
-
-        parts = [col_name, type_str]
-        if is_nullable == "NO":
-            parts.append("NOT NULL")
-        if col_default:
-            parts.append(f"DEFAULT {col_default}")
-        if description:
-            parts.append(f"-- {description}")
-        cols.append("    " + " ".join(parts))
-    return f"CREATE TABLE {tb_name} (\n" + ",\n".join(cols) + "\n);"
+    return pg_rows_to_ddl(tb_name, rows)
 
 
 class GenerateSqlView(APIView):
@@ -520,19 +494,35 @@ class GenerateSqlView(APIView):
         elif tb_name:
             table_schema = tb_name
 
-        try:
-            from common.utils.openai import OpenaiClient
+        # AI 生成 + 统一用量记账（成功/失败都记，tokens/延迟取 client 已捕获部分）
+        from common.utils.openai import OpenaiClient, record_ai_usage
 
-            client = OpenaiClient()
+        usage_ctx = dict(
+            capability="nl2sql",
+            db_type=db_type,
+            instance_name=instance_name,
+            db_name=db_name,
+            user_name=request.user.username,
+        )
+        client = None
+        try:
+            client = OpenaiClient(scenario="nl2sql")
             sql = client.generate_sql_by_openai(
                 db_type=db_type, table_schema=table_schema, user_input=query_desc, sample_data=sample_data
             )
+            record_ai_usage(client=client, **usage_ctx)
             return JsonResponse({"status": 0, "msg": "ok", "data": sql or ""})
         except ValueError as e:
             logger.warning("generate_sql 失败: %s", e)
+            record_ai_usage(
+                client=client, status="failed", error=str(e)[:500], **usage_ctx,
+            )
             return JsonResponse({"status": 1, "msg": str(e), "data": ""})
         except Exception as e:
             logger.exception("generate_sql 异常")
+            record_ai_usage(
+                client=client, status="failed", error=str(e)[:500], **usage_ctx,
+            )
             return JsonResponse({"status": 1, "msg": str(e), "data": ""})
 
 

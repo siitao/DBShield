@@ -23,7 +23,9 @@ from sql.models import (
     InstanceTag,
     WorkflowAuditSetting,
     TwoFactorAuthConfig,
+    AIUsageLog,
 )
+from django.test import override_settings
 import json
 
 User = get_user_model()
@@ -1410,32 +1412,33 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         self.assertFalse(hasattr(rs.rows[0], "ai_risk_level"))
 
     def test_ai_failure_marks_unknown(self):
-        """开关+Key 均就绪但 AI 调用抛异常时，该条标记 unknown，不中断。"""
+        """开关+Key 均就绪但 AI 批量与单条回退均失败时，该条标记 unknown，不中断。"""
         from common.utils.openai import AI_RISK_UNKNOWN
 
         engine = self._make_engine()
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
         rs = self._make_reviewset(["update t set a=1"])
         mock_client = MagicMock()
+        mock_client.review_sql_batch_by_openai.return_value = None
         mock_client.review_sql_by_openai.side_effect = Exception("AI boom")
         with patch(
             "common.utils.openai.check_openai_config", return_value=True
         ), patch(
             "common.utils.openai.OpenaiClient", return_value=mock_client
         ), patch(
-            "sql.engines.mysql.extract_tables", return_value=[]
+            "sql.utils.ai_review.extract_tables", return_value=[]
         ):
             engine._ai_review_check(rs, "test")
         self.assertEqual(rs.rows[0].ai_risk_level, AI_RISK_UNKNOWN)
         self.assertEqual(rs.rows[0].ai_summary, "AI 审核失败")
 
     def test_ai_success_attaches_fields(self):
-        """AI 正常返回时，row 挂上 ai_* 字段（含变更影响预测）。"""
+        """AI 批量正常返回时，row 挂上 ai_* 字段（含变更影响预测）。"""
         engine = self._make_engine()
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
         rs = self._make_reviewset(["alter table t add index idx_a(a)"])
         mock_client = MagicMock()
-        mock_client.review_sql_by_openai.return_value = {
+        mock_client.review_sql_batch_by_openai.return_value = [{
             "risk_level": "high",
             "risk_score": 88,
             "summary": "大表加索引将长时间锁表",
@@ -1443,15 +1446,15 @@ class ExecuteCheckAiIntegrationTest(TestCase):
             "ddl_lock_risk": "high",
             "affected_rows_estimate": "约132万行",
             "use_osc": True,
-        }
+        }]
         with patch(
             "common.utils.openai.check_openai_config", return_value=True
         ), patch(
             "common.utils.openai.OpenaiClient", return_value=mock_client
         ), patch(
-            "sql.engines.mysql.extract_tables", return_value=[{"name": "t"}]
-        ), patch.object(
-            engine, "_collect_ai_context", return_value=("(ddl)", "(rows)")
+            "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
+        ), patch(
+            "sql.utils.ai_review._collect_context", return_value=("(ddl)", "(rows)")
         ):
             engine._ai_review_check(rs, "test")
         self.assertEqual(rs.rows[0].ai_risk_level, "high")
@@ -1469,19 +1472,18 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         # 构造超过 AI_REVIEW_MAX_STATEMENTS(20) 的 reviewset
         sqls = [f"update t set a={i}" for i in range(25)]
         rs = self._make_reviewset(sqls)
+        mock_client = MagicMock()
+        mock_client.review_sql_batch_by_openai.return_value = []
         with patch(
             "common.utils.openai.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient"
-        ) as mock_client_cls:
+            "common.utils.openai.OpenaiClient", return_value=mock_client
+        ), patch(
+            "sql.utils.ai_review.extract_tables", return_value=[]
+        ):
             engine._ai_review_check(rs, "test")
-            # 第 21 条（idx=20）应跳过，不调用 AI
-            mock_client_cls.assert_called_once()
-            mock_client = mock_client_cls.return_value
-            # 前 20 条调用，第 21+ 条不调用
-            self.assertLessEqual(
-                mock_client.review_sql_by_openai.call_count, 20
-            )
+            # 前 20 条参与 AI，按批量大小分 2 批；第 21+ 条跳过
+            self.assertEqual(mock_client.review_sql_batch_by_openai.call_count, 2)
         # 第 21 条（idx=20）标记 unknown + DDL 默认字段
         over_row = rs.rows[20]
         from common.utils.openai import AI_RISK_UNKNOWN
@@ -1489,3 +1491,609 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         self.assertEqual(over_row.ai_risk_level, AI_RISK_UNKNOWN)
         self.assertEqual(over_row.ai_ddl_lock_risk, "none")
         self.assertIs(over_row.ai_use_osc, False)
+
+
+class AiReviewMaskingAndUsageTest(TestCase):
+    """_ai_review_check 外发脱敏（H4 回灌口径统一）+ AIUsageLog 用量记账"""
+
+    def _make_engine(self):
+        from sql.engines.mysql import MysqlEngine
+
+        engine = MysqlEngine.__new__(MysqlEngine)  # 跳过 __init__
+        engine.config = MagicMock()
+        engine.config.get = lambda k, d=False: d
+        engine.escape_string = lambda v: v
+        engine.describe_table = MagicMock()
+        engine.get_table_meta_data = MagicMock()
+        return engine
+
+    def _make_reviewset(self, sqls):
+        from sql.engines.models import ReviewResult, ReviewSet
+
+        rows = [ReviewResult(id=i + 1, sql=s) for i, s in enumerate(sqls)]
+        return ReviewSet(rows=rows)
+
+    def test_sql_and_ddl_masked_before_send(self):
+        """待审核 SQL 与 DDL 上下文外发前均做字面量脱敏（批量链路）。"""
+        engine = self._make_engine()
+        engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
+        rs = self._make_reviewset(["update t set phone='13800138000' where id=999"])
+        captured = {}
+        valid_result = {
+            "risk_level": "low", "risk_score": 10, "summary": "ok",
+            "suggestion": "", "ddl_lock_risk": "none",
+            "affected_rows_estimate": "", "use_osc": False,
+        }
+        mock_client = MagicMock()
+
+        def fake_batch(**kwargs):
+            captured.update(kwargs)
+            return [dict(valid_result)]
+
+        mock_client.review_sql_batch_by_openai.side_effect = fake_batch
+        with patch(
+            "common.utils.openai.check_openai_config", return_value=True
+        ), patch(
+            "common.utils.openai.OpenaiClient", return_value=mock_client
+        ), patch(
+            "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
+        ), patch(
+            "sql.utils.ai_review._collect_context",
+            return_value=("CREATE TABLE t (c varchar(10) COMMENT '真实手机号')", "t: 约 100 行"),
+        ):
+            engine._ai_review_check(rs, "test", user_name="alice")
+        # SQL 字面量不外发：字符串→'?'，数字→0
+        self.assertEqual(len(captured["statements"]), 1)
+        self.assertNotIn("13800138000", captured["statements"][0])
+        self.assertIn("'?'", captured["statements"][0])
+        # DDL 注释中的疑似业务数据不外发
+        self.assertNotIn("真实手机号", captured["table_schemas"])
+        # 用量记账带用户归属（批量按批记一条）
+        log = AIUsageLog.objects.get(capability="sql_review")
+        self.assertEqual(log.user_name, "alice")
+        self.assertEqual(log.status, "success")
+        self.assertEqual(log.instance_name, "")
+
+    def test_failure_records_failed_usage(self):
+        """批量与单条回退均失败时记 failed 用量，且不影响降级兜底。"""
+        from common.utils.openai import AI_RISK_UNKNOWN
+
+        engine = self._make_engine()
+        engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
+        rs = self._make_reviewset(["update t set a=1"])
+        mock_client = MagicMock()
+        mock_client.review_sql_batch_by_openai.return_value = None
+        mock_client.review_sql_by_openai.side_effect = Exception("AI boom")
+        with patch(
+            "common.utils.openai.check_openai_config", return_value=True
+        ), patch(
+            "common.utils.openai.OpenaiClient", return_value=mock_client
+        ), patch(
+            "sql.utils.ai_review.extract_tables", return_value=[]
+        ):
+            engine._ai_review_check(rs, "test")
+        self.assertEqual(rs.rows[0].ai_risk_level, AI_RISK_UNKNOWN)
+        log = AIUsageLog.objects.filter(capability="sql_review").order_by("-id").first()
+        self.assertEqual(log.status, "failed")
+        self.assertIn("AI boom", log.error)
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
+class AiReviewCacheTest(TestCase):
+    """_ai_review_check 结果缓存：重复检测同一 SQL 不再调用 AI，命中也记账"""
+
+    def setUp(self):
+        # LocMemCache 在测试间不自动清空，显式清理避免用例间缓存串扰
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def _make_engine(self):
+        from sql.engines.mysql import MysqlEngine
+
+        engine = MysqlEngine.__new__(MysqlEngine)  # 跳过 __init__
+        engine.config = MagicMock()
+        engine.config.get = lambda k, d=False: d
+        engine.escape_string = lambda v: v
+        engine.describe_table = MagicMock()
+        engine.get_table_meta_data = MagicMock()
+        return engine
+
+    def _make_reviewset(self, sqls):
+        from sql.engines.models import ReviewResult, ReviewSet
+
+        rows = [ReviewResult(id=i + 1, sql=s) for i, s in enumerate(sqls)]
+        return ReviewSet(rows=rows)
+
+    def test_repeat_check_hits_cache(self):
+        """同批 SQL 第二次检测命中批级缓存：AI 只调用一次，字段照常挂载并记 cache_hit。"""
+        engine = self._make_engine()
+        engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
+        review_result = {
+            "risk_level": "high", "risk_score": 88, "summary": "大表加索引将长时间锁表",
+            "suggestion": "建议走 gh-ost", "ddl_lock_risk": "high",
+            "affected_rows_estimate": "约132万行", "use_osc": True,
+        }
+        mock_client = MagicMock()
+        mock_client.review_sql_batch_by_openai.return_value = [dict(review_result)]
+        with patch(
+            "common.utils.openai.check_openai_config", return_value=True
+        ), patch(
+            "common.utils.openai.OpenaiClient", return_value=mock_client
+        ), patch(
+            "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
+        ), patch(
+            "sql.utils.ai_review._collect_context", return_value=("ddl", "rows")
+        ):
+            rs1 = self._make_reviewset(["update t set a=1 where id=999"])
+            engine._ai_review_check(rs1, "test", user_name="u1")
+            rs2 = self._make_reviewset(["update t set a=1 where id=999"])
+            engine._ai_review_check(rs2, "test", user_name="u2")
+        # 第二次命中批级缓存，AI 只被真实调用一次
+        self.assertEqual(mock_client.review_sql_batch_by_openai.call_count, 1)
+        self.assertEqual(rs2.rows[0].ai_risk_level, "high")
+        self.assertIs(rs2.rows[0].ai_use_osc, True)
+        logs = list(AIUsageLog.objects.filter(capability="sql_review").order_by("id"))
+        self.assertEqual(len(logs), 2)
+        self.assertFalse(logs[0].cache_hit)
+        self.assertTrue(logs[1].cache_hit)
+        self.assertEqual(logs[1].prompt_tokens, 0)
+        self.assertEqual(logs[1].user_name, "u2")
+
+
+class AiUsageApiTest(APITestCase):
+    """AI 用量查询接口：仅超管可访问，聚合与筛选正确"""
+
+    def setUp(self):
+        self.superuser = User.objects.create(
+            username="usage_admin", display="管理", is_active=True, is_superuser=True
+        )
+        self.superuser.set_password("test_password")
+        self.superuser.save()
+        self.normal_user = User.objects.create(
+            username="usage_normal", display="普通", is_active=True
+        )
+        self.normal_user.set_password("test_password")
+        self.normal_user.save()
+        AIUsageLog.objects.create(
+            capability="sql_review", model="m1", db_type="mysql",
+            instance_name="ins1", db_name="db1", user_name="alice",
+            prompt_tokens=100, completion_tokens=20, latency_ms=1500,
+        )
+        AIUsageLog.objects.create(
+            capability="sql_optimize", model="m1", db_type="mysql",
+            instance_name="ins1", db_name="db1", user_name="bob",
+            prompt_tokens=50, completion_tokens=10, latency_ms=2500,
+            cache_hit=True,
+        )
+
+    def test_summary_aggregates(self):
+        self.client.force_login(self.superuser)
+        resp = self.client.get("/api/v1/ai_usage/summary/", {"days": 7})
+        data = resp.json()
+        self.assertEqual(data["totals"]["calls"], 2)
+        self.assertEqual(data["totals"]["cache_hits"], 1)
+        self.assertEqual(data["totals"]["prompt_tokens"], 150)
+        caps = {row["capability"]: row for row in data["by_capability"]}
+        self.assertEqual(caps["sql_review"]["calls"], 1)
+        self.assertEqual(caps["sql_review"]["cache_hits"], 0)
+        self.assertEqual(data["by_day"][0]["calls"], 2)
+        users = {row["user_name"]: row for row in data["by_user"]}
+        self.assertEqual(users["alice"]["prompt_tokens"], 100)
+
+    def test_list_filter(self):
+        self.client.force_login(self.superuser)
+        resp = self.client.get(
+            "/api/v1/ai_usage/list/", {"capability": "sql_review"}
+        )
+        data = resp.json()
+        self.assertEqual(data["total"], 1)
+        self.assertEqual(data["rows"][0]["user_name"], "alice")
+
+    def test_forbidden_for_normal_user(self):
+        self.client.force_login(self.normal_user)
+        resp = self.client.get("/api/v1/ai_usage/summary/")
+        self.assertEqual(resp.status_code, 403)
+        resp = self.client.get("/api/v1/ai_usage/list/")
+        self.assertEqual(resp.status_code, 403)
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
+class OptimizeAIAsyncTest(APITestCase):
+    """AI 优化异步任务：提交/轮询/缓存回填/去重/越权防护"""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.superuser = User.objects.create(
+            username="async_admin", display="管理", is_active=True, is_superuser=True
+        )
+        self.superuser.set_password("test_password")
+        self.superuser.save()
+        self.other_user = User.objects.create(
+            username="async_other", display="他人", is_active=True
+        )
+        self.other_user.set_password("test_password")
+        self.other_user.save()
+        # 越权用户需持有优化工具菜单权限，确保被拒发生在"任务归属"校验
+        # 而非视图权限类（DRF 403）
+        from django.contrib.auth.models import Permission
+
+        self.other_user.user_permissions.add(
+            Permission.objects.get(codename="menu_sqladvisor")
+        )
+        res_group = ResourceGroup.objects.create(group_name="async_g1")
+        self.ins = Instance.objects.create(
+            instance_name="async_ins", type="master", db_type="mysql",
+            host="some_host", port=3306, user="ins_user", password="some_str",
+        )
+        self.ins.resource_group.add(res_group)
+        self.superuser.resource_group.add(res_group)
+
+    def _mock_client(self):
+        client = MagicMock()
+        client.total_usage = {"prompt_tokens": 10, "completion_tokens": 5}
+        client.total_latency_ms = 123
+        client.default_chat_model = "model-a"
+        return client
+
+    def _patch_ai(self, mock_client, executor):
+        return patch(
+            "sql_api.api_slowquery.check_openai_config", return_value=True
+        ), patch(
+            "sql_api.api_slowquery.SysConfig"
+        ), patch(
+            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client
+        ), patch(
+            "sql_api.api_slowquery.run_agent_optimize",
+            return_value=("# 优化报告", [{"tool": "get_table_ddl", "args": {}, "ok": True, "elapsed": 0.1}]),
+        ), patch(
+            "sql_api.api_slowquery._get_optimize_executor", return_value=executor
+        )
+
+    def _post_submit(self):
+        return self.client.post("/api/v1/optimize/ai/async/", {
+            "instance_name": "async_ins",
+            "db_name": "db1",
+            "sql_content": "select * from t1 where id = 1",
+        })
+
+    def test_submit_run_poll_and_cache_backfill(self):
+        """提交 → 同步执行任务体 → 轮询取报告；重复提交命中回填缓存。
+
+        不用内联执行器跑 `_run`：其 finally 中的 connections.close_all()
+        会破坏 TestCase 的事务连接，改为提交后直接调 run_optimize_task。
+        """
+        import threading
+        from sql.models import AIOptimizeTask
+        from sql_api.api_slowquery import run_optimize_task
+
+        class NonRunningExecutor:
+            def submit(self, fn):
+                pass
+
+        mock_client = self._mock_client()
+        p1, p2, p3, p4, p5 = self._patch_ai(
+            mock_client, (NonRunningExecutor(), threading.Semaphore(99))
+        )
+        self.client.force_login(self.superuser)
+        with p1, p2 as mock_cfg, p3, p4, p5:
+            mock_cfg.return_value.get.return_value = "model-a"
+            resp = self._post_submit()
+            self.assertEqual(resp.json()["status"], 0)
+            task_id = resp.json()["data"]["task_id"]
+            self.assertEqual(AIOptimizeTask.objects.get(id=task_id).status, "pending")
+
+            # 同步执行任务体（等价于线程池内的执行，patch 仍然生效）
+            run_optimize_task(task_id)
+
+            task = AIOptimizeTask.objects.get(id=task_id)
+            self.assertEqual(task.status, "success")
+            self.assertEqual(task.report_markdown, "# 优化报告")
+            self.assertEqual(task.prompt_tokens, 10)
+
+            # 轮询接口
+            resp = self.client.get(f"/api/v1/optimize/ai/async/{task_id}/")
+            data = resp.json()["data"]
+            self.assertEqual(data["status"], "success")
+            self.assertEqual(data["report"], "# 优化报告")
+            self.assertEqual(len(data["steps"]), 1)
+
+            # 任务成功回填 24h 报告缓存：再次提交直接命中缓存，不建新任务
+            resp = self._post_submit()
+            body = resp.json()
+            self.assertTrue(body["data"]["hit_cache"])
+            self.assertEqual(body["data"]["report"], "# 优化报告")
+            self.assertEqual(AIOptimizeTask.objects.count(), 1)
+
+        # 记账：一次真实调用 + 一次缓存命中
+        logs = list(AIUsageLog.objects.filter(capability="sql_optimize").order_by("id"))
+        self.assertEqual(len(logs), 2)
+        self.assertFalse(logs[0].cache_hit)
+        self.assertEqual(logs[0].prompt_tokens, 10)
+        self.assertTrue(logs[1].cache_hit)
+        self.assertEqual(logs[1].prompt_tokens, 0)
+
+    def test_submit_dedupes_running_task(self):
+        """已有 pending/running 同指纹任务时复用 task_id，不重复建任务。"""
+        import threading
+        from sql.models import AIOptimizeTask
+
+        class NonRunningExecutor:
+            def __init__(self):
+                self.submitted = []
+
+            def submit(self, fn):
+                self.submitted.append(fn)
+
+        mock_client = self._mock_client()
+        executor = NonRunningExecutor()
+        p1, p2, p3, p4, p5 = self._patch_ai(mock_client, (executor, threading.Semaphore(99)))
+        self.client.force_login(self.superuser)
+        with p1, p2 as mock_cfg, p3, p4, p5:
+            mock_cfg.return_value.get.return_value = "model-a"
+            resp1 = self._post_submit()
+            task_id1 = resp1.json()["data"]["task_id"]
+            self.assertEqual(AIOptimizeTask.objects.get(id=task_id1).status, "pending")
+            resp2 = self._post_submit()
+            body = resp2.json()
+            self.assertTrue(body["data"].get("reused"))
+            self.assertEqual(body["data"]["task_id"], task_id1)
+            self.assertEqual(AIOptimizeTask.objects.count(), 1)
+
+    def test_poll_forbidden_for_other_user(self):
+        """非任务发起人（非超管）轮询被拒，防任务枚举。"""
+        import threading
+        from sql.models import AIOptimizeTask
+
+        class NonRunningExecutor:
+            def submit(self, fn):
+                pass
+
+        mock_client = self._mock_client()
+        p1, p2, p3, p4, p5 = self._patch_ai(
+            mock_client, (NonRunningExecutor(), threading.Semaphore(99))
+        )
+        self.client.force_login(self.superuser)
+        with p1, p2 as mock_cfg, p3, p4, p5:
+            mock_cfg.return_value.get.return_value = "model-a"
+            resp = self._post_submit()
+            task_id = resp.json()["data"]["task_id"]
+        self.assertEqual(AIOptimizeTask.objects.get(id=task_id).status, "pending")
+
+        self.client.force_login(self.other_user)
+        resp = self.client.get(f"/api/v1/optimize/ai/async/{task_id}/")
+        self.assertEqual(resp.json()["msg"], "无权查看该任务")
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+)
+class OptimizeAIViewTest(APITestCase):
+    """OptimizeAIView：缓存键含模型名 + 统一用量记账（含缓存命中）"""
+
+    def setUp(self):
+        # LocMemCache 在测试间不自动清空，显式清理避免用例间缓存串扰
+        from django.core.cache import cache
+
+        cache.clear()
+        self.superuser = User.objects.create(
+            username="ai_opt_user", display="测试", is_active=True, is_superuser=True
+        )
+        self.superuser.set_password("test_password")
+        self.superuser.save()
+        self.client.force_login(self.superuser)
+
+    def _post(self):
+        return self.client.post(
+            "/api/v1/optimize/ai/", {"sql_content": "select * from t where id = 1"}
+        )
+
+    def test_cache_hit_records_usage(self):
+        """同模型同 SQL 第二次请求命中缓存；真实调用与缓存命中均记账。"""
+        mock_client_cls = MagicMock()
+        mock_client_cls.return_value.optimize_sql_by_openai.return_value = "mock report"
+        with patch(
+            "sql_api.api_slowquery.check_openai_config", return_value=True
+        ), patch(
+            "sql_api.api_slowquery.SysConfig"
+        ) as mock_cfg, patch(
+            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client_cls.return_value
+        ):
+            mock_cfg.return_value.get.return_value = "model-a"
+            resp1 = self._post()
+            self.assertEqual(resp1.json()["data"], "mock report")
+            resp2 = self._post()
+            self.assertEqual(resp2.json()["data"], "mock report")
+            # 第二次命中缓存，AI 只被真实调用一次
+            self.assertEqual(
+                mock_client_cls.return_value.optimize_sql_by_openai.call_count, 1
+            )
+        logs = list(AIUsageLog.objects.filter(capability="sql_optimize").order_by("id"))
+        self.assertEqual(len(logs), 2)
+        self.assertFalse(logs[0].cache_hit)
+        self.assertTrue(logs[1].cache_hit)
+
+    def test_model_change_invalidates_cache(self):
+        """切换 default_chat_model 后旧模型的缓存报告不再命中。"""
+        mock_client_cls = MagicMock()
+        mock_client_cls.return_value.optimize_sql_by_openai.return_value = "mock report"
+        with patch(
+            "sql_api.api_slowquery.check_openai_config", return_value=True
+        ), patch(
+            "sql_api.api_slowquery.SysConfig"
+        ) as mock_cfg, patch(
+            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client_cls.return_value
+        ):
+            mock_cfg.return_value.get.return_value = "model-a"
+            self._post()
+            mock_cfg.return_value.get.return_value = "model-b"
+            self._post()
+            # 模型变了，两个模型各自真实调用一次
+            self.assertEqual(
+                mock_client_cls.return_value.optimize_sql_by_openai.call_count, 2
+            )
+        self.assertEqual(AIUsageLog.objects.filter(capability="sql_optimize").count(), 2)
+
+
+class RunAgentOptimizeTest(TestCase):
+    """run_agent_optimize：工具循环、client 注入（供用量记账）与预算收敛"""
+
+    @staticmethod
+    def _fake_client(responses):
+        class _FakeClient:
+            def __init__(self, resps):
+                self.responses = list(resps)
+                self.calls = []
+                self.total_usage = {"prompt_tokens": 0, "completion_tokens": 0}
+
+            def request_chat_completion(self, messages, **kwargs):
+                self.calls.append(messages)
+                return self.responses.pop(0)
+
+        return _FakeClient(responses)
+
+    @staticmethod
+    def _tool_call_resp(name, arguments, call_id="call_1"):
+        class _Fn:
+            def __init__(self):
+                self.name = name
+                self.arguments = arguments
+
+        class _ToolCall:
+            def __init__(self):
+                self.id = call_id
+                self.function = _Fn()
+
+        class _Msg:
+            def __init__(self):
+                self.content = None
+                self.tool_calls = [_ToolCall()]
+
+        class _Choice:
+            def __init__(self):
+                self.message = _Msg()
+
+        class _Resp:
+            def __init__(self):
+                self.choices = [_Choice()]
+
+        return _Resp()
+
+    @staticmethod
+    def _content_resp(content):
+        class _Msg:
+            def __init__(self):
+                self.content = content
+                self.tool_calls = None
+
+        class _Choice:
+            def __init__(self):
+                self.message = _Msg()
+
+        class _Resp:
+            def __init__(self):
+                self.choices = [_Choice()]
+
+        return _Resp()
+
+    def _fake_engine(self):
+        queries = []
+
+        class _RS:
+            column_list = ["Table", "Create Table"]
+            rows = [["t1", "CREATE TABLE t1 (id int)"]]
+
+        class _FakeEngine:
+            def query(self, db_name=None, sql="", **kwargs):
+                queries.append(sql)
+                return _RS()
+
+        return _FakeEngine(), queries
+
+    def test_tool_loop_with_injected_client(self):
+        """注入 client 时循环正常工作：工具取证 → 最终报告。"""
+        from sql_api.ai_optimizer import run_agent_optimize
+
+        engine, queries = self._fake_engine()
+        client = self._fake_client([
+            self._tool_call_resp("get_table_ddl", '{"table": "t1"}'),
+            self._content_resp("# 优化报告"),
+        ])
+        report, steps = run_agent_optimize(
+            engine, "db1", "select * from t1 where id = 1", ["t1"], client=client
+        )
+        self.assertEqual(report, "# 优化报告")
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0]["tool"], "get_table_ddl")
+        self.assertTrue(steps[0]["ok"])
+        self.assertIn("SHOW CREATE TABLE `t1`", queries[0])
+
+    def test_budget_exhaustion_forces_final_answer(self):
+        """轮数预算用尽后强制模型收敛输出最终报告。"""
+        from sql_api.ai_optimizer import run_agent_optimize, AGENT_MAX_ROUNDS
+
+        engine, _ = self._fake_engine()
+        responses = [
+            self._tool_call_resp("get_table_indexes", '{"table": "t1"}', call_id=f"c{i}")
+            for i in range(AGENT_MAX_ROUNDS)
+        ]
+        responses.append(self._content_resp("收敛报告"))
+        client = self._fake_client(responses)
+        report, steps = run_agent_optimize(engine, "db1", "select 1", [], client=client)
+        self.assertEqual(report, "收敛报告")
+        self.assertEqual(len(steps), AGENT_MAX_ROUNDS)
+        # MAX_ROUNDS 轮工具调用 + 1 次强制收敛
+        self.assertEqual(len(client.calls), AGENT_MAX_ROUNDS + 1)
+
+
+class DiagnoseUsageRecordTest(TestCase):
+    """诊断任务：成功后写入 AIUsageLog（统一用量流水）"""
+
+    def test_success_records_usage(self):
+        from sql.models import AIDiagnosisTask
+        from sql_api.api_slowquery_v2 import diagnose_slowquery_task
+
+        user = User.objects.create(username="diag_user", is_active=True)
+        ins = Instance.objects.create(
+            instance_name="diag_ins", type="master", db_type="mysql",
+            host="some_host", port=3306, user="ins_user", password="some_str",
+        )
+        task = AIDiagnosisTask.objects.create(
+            user=user, instance=ins, db_name="db1", sql_hash="hash1",
+            status="pending", model="m",
+        )
+        with patch(
+            "sql_api.api_slowquery_v2._collect_stats",
+            return_value={"sample_sql": "select * from t where id = 1"},
+        ), patch(
+            "sql_api.api_slowquery_v2._collect_trend", return_value="趋势平稳"
+        ), patch(
+            "sql_api.api_slowquery_v2._collect_table_schemas", return_value="DDL"
+        ), patch(
+            "sql_api.api_slowquery_v2._collect_explain", return_value="EXPLAIN"
+        ), patch(
+            "common.utils.openai.OpenaiClient"
+        ) as mock_client_cls:
+            mock_client = mock_client_cls.return_value
+            mock_client.default_chat_model = "test-model"
+            mock_client.diagnose_slowquery_by_openai.return_value = {
+                "root_cause": "缺索引", "severity": "high",
+                "bottleneck_type": "missing_index", "evidence": [],
+                "suggestions": [], "confidence": 0.8,
+                "_prompt_tokens": 100, "_completion_tokens": 20,
+            }
+            diagnose_slowquery_task(task.id)
+        task.refresh_from_db()
+        self.assertEqual(task.status, "success")
+        self.assertEqual(task.prompt_tokens, 100)
+        log = AIUsageLog.objects.get(capability="slowquery_diagnosis")
+        self.assertEqual(log.instance_name, "diag_ins")
+        self.assertEqual(log.user_name, "diag_user")
+        self.assertEqual(log.db_name, "db1")
+        self.assertEqual(log.status, "success")

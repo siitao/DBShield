@@ -54,13 +54,6 @@ export function analyzeSql(params: {
     .then((res) => checkStatus(res.data).data || "");
 }
 
-/** AI 分析（markdown 报告） */
-export function analyzeSqlByAI(text: string) {
-  return request
-    .post<{ status: number; msg: string; data?: string }>("/api/v1/sql_analyze/ai/", { text })
-    .then((res) => checkStatus(res.data).data || "");
-}
-
 // ============ 数据字典（DRF ViewSet /api/v1/dictionary/）============
 
 export type DictionaryObjectType =
@@ -220,15 +213,78 @@ export function explainSql(params: {
     .then((res) => checkStatus(res.data).data || { column_list: [], rows: [] });
 }
 
-/** AI 优化建议（markdown 报告，结合表结构） */
+/** AI Agent 取证轨迹（一次工具调用） */
+export interface AiOptimizeStep {
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  elapsed: number;
+}
+
+/** AI 优化建议（markdown 报告，mysql 走 Agent 主动取证并返回过程轨迹） */
 export function optimizeSqlByAI(params: {
   instance_name: string;
   db_name: string;
   sql_content: string;
 }) {
   return request
-    .post<{ status: number; msg: string; data?: string }>("/api/v1/optimize/ai/", params)
-    .then((res) => checkStatus(res.data).data || "");
+    .post<{ status: number; msg: string; data?: string; steps?: AiOptimizeStep[] }>(
+      "/api/v1/optimize/ai/",
+      params,
+      // AI 报告生成较慢，覆盖全局 60s 超时（与后端 Agent 预算对齐）
+      { timeout: 300000 }
+    )
+    .then((res) => {
+      const body = checkStatus(res.data);
+      return { report: body.data || "", steps: body.steps || [] };
+    });
+}
+
+/** 异步优化任务状态 */
+export interface AiOptimizeTaskStatus {
+  task_id: number;
+  status: "pending" | "running" | "success" | "failed";
+  error: string;
+  report: string;
+  steps: AiOptimizeStep[];
+  model: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+}
+
+/** 异步提交 AI 优化任务（Agent 模式；命中 24h 缓存直接返回报告） */
+export function optimizeSqlByAIAsync(params: {
+  instance_name: string;
+  db_name: string;
+  sql_content: string;
+}) {
+  return request
+    .post<{
+      status: number;
+      msg: string;
+      data?: {
+        task_id: number;
+        reused?: boolean;
+        hit_cache?: boolean;
+        report?: string;
+        steps?: AiOptimizeStep[];
+      };
+    }>(
+      "/api/v1/optimize/ai/async/",
+      params,
+      // 提交本身很快（缓存命中时也只做一次读），无需长超时
+      { timeout: 30000 }
+    )
+    .then((res) => checkStatus(res.data).data);
+}
+
+/** 轮询 AI 优化任务状态（GET /api/v1/optimize/ai/async/<task_id>/） */
+export function pollOptimizeTask(taskId: number) {
+  return request
+    .get<{ status: number; msg: string; data?: AiOptimizeTaskStatus }>(
+      `/api/v1/optimize/ai/async/${taskId}/`
+    )
+    .then((res) => checkStatus(res.data).data);
 }
 
 // ============ 慢查日志 slowlog.py ============
@@ -415,7 +471,6 @@ export interface DiagnosisReport {
     before: string;
     after: string;
   }>;
-  report_markdown: string;
   confidence: number;
   model: string;
   created_at: string;

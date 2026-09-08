@@ -2,8 +2,6 @@
 import { ref, watch, computed, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
 import {
   triggerDiagnosis,
   pollDiagnosisTask,
@@ -16,8 +14,6 @@ import {
 import { useBinlogHandoffStore } from "@/stores/binlogHandoff";
 import EChart from "@/components/EChart.vue";
 import type { EChartsOption } from "echarts";
-
-marked.setOptions({ gfm: true, breaks: false });
 
 const props = defineProps<{
   visible: boolean;
@@ -223,12 +219,6 @@ const bottleneckLabel = computed(() => {
     other: "其他",
   };
   return map[report.value?.bottleneck_type || "other"] || "其他";
-});
-
-const renderedMarkdown = computed(() => {
-  if (!report.value?.report_markdown) return "";
-  const raw = marked.parse(report.value.report_markdown, { async: false }) as string;
-  return DOMPurify.sanitize(raw);
 });
 
 // ---- 方法 ----
@@ -704,11 +694,8 @@ onUnmounted(() => {
         </el-card>
       </div>
 
-      <!-- Markdown 报告 -->
-      <div v-if="report.report_markdown" class="markdown-section">
-        <div class="section-title">完整报告</div>
-        <div class="markdown-body" v-html="renderedMarkdown"></div>
-      </div>
+      <!-- Markdown 报告区已移除：上方结构化卡片（根因/证据/建议）即完整内容，
+           服务端也不再拼装重复的 report_markdown -->
 
       <!-- 反馈 -->
       <div class="feedback-section">
@@ -1168,43 +1155,6 @@ onUnmounted(() => {
 
   .suggestion-actions {
     margin-top: 8px;
-  }
-}
-
-.markdown-section {
-  .markdown-body {
-    padding: 16px;
-    background: var(--el-fill-color-light);
-    border-radius: 8px;
-    font-size: 13px;
-    line-height: 1.8;
-
-    :deep(h1), :deep(h2), :deep(h3) {
-      margin: 12px 0 8px;
-      font-weight: 600;
-    }
-
-    :deep(pre) {
-      padding: 10px;
-      background: var(--el-fill-color-darker);
-      border-radius: 6px;
-      overflow-x: auto;
-
-      code {
-        font-family: "JetBrains Mono", "Fira Code", monospace;
-        font-size: 12px;
-      }
-    }
-
-    :deep(table) {
-      width: 100%;
-      border-collapse: collapse;
-
-      th, td {
-        border: 1px solid var(--el-border-color);
-        padding: 6px 10px;
-      }
-    }
   }
 }
 

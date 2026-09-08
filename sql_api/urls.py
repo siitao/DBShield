@@ -11,7 +11,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from . import api_user, api_instance, api_workflow, api_sqlquery, api_document, api_query_priv, api_archiver, api_dashboard, api_config, api_auth_config, api_dictionary, api_instance_admin, api_diagnostic, api_slowquery, api_slowquery_v2, api_resource_group, api_misc, api_auth
+from . import api_user, api_instance, api_workflow, api_sqlquery, api_document, api_query_priv, api_archiver, api_dashboard, api_config, api_auth_config, api_dictionary, api_instance_admin, api_diagnostic, api_slowquery, api_slowquery_v2, api_resource_group, api_misc, api_auth, ai_usage_api
 
 router = routers.DefaultRouter()
 router.register(
@@ -143,13 +143,17 @@ urlpatterns = [
     # ---- SQL 分析 ----
     path("v1/sql_analyze/generate/", api_slowquery.SqlAnalyzeGenerateView.as_view()),
     path("v1/sql_analyze/analyze/", api_slowquery.SqlAnalyzeAnalyzeView.as_view()),
-    path("v1/sql_analyze/ai/", api_slowquery.SqlAnalyzeAIView.as_view()),
     # ---- SQL 优化工具 ----
     path("v1/optimize/sqladvisor/", api_slowquery.OptimizeSqlAdvisorView.as_view()),
     path("v1/optimize/soar/", api_slowquery.OptimizeSoarView.as_view()),
     path("v1/optimize/sqltuning/", api_slowquery.OptimizeSqlTuningView.as_view()),
     path("v1/optimize/explain/", api_slowquery.ExplainSqlView.as_view()),
     path("v1/optimize/ai/", api_slowquery.OptimizeAIView.as_view()),
+    path("v1/optimize/ai/async/", api_slowquery.OptimizeAIAsyncSubmitView.as_view()),
+    path("v1/optimize/ai/async/<int:task_id>/", api_slowquery.OptimizeAIAsyncStatusView.as_view()),
+    # ---- AI 用量（超管） ----
+    path("v1/ai_usage/summary/", ai_usage_api.AiUsageSummaryView.as_view()),
+    path("v1/ai_usage/list/", ai_usage_api.AiUsageListView.as_view()),
     # ---- 资源组管理 ----
     path("v1/group/list/", api_resource_group.GroupListView.as_view()),
     path("v1/group/relations/", api_resource_group.RelationsView.as_view()),

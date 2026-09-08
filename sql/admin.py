@@ -29,6 +29,7 @@ from .models import (
     Tunnel,
     AuditEntry,
     TwoFactorAuthConfig,
+    AIUsageLog,
 )
 
 from sql.form import TunnelForm, InstanceForm
@@ -528,3 +529,35 @@ class AuditEntryAdmin(admin.ModelAdmin):
         "action_time",
     )
     list_filter = ("user_id", "user_name", "user_display", "action", "extra_info")
+
+
+# AI 用量流水（只读：明细核查用，聚合视图见「AI 用量」页）
+@admin.register(AIUsageLog)
+class AIUsageLogAdmin(admin.ModelAdmin):
+    list_display = (
+        "id",
+        "created_at",
+        "capability",
+        "model",
+        "db_type",
+        "instance_name",
+        "db_name",
+        "user_name",
+        "prompt_tokens",
+        "completion_tokens",
+        "latency_ms",
+        "cache_hit",
+        "status",
+    )
+    list_filter = ("capability", "status", "cache_hit", "db_type", "model")
+    search_fields = ("user_name", "instance_name", "db_name")
+    date_hierarchy = "created_at"
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False

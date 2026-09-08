@@ -1,12 +1,14 @@
 /** 侧边栏菜单定义，结构对齐旧版 base.html，按 perms.sql.menu_* 权限位显隐。
  * routeName：已迁移到 SPA 的页面（内部路由跳转）。
- * legacyPath：尚未迁移的页面，在新标签打开旧版（迁移期共存）。 */
+ * legacyPath：尚未迁移的页面，在新标签打开旧版（迁移期共存）。
+ * superuserOnly：仅超管可见（与路由 meta.requireSuperuser 同口径）。 */
 export interface MenuItem {
   title: string;
   icon?: string;
   perm?: string;
   routeName?: string;
   legacyPath?: string;
+  superuserOnly?: boolean;
   children?: MenuItem[];
 }
 
@@ -82,6 +84,7 @@ export const menuItems: MenuItem[] = [
     children: [
       { title: "配置项管理", routeName: "config" },
       { title: "认证配置", routeName: "authconfig" },
+      { title: "AI 用量", routeName: "aiusage", superuserOnly: true },
       { title: "资源组管理", routeName: "resourcegroup" },
     ],
   },

@@ -42,6 +42,10 @@ from sql.models import (
     RedisSlowQueryDetail,
 )
 from sql.utils.resource_group import user_instances
+from sql.utils.sql_utils import (  # noqa: F401  公共脱敏/EXPLAIN 闸门自 sql/utils 下沉，此处保留再导出兼容旧引用
+    mask_sql_literals,
+    sanitize_explain_sql,
+)
 
 logger = logging.getLogger("default")
 
@@ -164,53 +168,6 @@ def _safe_int(value, default):
         return int(value or default)
     except (TypeError, ValueError):
         return default
-
-
-def mask_sql_literals(sql_text):
-    """对 SQL 中的字面量脱敏，供外发到外部 AI 时使用（H1）。
-
-    慢查样本 SQL 含真实业务数据（user_id、手机号、日期等字面量），
-    PRD §5.8/§12 要求 prompt 不携带脱敏后的业务数据行。此处把
-    字符串字面量替换为 '?'、数字字面量替换为 0，保留 SQL 结构语义
-    （与 pg_stat_statements 等指纹归一化同思路），仅影响 AI prompt，
-    不影响 EXPLAIN 等需要真实值的场景。
-
-    公共函数：api_slowquery.py 的 v1 AI 端点同样复用（2026-08-20 审查 H4 回灌）。
-
-    注意：`\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
-    """
-    if not sql_text:
-        return sql_text
-    # 字符串字面量（含转义序列），替换为 '?'
-    masked = re.sub(r"'(?:[^'\\]|\\.)*'", "'?'", sql_text)
-    # 数字字面量（整数/小数/科学计数法），替换为 0
-    masked = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", masked)
-    return masked
-
-
-def sanitize_explain_sql(sql_text):
-    """EXPLAIN 前安全闸门（H4）：截取第一条语句、剥离注释、SELECT/WITH
-    白名单、拒绝 INTO OUTFILE/DUMPFILE 等注入面（EXPLAIN ANALYZE 会真实执行）。
-
-    公共函数：v1 ExplainSqlView 与 v2 _collect_explain 共用，避免闸门只落新代码。
-
-    返回 (clean_sql, None) 或 (None, 拒绝原因)。
-    """
-    if not sql_text or not sql_text.strip():
-        return None, "SQL 文本为空"
-    # 截取 SQL 的第一条语句（避免多条 SQL 导致 EXPLAIN 失败/被注入第二条）
-    first_sql = sql_text.strip().split(";")[0].strip()
-    if not first_sql:
-        return None, "SQL 文本为空"
-    # 注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）
-    clean_sql = re.sub(
-        r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
-    )
-    if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
-        return None, "仅支持 SELECT/WITH 语句的 EXPLAIN"
-    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):
-        return None, "语句包含 INTO OUTFILE/DUMPFILE，已拒绝执行 EXPLAIN"
-    return clean_sql.strip(), None
 
 
 # ---------- 查询配置 ----------
@@ -983,8 +940,7 @@ def cleanup_stale_diagnosis_tasks():
 
 
 def _serialize_report(report):
-    """序列化诊断报告为前端可用的 dict"""
-    from common.utils.extend_json_encoder import encode_json as _enc
+    """序列化诊断报告为前端可用的 dict（结构化字段即完整内容，无叙述性报告）"""
     return {
         "id": report.id,
         "task_id": report.task_id,
@@ -994,7 +950,6 @@ def _serialize_report(report):
         "bottleneck_type": report.bottleneck_type,
         "evidence": report.evidence,
         "suggestions": report.suggestions,
-        "report_markdown": report.report_markdown,
         "confidence": report.confidence,
         "model": report.model,
         "created_at": report.created_at.strftime("%Y-%m-%d %H:%M:%S") if report.created_at else "",
@@ -1571,7 +1526,7 @@ def diagnose_slowquery_task(task_id):
     """
     import datetime as _dt_mod
     from sql.models import AIDiagnosisTask, AIDiagnosisReport
-    from common.utils.openai import OpenaiClient, DIAGNOSIS_FALLBACK
+    from common.utils.openai import OpenaiClient, DIAGNOSIS_FALLBACK, record_ai_usage
     from common.config import SysConfig
 
     try:
@@ -1624,7 +1579,9 @@ def diagnose_slowquery_task(task_id):
         # 2. 调用 AI 诊断
         _set_progress("analyzing")
         logger.info(f"[诊断 {task_id}] 调用 AI 诊断")
-        client = OpenaiClient()
+        # 场景化配置（不重试/限输出/关思考）；diagnose_slowquery_by_openai
+        # 内部对这三项另有显式声明，双保险防裸 client 调用时退化
+        client = OpenaiClient(scenario="slowquery_diagnosis")
         model_name = client.default_chat_model
 
         # 外发脱敏：prompt 只携带字面量脱敏后的 SQL（H1），
@@ -1654,6 +1611,16 @@ def diagnose_slowquery_task(task_id):
             task.error = "AI 诊断服务暂不可用，已降级跳过，请稍后重试"
             task.finished_at = _dt_mod.datetime.now()
             task.save(update_fields=["status", "error", "finished_at"])
+            record_ai_usage(
+                capability="slowquery_diagnosis",
+                client=client,
+                db_type=db_type,
+                instance_name=instance.instance_name,
+                db_name=db_name,
+                user_name=task.user.username,
+                status="failed",
+                error=str(task.error),
+            )
             logger.warning(f"[诊断 {task_id}] AI 服务不可用，任务标记 failed")
             return
 
@@ -1670,7 +1637,6 @@ def diagnose_slowquery_task(task_id):
             bottleneck_type=result.get("bottleneck_type", "other"),
             evidence=result.get("evidence", []),
             suggestions=result.get("suggestions", []),
-            report_markdown=result.get("report_markdown", ""),
             confidence=result.get("confidence", 0.0),
             model=model_name,
         )
@@ -1685,6 +1651,16 @@ def diagnose_slowquery_task(task_id):
             "status", "model", "prompt_tokens",
             "completion_tokens", "finished_at",
         ])
+
+        # 统一用量记账（AIDiagnosisTask 上的 token 字段保留，此处补全链路统一流水）
+        record_ai_usage(
+            capability="slowquery_diagnosis",
+            client=client,
+            db_type=db_type,
+            instance_name=instance.instance_name,
+            db_name=db_name,
+            user_name=task.user.username,
+        )
 
         logger.info(
             f"[诊断 {task_id}] 完成: severity={report.severity}, "
@@ -1791,7 +1767,7 @@ class SlowQueryDiagnoseView(APIView):
         except Instance.DoesNotExist:
             return error_response("你所在组未关联该实例")
 
-        from common.utils.openai import OpenaiClient
+        from common.utils.openai import OpenaiClient, record_ai_usage
         from sql.models import AIDiagnosisTask
 
         model_name = OpenaiClient().default_chat_model
@@ -1802,6 +1778,15 @@ class SlowQueryDiagnoseView(APIView):
                 instance, db_name, sql_hash, model_name
             )
             if cached_task and cached_report:
+                record_ai_usage(
+                    capability="slowquery_diagnosis",
+                    model=model_name,
+                    db_type=instance.db_type,
+                    instance_name=instance.instance_name,
+                    db_name=db_name,
+                    user_name=request.user.username,
+                    cache_hit=True,
+                )
                 return success_response({
                     "task_id": cached_task.id,
                     "hit_cache": True,
@@ -2096,11 +2081,13 @@ class SlowQueryDiagnoseWorkflowView(APIView):
         # _calc_ai_risk_summary 管线，输入构造自诊断报告的 severity/confidence。
         # severity 无效（unknown/空，如降级或模型异常）时传 None：管线按"无 AI 数据"
         # 返回占位，前端据此隐藏汇总卡片，而不是按 0 分误判为 low
+        from common.utils.ai_risk import VALID_JUDGED_LEVELS
+
         ai_risk_summary = {}
         try:
             from sql_api.api_workflow import WorkflowDetail
 
-            has_ai = report.severity in ("low", "medium", "high")
+            has_ai = report.severity in VALID_JUDGED_LEVELS
             review_content = [{
                 "ai_risk_level": report.severity if has_ai else None,
                 "ai_risk_score": int((report.confidence or 0) * 100) if has_ai else None,

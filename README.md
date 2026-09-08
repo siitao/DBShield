@@ -68,18 +68,26 @@
 - **`frontend/`** — Vue 3 SPA。25 个菜单页全部迁入：仪表盘、SQL 上线、在线查询、数据导出、实例管理（会话/库/账号/参数）、权限管理、数据归档、My2SQL、慢查、SQL 分析 / 优化 / 数据字典 / SchemaSync、系统审计、配置项管理、资源组 / 用户 / 权限组管理、认证配置、相关文档等。
 - **`sql_api/`** — DRF 接口层。`api_workflow.py` / `api_sqlquery.py` / `api_instance.py` / `api_query_priv.py` / `api_archiver.py` / `api_config.py` / `api_dashboard.py` / `api_slowlog.py` / `api_misc.py` 等模块，配合 [drf-spectacular](https://github.com/tfranzel/drf-spectacular) 自动生成 OpenAPI 文档。
 - **`sql/`** — 上游核心：`engines/` 多数据库引擎、审核工作流、查询/优化/分析逻辑，本分支保持不动。
-- **`common/utils/openai.py`** — OpenAI 客户端封装，供 NL→SQL 生成、AI 分析、AI 优化复用。
+- **`common/utils/`** — AI 能力公共层：`openai.py`（OpenAI 客户端 + 场景化配置 + token/耗时遥测 + 结构化解析）、`ai_prompts.py`（全部外发 prompt 单点管理）、`ai_risk.py`（审核/诊断共用的风险词表与统计规则）、`ai_optimizer.py`（`sql_api/` 内，Agent 工具调用循环）。
 
 ### AI 能力
 
 | 能力 | 接口 | 说明 |
 | --- | --- | --- |
-| 自然语言生成 SQL | `POST /api/v1/query/generate_sql/` | 结合所选表的 DDL 作为上下文，调用 OpenAI 生成查询语句 |
-| SQL 智能分析 | `POST /api/v1/sql_analyze/ai/` | AI 解读 SQL 执行计划与统计信息 |
-| SQL 智能优化 | `POST /api/v1/optimize/ai/` | AI 给出优化建议 |
+| 自然语言生成 SQL | `POST /api/v1/query/generate_sql/` | 结合所选表的 DDL 与脱敏样本生成查询语句（DDL/样本数据段注入防护） |
+| SQL 智能优化（异步） | `POST /api/v1/optimize/ai/async/` + `GET .../async/<task_id>/` | Agent 主动取证（表结构/索引/行数/EXPLAIN），后台线程执行、前端轮询；24h 报告缓存。同步接口 `/api/v1/optimize/ai/` 保留兼容 |
+| 工单 AI 审核 | `POST /api/v1/sqlworkflow/check/`（检测接口内触发） | mysql/pgsql/mongo 批量评审：风险评分、DDL 锁表风险、OSC 建议；批量 prompt 一次评 N 条 + 1h 批级缓存，纯参考不阻断 |
+| AI 慢查诊断 | `POST /api/v1/slowquery/diagnose/` | 异步任务 + 进度上报，结构化根因报告（7 天缓存、反馈、一键转工单草稿），需 `sql.use_ai_diagnosis` 权限 |
+| AI 用量页 | 超管菜单「系统管理 → AI 用量」 | 四条链路统一记账（tokens/耗时/缓存命中/失败），接口 `GET /api/v1/ai_usage/summary/`、`GET /api/v1/ai_usage/list/`；明细也可在 Django admin 只读查看 |
 | OpenAI 配置探测 | `GET /api/v1/query/check_openai/` | 检查后端是否已配置可用 OpenAI |
 
 > 在「配置项管理」页配置 OPENAI 相关参数（API Key / 模型 / Base URL）后即可启用。
+
+#### 改动 AI 行为前必读
+
+- **prompt 统一在 `common/utils/ai_prompts.py`**，注入防护声明、JSON 输出与措辞规范为共享片段；prompt 文案改动等同改代码。
+- **改完跑黄金集**：`pytest sql/test_ai_golden.py` 为离线回归（解析/归一/规则边界，无 DB 无网络）；发版前可设 `ARCHERY_AI_SMOKE=1`（+ `ARCHERY_AI_KEY` 等）跑 `test_smoke_*_live` 做真实调用冒烟（消耗 token）。
+- 严重度统计规则阈值在 `common/utils/ai_risk.py`（`SEVERITY_*`），诊断 prompt 判定说明与代码兜底共用同一组值。
 
 ## 快速开始
 

@@ -92,6 +92,107 @@ def remove_comments(sql, db_type="mysql"):
     return regex.sub(_replacer, sql).strip()
 
 
+def mask_sql_literals(sql_text):
+    """对 SQL 中的字面量脱敏，供外发到外部 AI 时使用（H1）。
+
+    慢查样本 SQL / 工单 SQL 含真实业务数据（user_id、手机号、日期等字面量），
+    要求 prompt 不携带未脱敏的业务数据。此处把字符串字面量替换为 '?'、
+    数字字面量替换为 0，保留 SQL 结构语义（与 pg_stat_statements 等指纹
+    归一化同思路），仅影响 AI prompt，不影响 EXPLAIN 等需要真实值的场景。
+
+    注意：`\\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
+    """
+    if not sql_text:
+        return sql_text
+    # 字符串字面量（含转义序列），替换为 '?'
+    masked = re.sub(r"'(?:[^'\\]|\\.)*'", "'?'", sql_text)
+    # 数字字面量（整数/小数/科学计数法），替换为 0
+    masked = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", masked)
+    return masked
+
+
+# mongo 集合名白名单：字母/数字/下划线开头，允许点/横杠（不含 $ 与空白）
+_COLLECTION_NAME_RE = re.compile(r"[\w][\w\-.]{0,120}")
+# 从 mongo shell 语句中提取集合名的粗解析：db.orders.find(...) / db.getCollection('x') / db['x'].find(...)
+_MONGO_COLL_RES = [
+    re.compile(r"\bdb\.([A-Za-z_][\w]*)\.\s*(?:find|findOne|aggregate|count|countDocuments|estimatedDocumentCount|distinct|updateOne|updateMany|deleteOne|deleteMany|replaceOne|insertOne|insertMany)\s*\("),
+    re.compile(r"\bdb\.getCollection\s*\(\s*['\"]([\w\-.]+)['\"]\s*\)"),
+    re.compile(r"\bdb\[[\"']([\w\-.]+)[\"']\]"),
+]
+
+
+def extract_mongo_collections(sql):
+    """从 mongo shell 语句粗解析涉及的集合名（去重、保序）。"""
+    names = []
+    for pat in _MONGO_COLL_RES:
+        for m in pat.finditer(sql or ""):
+            name = m.group(1)
+            if name and name not in names:
+                names.append(name)
+    return names
+
+
+def valid_collection_name(name):
+    """mongo 集合名白名单校验。"""
+    return bool(name) and len(name) <= 120 and bool(_COLLECTION_NAME_RE.fullmatch(name))
+
+
+def pg_rows_to_ddl(tb_name, rows):
+    """把 pgsql information_schema.columns 的查询结果转成 CREATE TABLE DDL 格式。
+
+    输入 rows 每行: (column_name, data_type, char_max_len, num_precision,
+                     num_scale, is_nullable, column_default, description)
+    输出: LLM 可直接理解的建表语句风格文本。
+    """
+    cols = []
+    for row in rows:
+        col_name, data_type = row[0], row[1]
+        char_max_len = row[2]
+        is_nullable = row[5]
+        col_default = row[6]
+        description = row[7]
+
+        # 拼类型：varchar(255) / decimal(10,2) / text / integer
+        type_str = data_type or "text"
+        if char_max_len and type_str in ("character varying", "varchar", "char"):
+            type_str = f"{type_str}({char_max_len})"
+
+        parts = [col_name, type_str]
+        if is_nullable == "NO":
+            parts.append("NOT NULL")
+        if col_default:
+            parts.append(f"DEFAULT {col_default}")
+        if description:
+            parts.append(f"-- {description}")
+        cols.append("    " + " ".join(parts))
+    return f"CREATE TABLE {tb_name} (\n" + ",\n".join(cols) + "\n);"
+
+
+def sanitize_explain_sql(sql_text):
+    """EXPLAIN 前安全闸门（H4）：截取第一条语句、剥离注释、SELECT/WITH
+    白名单、拒绝 INTO OUTFILE/DUMPFILE 等注入面（EXPLAIN ANALYZE 会真实执行）。
+
+    v1 ExplainSqlView 与 v2 _collect_explain、AI Agent 的 run_explain 工具共用。
+
+    返回 (clean_sql, None) 或 (None, 拒绝原因)。
+    """
+    if not sql_text or not sql_text.strip():
+        return None, "SQL 文本为空"
+    # 截取 SQL 的第一条语句（避免多条 SQL 导致 EXPLAIN 失败/被注入第二条）
+    first_sql = sql_text.strip().split(";")[0].strip()
+    if not first_sql:
+        return None, "SQL 文本为空"
+    # 注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）
+    clean_sql = re.sub(
+        r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
+    )
+    if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
+        return None, "仅支持 SELECT/WITH 语句的 EXPLAIN"
+    if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):
+        return None, "语句包含 INTO OUTFILE/DUMPFILE，已拒绝执行 EXPLAIN"
+    return clean_sql.strip(), None
+
+
 def extract_tables(sql):
     """
     获取sql语句中的库、表名

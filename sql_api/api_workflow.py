@@ -1,4 +1,5 @@
 import datetime
+import inspect
 import logging
 import traceback
 
@@ -85,9 +86,17 @@ class ExecuteCheck(views.APIView):
             db_name = request.data["db_name"]
             check_engine = get_engine(instance=instance)
             db_name = check_engine.escape_string(db_name)
-            check_result = check_engine.execute_check(
-                db_name=db_name, sql=request.data["full_sql"].strip()
-            )
+            check_kwargs = {
+                "db_name": db_name,
+                "sql": request.data["full_sql"].strip(),
+            }
+            # AI 审核记账归属：仅 mysql 引擎的 execute_check 支持 ai_user_name，
+            # 按签名动态传入（与 serializers 提交路径的 run_ai_review 同模式）
+            if "ai_user_name" in inspect.signature(
+                check_engine.execute_check
+            ).parameters:
+                check_kwargs["ai_user_name"] = request.user.username
+            check_result = check_engine.execute_check(**check_kwargs)
         except Exception as e:
             raise serializers.ValidationError({"errors": f"{e}"})
         check_result.rows = check_result.to_dict()
