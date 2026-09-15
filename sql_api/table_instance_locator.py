@@ -1,11 +1,20 @@
+import hashlib
 import importlib
+import logging
 from typing import Dict, Iterable, List
 
 from django.conf import settings
+from django.core.cache import cache
 
 from sql.engines import get_engine
 from sql.models import Instance
 from sql.utils.sql_utils import filter_db_list
+
+logger = logging.getLogger("default")
+
+# 定位结果缓存时长（秒）。扫描需逐实例拉库表清单，代价高且表结构短期不变，
+# 短缓存可把重复查询的成本摊平
+_LOCATOR_CACHE_TTL = 600
 
 
 def _normalize_table_name(row) -> str:
@@ -24,18 +33,34 @@ def _normalize_table_name(row) -> str:
 def default_table_instance_locator(
     table_name: str, instances: Iterable[Instance], **kwargs
 ) -> List[Dict]:
-    print(
-        f"默认的table instance locator被调用，table_name={table_name}，实例列表={instances}"
-    )  # 调试日志
-    result = []
+    logger.info(
+        "默认的table instance locator被调用，table_name=%s，实例数=%s",
+        table_name,
+        len(list(instances)) if not isinstance(instances, list) else len(instances),
+    )
+    instances = list(instances)
     lower_table_name = table_name.lower()
 
+    # 结果缓存：键含实例集合摘要（实例权限变化时自然失效）
+    instance_ids = sorted(ins.id for ins in instances)
+    cache_key = "table_locator:{}:{}".format(
+        lower_table_name,
+        hashlib.md5(str(instance_ids).encode("utf-8")).hexdigest(),
+    )
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = []
     for instance in instances:
         query_engine = get_engine(instance=instance)
         databases = query_engine.get_all_databases()
-        print(
-            f"查询实例{instance}的数据库列表，结果={databases.rows}，错误={databases.error}"
-        )  # 调试日志
+        logger.debug(
+            "查询实例%s的数据库列表，结果=%s，错误=%s",
+            instance,
+            databases.rows,
+            databases.error,
+        )
         if databases.error:
             continue
 
@@ -74,6 +99,7 @@ def default_table_instance_locator(
                 )
                 break
 
+    cache.set(cache_key, result, _LOCATOR_CACHE_TTL)
     return result
 
 

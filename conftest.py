@@ -1,4 +1,5 @@
 import datetime
+import logging
 
 import pytest
 from pytest_mock import MockFixture
@@ -17,6 +18,28 @@ from sql.models import (
 )
 from common.config import SysConfig
 from sql.utils.workflow_audit import AuditV2, AuditSetting
+
+logger = logging.getLogger("default")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def load_unmanaged_slowquery_tables(django_db_setup, django_db_blocker):
+    """测试库兜底补建 managed=False 的慢查表。
+
+    正常路径由迁移 0009 在测试库建立时自动执行 ensure_slowquery_schema；
+    本 fixture 复用同一幂等引导兜底（如迁移被回滚或测试库被 --keepdb 复用
+    出现缺表），缺什么补什么，全齐时零操作。
+
+    这些表的 DDL 在 src/init_sql/slow_query/*.sql（生产同样由迁移自动执行）。
+    缺表会让任何删除 Instance 的测试在级联清理时报 1146，
+    并以 TransactionManagementError 毒化同进程的后续用例。
+    """
+    from sql.services.slowquery_schema import ensure_slowquery_schema
+
+    with django_db_blocker.unblock():
+        created = ensure_slowquery_schema()
+    if created["tables_created"] or created["indexes_created"]:
+        logger.warning(f"测试库兜底补建慢查结构: {created}")
 
 
 @pytest.fixture

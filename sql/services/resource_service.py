@@ -5,6 +5,7 @@ import logging
 from common.utils.convert import Convert
 from sql.engines import get_engine
 from sql.models import Instance, AliyunRdsConfig
+from sql.services.instance_service import resolve_instance
 from sql.utils.resource_group import user_instances
 from sql.utils.sql_utils import filter_db_list
 
@@ -34,14 +35,6 @@ def list_user_accessible_instances(user, type=None, db_type=None, tag_codes=None
     return {"status": 0, "msg": "ok", "data": result}
 
 
-def _resolve_instance_for_user(user, instance_id=None, instance_name=None):
-    if instance_id:
-        return user_instances(user).get(id=instance_id)
-    if instance_name:
-        return user_instances(user).get(instance_name=instance_name)
-    raise Instance.DoesNotExist
-
-
 def list_instance_resources(
     user,
     resource_type,
@@ -54,8 +47,8 @@ def list_instance_resources(
     """返回实例下资源，结构兼容旧接口。"""
     result = {"status": 0, "msg": "ok", "data": []}
     try:
-        instance = _resolve_instance_for_user(
-            user=user, instance_id=instance_id, instance_name=instance_name
+        instance = resolve_instance(
+            user, instance_id=instance_id, instance_name=instance_name
         )
     except Instance.DoesNotExist:
         result["status"] = 1
@@ -115,7 +108,7 @@ def describe_table_structure(
     """返回表结构，结构兼容旧 /instance/describetable/ 接口。"""
     result = {"status": 0, "msg": "ok", "data": {}}
     try:
-        instance = _resolve_instance_for_user(user=user, instance_name=instance_name)
+        instance = resolve_instance(user, instance_name=instance_name)
     except Instance.DoesNotExist:
         result["status"] = 1
         result["msg"] = "实例不存在或无权限"

@@ -125,7 +125,8 @@ class GenericWebhookNotifier(Notifier):
 
     def send(self):
         url = self.sys_config.get(self.sys_config_key)
-        requests.post(url, json=self.request_data)
+        # 带 timeout：webhook 端点挂起时不能拖住 django_q worker
+        requests.post(url, json=self.request_data, timeout=10)
 
 
 @dataclass

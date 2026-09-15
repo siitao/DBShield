@@ -21,6 +21,7 @@ import json as _json
 from django.contrib.auth.models import Group
 from django.db.models import F, Value, IntegerField
 from django.http import JsonResponse
+from django.shortcuts import get_object_or_404
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.views import APIView
 
@@ -36,6 +37,15 @@ logger = logging.getLogger("default")
 
 # ---------- permissions ----------
 
+
+def _safe_int(value, default=0):
+    """安全转整数，空/非数字入参返回默认值（避免非法入参触发 HTTP 500）"""
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
+
 class SuperuserPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
@@ -48,8 +58,8 @@ class GroupListView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         search = request.data.get("search", "")
 
@@ -70,14 +80,14 @@ class RelationsView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        group_id = int(request.data.get("group_id"))
+        group_id = _safe_int(request.data.get("group_id"), -1)
         object_type = str(request.data.get("type", ""))
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         search = request.data.get("search")
 
-        resource_group = ResourceGroup.objects.get(group_id=group_id)
+        resource_group = get_object_or_404(ResourceGroup, group_id=group_id)
         rows_users = resource_group.users_set.all()
         rows_instances = resource_group.instance_set.all()
         if search:
@@ -119,9 +129,9 @@ class UnassociatedView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        group_id = int(request.data.get("group_id"))
-        object_type = int(request.data.get("object_type", -1))
-        resource_group = ResourceGroup.objects.get(group_id=group_id)
+        group_id = _safe_int(request.data.get("group_id"), -1)
+        object_type = _safe_int(request.data.get("object_type"), -1)
+        resource_group = get_object_or_404(ResourceGroup, group_id=group_id)
 
         if object_type == 0:
             associated_ids = [u.id for u in resource_group.users_set.all()]
@@ -210,7 +220,7 @@ class AddRelationView(APIView):
 
     def post(self, request):
         try:
-            group_id = int(request.data.get("group_id"))
+            group_id = _safe_int(request.data.get("group_id"), -1)
         except (TypeError, ValueError):
             return JsonResponse({"status": 1, "msg": "资源组ID不合法"})
         object_type = str(request.data.get("object_type", ""))
@@ -238,7 +248,7 @@ class RemoveRelationView(APIView):
 
     def post(self, request):
         try:
-            group_id = int(request.data.get("group_id"))
+            group_id = _safe_int(request.data.get("group_id"), -1)
         except (TypeError, ValueError):
             return JsonResponse({"status": 1, "msg": "资源组ID不合法"})
         object_type = str(request.data.get("object_type", ""))

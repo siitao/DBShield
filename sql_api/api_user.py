@@ -9,7 +9,6 @@ from .serializers import (
     GroupSerializer,
     ResourceGroupSerializer,
     TwoFASerializer,
-    UserAuthSerializer,
     TwoFAVerifySerializer,
     TwoFASaveSerializer,
     TwoFAStateSerializer,
@@ -19,7 +18,7 @@ from .permissions import IsOwner
 from .filters import UserFilter, ResourceGroupFilter
 from django_redis import get_redis_connection
 from django.contrib.auth.models import Group, Permission
-from django.contrib.auth import authenticate, login
+from django.contrib.auth import login
 from django.conf import settings
 from django.http import Http404
 from sql.models import Users, ResourceGroup, TwoFactorAuthConfig
@@ -288,33 +287,6 @@ class ResourceGroupDetail(views.APIView):
         group.is_deleted = 1
         group.save(update_fields=["is_deleted"])
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-
-class UserAuth(views.APIView):
-    """
-    用户认证校验
-    """
-
-    permission_classes = [IsOwner]
-
-    @extend_schema(
-        summary="用户认证校验", request=UserAuthSerializer, description="用户认证校验"
-    )
-    def post(self, request):
-        # 参数验证
-        serializer = UserAuthSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        result = {"status": 0, "msg": "认证成功"}
-        engineer = request.data["engineer"]
-        password = request.data["password"]
-
-        user = authenticate(username=engineer, password=password)
-        if not user:
-            result = {"status": 1, "msg": "用户名或密码错误！"}
-
-        return Response(result)
 
 
 class TwoFAVerifyContext(views.APIView):

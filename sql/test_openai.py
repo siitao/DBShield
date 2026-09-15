@@ -7,7 +7,7 @@ from common.utils.ai_prompts import (
     build_optimize_prompt,
     build_review_prompt,
 )
-from common.utils.openai import AI_SCENARIOS, OpenaiClient
+from common.utils.ai_gateway import AI_SCENARIOS, OpenaiClient
 
 
 @pytest.fixture
@@ -133,7 +133,7 @@ def test_nl2sql_guard_declares_data_boundary():
 
 def test_scenario_timeouts(setup_sys_config, mocker):
     """场景决定默认超时；显式 timeout 覆盖场景；未知场景回退默认。"""
-    mock_openai = mocker.patch("common.utils.openai.OpenAI")
+    mock_openai = mocker.patch("common.utils.ai_gateway.OpenAI")
     OpenaiClient()
     assert mock_openai.call_args.kwargs["timeout"] == 60
     OpenaiClient(scenario="sql_optimize")
@@ -150,7 +150,7 @@ def test_scenario_timeouts(setup_sys_config, mocker):
 
 def test_scenario_request_kwargs_and_telemetry(setup_sys_config, mocker):
     """诊断场景自动附加 0 重试/输出上限/关思考，且用量与延迟被采集。"""
-    mock_openai = mocker.patch("common.utils.openai.OpenAI")
+    mock_openai = mocker.patch("common.utils.ai_gateway.OpenAI")
     client = OpenaiClient(scenario="slowquery_diagnosis")
     inner = mock_openai.return_value
     mocker.patch.object(inner, "with_options", return_value=inner)

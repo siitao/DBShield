@@ -17,7 +17,7 @@ from common.utils.const import WorkflowAction, WorkflowStatus, WorkflowType
 from common.utils.extend_json_encoder import encode_json as _encode
 from sql.models import ArchiveConfig, ArchiveLog, Instance, ResourceGroup
 from sql.notify import notify_for_audit
-from sql.utils.resource_group import user_groups, user_instances
+from sql.utils.resource_group import user_groups, user_instances, get_current_reviewers
 from sql.utils.workflow_audit import (
     Audit, AuditException, AuditV2, get_auditor,
 )
@@ -96,16 +96,9 @@ class ArchiveDetail(views.APIView):
                 last_operation_info = logs[-1]["operation_info"] or ""
         except Exception as e:
             logger.debug(f"归档配置 {pk} 无审核日志: {e}")
-        current_reviewers = []
-        for node in review_info.nodes:
-            if not node.is_current_node:
-                continue
-            for user in node.group.user_set.filter(is_active=1):
-                group_names = [g.group_name for g in user_groups(user)]
-                if archive_config.resource_group.group_name in group_names:
-                    current_reviewers.append({
-                        "username": user.username, "display": user.display or user.username,
-                    })
+        current_reviewers = get_current_reviewers(
+            review_info.nodes, archive_config.resource_group.group_name
+        )
         return Response({
             "archive": _archive_config_dict(archive_config),
             "review_info": _serialize_review_info(review_info),
@@ -346,6 +339,15 @@ class ArchiveOnceView(APIView):
 
     def get(self, request):
         archive_id = request.GET.get("archive_id")
+        # IDOR 收口（与 ArchiveLogView 同口径）：持归档管理权限者仅可触发
+        # 自己资源组内的归档，此前未校验归属即可对任意归档配置发起任务
+        if not request.user.is_superuser:
+            archive = ArchiveConfig.objects.filter(id=archive_id).first()
+            if archive is None:
+                return JsonResponse({"status": 1, "msg": "归档配置不存在", "data": []})
+            user_group_ids = [g.group_id for g in user_groups(request.user)]
+            if archive.resource_group_id not in user_group_ids:
+                return JsonResponse({"status": 1, "msg": "无权操作该归档任务", "data": []})
         async_task(
             "sql.archiver.archive", archive_id, timeout=-1,
             task_name=f"archive-{archive_id}",

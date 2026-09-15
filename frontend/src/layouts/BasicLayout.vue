@@ -135,13 +135,15 @@ function openUrl(url: string) {
                 <el-dropdown-item v-if="auth.isSuperuser" @click="router.push({ name: 'user' })">
                   用户管理
                 </el-dropdown-item>
-                <el-dropdown-item v-if="auth.isSuperuser" @click="openUrl(`${legacyBase}/api/debug?full=true`)">
+                <el-dropdown-item v-if="auth.isSuperuser" @click="openUrl('/api/debug?full=true')">
                   系统信息
                 </el-dropdown-item>
-                <el-dropdown-item v-if="auth.isSuperuser" @click="openUrl(`${legacyBase}/admin`)">
+                <!-- 同源相对路径：开发期经 vite 代理到 Django，未登录时中间件 302 /login/ 落回 SPA；
+                     生产期 nginx 本就按相对路径转发，不能用 legacyBase 直连后端（跨端口/跨 host 会丢 cookie） -->
+                <el-dropdown-item v-if="auth.isSuperuser" @click="openUrl('/admin')">
                   管理后台
                 </el-dropdown-item>
-                <el-dropdown-item @click="openUrl(`${legacyBase}/admin/password_change/`)">
+                <el-dropdown-item @click="openUrl('/admin/password_change/')">
                   修改密码
                 </el-dropdown-item>
                 <el-dropdown-item divided @click="onLogout">退出登录</el-dropdown-item>

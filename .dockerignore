@@ -1,11 +1,31 @@
 venv
 env
+.venv
 .env
 local_settings.py
 node_modules/
+**/node_modules/
 .git/
+.github/
 Dockerfile*
 .dockerignore
 *.log*
 .env*
 coverage/
+**/__pycache__/
+.pytest_cache/
+htmlcov/
+.coverage
+# 运行时产物目录（compose 里以卷挂载，镜像内无需携带本地内容）
+downloads/
+media/
+logs/
+# 本地工具/会话目录
+.claude/
+.specify/
+.zcode/
+.workbuddy/
+specs/
+# 前端：镜像内独立构建（npm ci + npm run build），宿主机产物不入上下文
+frontend/dist/
+# docs/ 不可排除：api_document.py 运行时读取 docs/docs.md

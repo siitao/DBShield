@@ -23,7 +23,7 @@ from common.utils.ai_risk import (
     score_band,
     severity_from_stats,
 )
-from common.utils.openai import (
+from common.utils.ai_gateway import (
     DIAG_BOTTLENECK_MISSING_INDEX,
     DIAG_BOTTLENECK_OTHER,
     OpenaiClient,

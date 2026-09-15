@@ -17,7 +17,7 @@ from rest_framework import views, permissions
 from rest_framework.response import Response
 
 from common.config import SysConfig
-from common.utils.openai import test_openai_connection
+from common.utils.ai_gateway import test_openai_connection
 
 logger = logging.getLogger(__name__)
 

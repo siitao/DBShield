@@ -199,6 +199,7 @@ class PgSQLEngine(EngineBase):
         """返回 ResultSet"""
         schema_name = kwargs.get("schema_name")
         result_set = ResultSet(full_sql=sql)
+        conn = None
         try:
             conn = self.get_connection(db_name=db_name)
             conn.autocommit = False
@@ -206,8 +207,12 @@ class PgSQLEngine(EngineBase):
             cursor = conn.cursor()
             try:
                 cursor.execute(f"SET statement_timeout TO {max_execution_time};")
-            except:
-                pass
+            except Exception:
+                # 超时设置失败不能静默：否则查询将以服务器默认超时（可能无上限）运行
+                logger.warning(
+                    "SET statement_timeout 失败，本次查询将以服务器默认超时运行: %s",
+                    traceback.format_exc(),
+                )
             cursor.execute("SET transaction ISOLATION LEVEL READ COMMITTED READ ONLY;")
             if schema_name:
                 cursor.execute(
@@ -250,7 +255,10 @@ class PgSQLEngine(EngineBase):
             result_set.rows = converted_rows
             result_set.affected_rows = len(converted_rows)
         except Exception as e:
-            conn.rollback()
+            # get_connection 失败时 conn 未绑定，直接 rollback 会以
+            # UnboundLocalError 掩盖原始异常
+            if conn is not None:
+                conn.rollback()
             logger.warning(
                 f"PgSQL命令执行报错，语句：{sql}， 错误信息：{traceback.format_exc()}"
             )
@@ -486,11 +494,6 @@ class PgSQLEngine(EngineBase):
             if close_conn:
                 self.close()
         return execute_result
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
 
     # ==================== 数据字典：表元信息 ====================
 
@@ -935,6 +938,7 @@ class PgSQLEngine(EngineBase):
         if not kill_sql:
             return ResultSet(full_sql="")
         return self.execute_db("postgres", kill_sql)
+    kill_connection = kill
 
     def execute_db(self, db_name, sql, parameters=None):
         """在指定库执行原生语句（供 kill 等内部调用），返回 ResultSet"""

@@ -85,13 +85,14 @@ class ReviewInfo:
         return " -> ".join(steps) if steps else "系统自动通过"
 
     @property
-    def current_node(self) -> ReviewNode:
-        if self.current_node_index:
+    def current_node(self) -> Optional[ReviewNode]:
+        if self.current_node_index is not None:
             return self.nodes[self.current_node_index]
         for index, n in enumerate(self.nodes):
             if n.is_current_node:
-                self.current_node_index = n
+                self.current_node_index = index
                 return n
+        return None
 
 
 @dataclass

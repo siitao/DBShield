@@ -25,10 +25,21 @@ logger = logging.getLogger("default")
 
 
 class RedisEngine(EngineBase):
+    # 缓存的连接（含所属 db，standalone 模式下 db 变化需重建）
+    conn = None
+    _conn_db = None
+
     def get_connection(self, db_name=None):
+        """获取连接（缓存复用，避免每次调用新建客户端导致连接池泄漏）"""
         db_name = db_name or self.db_name
+        if self.conn is not None and (
+            self.mode == "cluster" or self._conn_db == db_name
+        ):
+            return self.conn
+        if self.conn is not None:
+            self.close()
         if self.mode == "cluster":
-            return RedisClusterClient(
+            self.conn = RedisClusterClient(
                 host=self.host,
                 port=self.port,
                 username=self.user,
@@ -38,8 +49,9 @@ class RedisEngine(EngineBase):
                 socket_connect_timeout=10,
                 ssl=self.instance.is_ssl,
             )
+            self._conn_db = None
         else:
-            return redis.Redis(
+            self.conn = redis.Redis(
                 host=self.host,
                 port=self.port,
                 db=db_name,
@@ -50,6 +62,18 @@ class RedisEngine(EngineBase):
                 socket_connect_timeout=10,
                 ssl=self.instance.is_ssl,
             )
+            self._conn_db = db_name
+        return self.conn
+
+    def close(self):
+        """关闭并清空缓存连接（EngineBase 未约定 close，各引擎自持）"""
+        if self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                logger.warning(f"Redis 连接关闭失败: {traceback.format_exc()}")
+        self.conn = None
+        self._conn_db = None
 
     name = "Redis"
 
@@ -424,6 +448,11 @@ class RedisEngine(EngineBase):
                 f"Redis命令执行报错，语句：{sql}， 错误信息：{traceback.format_exc()}"
             )
             result_set.error = str(e)
+        finally:
+            # close_conn 参数此前从未生效，导致每次查询都新建客户端且不关闭；
+            # 传 False 的调用方（如同会话多命令）自行负责后续 close
+            if close_conn:
+                self.close()
         return result_set
 
     def filter_sql(self, sql="", limit_num=0):
@@ -702,4 +731,6 @@ class RedisEngine(EngineBase):
                     )
                 )
                 line += 1
+        finally:
+            self.close()
         return execute_result

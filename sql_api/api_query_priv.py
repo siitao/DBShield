@@ -17,7 +17,7 @@ from common.utils.const import WorkflowAction, WorkflowStatus, WorkflowType
 from sql.models import QueryPrivilegesApply
 from sql.notify import notify_for_audit
 from sql_api.api_misc import _query_apply_audit_call_back
-from sql.utils.resource_group import user_groups
+from sql.utils.resource_group import user_groups, get_current_reviewers
 from sql.utils.workflow_audit import Audit, AuditException, AuditV2, get_auditor
 
 logger = logging.getLogger("default")
@@ -83,17 +83,11 @@ class QueryPrivApplyDetail(views.APIView):
         except Exception as e:  # noqa: BLE001
             logger.debug(f"查询权限申请 {apply_id} 无审核日志: {e}")
 
-        # 当前审核人（当前节点所在 group 中、与申请同资源组的在职用户）
-        current_reviewers = []
-        for node in review_info.nodes:
-            if not node.is_current_node:
-                continue
-            for user in node.group.user_set.filter(is_active=1):
-                group_names = [g.group_name for g in user_groups(user)]
-                if workflow_detail.group_name in group_names:
-                    current_reviewers.append(
-                        {"username": user.username, "display": user.display or user.username}
-                    )
+        # 当前审核人（当前节点所在 group 中、与申请同资源组的在职用户；
+        # 批量预取实现，避免逐节点逐用户 N+1）
+        current_reviewers = get_current_reviewers(
+            review_info.nodes, workflow_detail.group_name
+        )
 
         apply = {
             "apply_id": workflow_detail.apply_id,

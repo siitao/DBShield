@@ -155,12 +155,6 @@ class PhoenixEngine(EngineBase):
             rowid += 1
         return check_result
 
-    def execute_workflow(self, workflow):
-        """PhoenixDB无需备份"""
-        return self.execute(
-            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
-        )
-
     def execute(self, db_name=None, sql="", close_conn=True, parameters=None):
         """原生执行语句"""
         execute_result = ReviewSet(full_sql=sql)

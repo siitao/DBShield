@@ -240,34 +240,8 @@ class TDengineEngine(EngineBase):
         return result
 
     def filter_sql(self, sql="", limit_num=0):
-        # 对查询sql增加limit限制,limit n 或 limit n,n 或 limit n offset n统一改写成limit n
-        sql = sql.rstrip(";").strip()
-        if re.match(r"^select", sql, re.I):
-            # LIMIT N
-            limit_n = re.compile(r"limit\s+(\d+)\s*$", re.I)
-            # LIMIT M OFFSET N
-            limit_offset = re.compile(r"limit\s+(\d+)\s+offset\s+(\d+)\s*$", re.I)
-            # LIMIT M,N
-            offset_comma_limit = re.compile(r"limit\s+(\d+)\s*,\s*(\d+)\s*$", re.I)
-            if limit_n.search(sql):
-                sql_limit = limit_n.search(sql).group(1)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = limit_n.sub(f"limit {limit_num};", sql)
-            elif limit_offset.search(sql):
-                sql_limit = limit_offset.search(sql).group(1)
-                sql_offset = limit_offset.search(sql).group(2)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = limit_offset.sub(f"limit {limit_num} offset {sql_offset};", sql)
-            elif offset_comma_limit.search(sql):
-                sql_offset = offset_comma_limit.search(sql).group(1)
-                sql_limit = offset_comma_limit.search(sql).group(2)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = offset_comma_limit.sub(f"limit {sql_offset},{limit_num};", sql)
-            else:
-                sql = f"{sql} limit {limit_num};"
-        else:
-            sql = f"{sql};"
-        return sql
+        """limit 改写实现统一收口于 EngineBase.rewrite_limit_sql"""
+        return self.rewrite_limit_sql(sql, limit_num)
 
     def processlist(self, command_type, **kwargs):
         """获取query会话信息"""
@@ -307,6 +281,7 @@ class TDengineEngine(EngineBase):
             return ResultSet(full_sql="")
         all_kill_sql = "".join(f"kill query '{i}';" for i in valid_kill_ids)
         return self.execute(sql=all_kill_sql)
+    kill_connection = kill_query
 
     def execute(self, db_name=None, sql="", close_conn=True, parameters=None):
         """执行语句"""
@@ -1506,8 +1481,3 @@ class TDengineEngine(EngineBase):
                     line += 1
                 break
         return execute_result
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None

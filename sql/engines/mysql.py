@@ -552,6 +552,20 @@ class MysqlEngine(EngineBase):
             close_conn=False,
             parameters={"db_name": db_name},
         ).rows
+        # 一次性取回全库列信息按表分组（旧实现每表一条 COLUMNS 查询，
+        # 数百表的字典导出即数百次往返；且原表名经 f-string 拼接存在注入面）
+        sql_cols = """SELECT * FROM INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_SCHEMA=%(db_name)s
+                        ORDER BY TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION;"""
+        all_columns = self.query(
+            sql=sql_cols,
+            cursorclass=MySQLdb.cursors.DictCursor,
+            close_conn=False,
+            parameters={"db_name": db_name},
+        ).rows
+        columns_by_tb = {}
+        for col in all_columns:
+            columns_by_tb.setdefault(col["TABLE_NAME"], []).append(col)
         table_metas = []
         for tb in tbs:
             _meta = dict()
@@ -566,12 +580,7 @@ class MysqlEngine(EngineBase):
             ]
             _meta["ENGINE_KEYS"] = engine_keys
             _meta["TABLE_INFO"] = tb
-            sql_cols = f"""SELECT * FROM INFORMATION_SCHEMA.COLUMNS 
-                            WHERE TABLE_SCHEMA='{tb['TABLE_SCHEMA']}' AND TABLE_NAME='{tb['TABLE_NAME']}'
-                            ORDER BY TABLE_SCHEMA,TABLE_NAME,ORDINAL_POSITION;"""
-            _meta["COLUMNS"] = self.query(
-                sql=sql_cols, cursorclass=MySQLdb.cursors.DictCursor, close_conn=False
-            ).rows
+            _meta["COLUMNS"] = columns_by_tb.get(tb["TABLE_NAME"], [])
             table_metas.append(_meta)
         return table_metas
 
@@ -842,34 +851,8 @@ class MysqlEngine(EngineBase):
         return result
 
     def filter_sql(self, sql="", limit_num=0):
-        # 对查询sql增加limit限制,limit n 或 limit n,n 或 limit n offset n统一改写成limit n
-        sql = sql.rstrip(";").strip()
-        if re.match(r"^select", sql, re.I):
-            # LIMIT N
-            limit_n = re.compile(r"limit\s+(\d+)\s*$", re.I)
-            # LIMIT M OFFSET N
-            limit_offset = re.compile(r"limit\s+(\d+)\s+offset\s+(\d+)\s*$", re.I)
-            # LIMIT M,N
-            offset_comma_limit = re.compile(r"limit\s+(\d+)\s*,\s*(\d+)\s*$", re.I)
-            if limit_n.search(sql):
-                sql_limit = limit_n.search(sql).group(1)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = limit_n.sub(f"limit {limit_num};", sql)
-            elif limit_offset.search(sql):
-                sql_limit = limit_offset.search(sql).group(1)
-                sql_offset = limit_offset.search(sql).group(2)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = limit_offset.sub(f"limit {limit_num} offset {sql_offset};", sql)
-            elif offset_comma_limit.search(sql):
-                sql_offset = offset_comma_limit.search(sql).group(1)
-                sql_limit = offset_comma_limit.search(sql).group(2)
-                limit_num = min(int(limit_num), int(sql_limit))
-                sql = offset_comma_limit.sub(f"limit {sql_offset},{limit_num};", sql)
-            else:
-                sql = f"{sql} limit {limit_num};"
-        else:
-            sql = f"{sql};"
-        return sql
+        """limit 改写实现统一收口于 EngineBase.rewrite_limit_sql"""
+        return self.rewrite_limit_sql(sql, limit_num)
 
     def query_masking(self, db_name=None, sql="", resultset=None):
         """传入 sql语句, db名, 结果集,
@@ -1234,8 +1217,3 @@ class MysqlEngine(EngineBase):
         ORDER BY trx.trx_started ASC;""".format(thread_time)
 
         return self.query("information_schema", sql)
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None

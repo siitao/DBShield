@@ -55,6 +55,39 @@ def user_instances(user, type=None, db_type=None, tag_codes=None):
     return instances.distinct()
 
 
+def get_current_reviewers(review_nodes, resource_group_name):
+    """
+    当前审核人：审核流当前节点权限组内、属于指定资源组的活跃用户。
+
+    批量预取实现——旧写法对每个节点、每个候选用户各发一条查询
+    （node.group.user_set + user_groups(user)），审批组大时工单详情页
+    一次请求可产生几十至上百条 SQL；这里一次查出节点组用户并
+    prefetch 资源组后过滤。
+
+    :param review_nodes: ReviewInfo.nodes（AuditV2.get_review_info() 的结果）
+    :param resource_group_name: 工单/申请所属资源组名
+    :return: [{"username": ..., "display": ...}]
+    """
+    group_ids = [n.group.id for n in review_nodes if n.is_current_node and n.group]
+    if not group_ids:
+        return []
+    users = (
+        Users.objects.filter(groups__in=group_ids, is_active=1)
+        .prefetch_related("resource_group")
+        .distinct()
+    )
+    reviewers = []
+    for user in users:
+        group_names = [
+            g.group_name for g in user.resource_group.all() if not g.is_deleted
+        ]
+        if resource_group_name in group_names:
+            reviewers.append(
+                {"username": user.username, "display": user.display or user.username}
+            )
+    return reviewers
+
+
 def auth_group_users(auth_group_names, group_id):
     """
     获取资源组内关联指定权限组的用户

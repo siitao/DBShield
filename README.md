@@ -199,11 +199,10 @@ npm run dev          # 默认 http://localhost:5175，proxy → http://localhost
 
 **3. 初始数据与账号**
 
-导入默认权限组与慢查表结构（也可直接执行 `bash admin.sh migration`）：
+导入默认权限组并创建管理员账号。慢查统计/明细表、相关索引与定时任务由 `manage.py migrate` 自动创建（幂等），无需手工执行 `src/init_sql/slow_query/*.sql`：
 
 ```bash
 python manage.py dbshell < sql/fixtures/auth_group.sql                 # Default / RD / DBA / PM / QA 权限组
-python manage.py dbshell < src/init_sql/mysql_slow_query_review.sql    # 慢查询评审表结构
 python manage.py createsuperuser                                       # 创建管理员账号
 ```
 
@@ -269,9 +268,8 @@ npm run type-check
 - MySQL 审核 / 执行 / 备份 [goInception](https://github.com/hanchuanchuan/goInception) · [inception](https://github.com/hhyo/inception)
 - MySQL 索引优化 [SQLAdvisor](https://github.com/Meituan-Dianping/SQLAdvisor)
 - SQL 优化 / 压缩 [SOAR](https://github.com/XiaoMi/soar)
-- Binlog 解析 / 回滚 [my2sql](https://github.com/liuhr/my2sql) · [python-mysql-replication](https://github.com/noplay/python-mysql-replication)
+- Binlog 解析 / 回滚 [my2sql](https://github.com/liuhr/my2sql)
 - 表结构同步 [SchemaSync](https://github.com/hhyo/SchemaSync)
-- 慢日志解析 [pt-query-digest](https://www.percona.com/doc/percona-toolkit/3.0/pt-query-digest.html)
 - 大表 DDL [gh-ost](https://github.com/github/gh-ost) · [pt-online-schema-change](https://www.percona.com/doc/percona-toolkit/3.0/pt-online-schema-change.html)
 - MyBatis XML 解析 [mybatis-mapper2sql](https://github.com/hhyo/mybatis-mapper2sql)
 - SQL 解析 / 切分 / 类型判断 [sqlparse](https://github.com/andialbrecht/sqlparse)

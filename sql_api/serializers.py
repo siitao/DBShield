@@ -97,11 +97,6 @@ class ResourceGroupSerializer(serializers.ModelSerializer):
         fields = "__all__"
 
 
-class UserAuthSerializer(serializers.Serializer):
-    engineer = serializers.CharField(label="用户名")
-    password = serializers.CharField(label="密码")
-
-
 class TwoFASerializer(serializers.Serializer):
     engineer = serializers.CharField(label="用户名")
     enable = serializers.ChoiceField(choices=["true", "false"], label="启用or禁用")

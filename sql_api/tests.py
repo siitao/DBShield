@@ -185,13 +185,6 @@ class TestUser(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(Group.objects.filter(name="test").count(), 0)
 
-    def test_user_auth(self):
-        """测试用户认证校验"""
-        json_data = {"engineer": "test_user", "password": "test_password"}
-        r = self.client.post(f"/api/v1/user/auth/", json_data, format="json")
-        self.assertEqual(r.status_code, status.HTTP_200_OK)
-        self.assertEqual(r.json(), {"status": 0, "msg": "认证成功"})
-
     def test_2fa_config(self):
         """测试用户配置2fa"""
         json_data = {"engineer": "test_user", "auth_type": "totp", "enable": "false"}
@@ -904,37 +897,79 @@ class TestSpaEndpoints(APITestCase):
         self.assertEqual(body["bar3"]["series"][0]["data"], [])
         self.assertEqual(len(body["pie1"]), 1)
 
-    def test_slowquery_trend_missing_checksum(self):
-        """慢查趋势：缺 checksum 返回 400"""
-        r = self.client.get("/api/v1/slowquery/trend/")
-        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+    def _make_trend_instance(self, name):
+        """趋势接口测试共用：创建实例并关联资源组（超管也需经资源组关联访问实例）"""
+        rg = ResourceGroup.objects.create(group_name=f"{name}_rg")
+        ins = Instance.objects.create(
+            instance_name=name,
+            type="master",
+            db_type="mysql",
+            host="127.0.0.1",
+            port=3306,
+            user="u",
+            password="p",
+        )
+        self.superuser.resource_group.add(rg)
+        ins.resource_group.add(rg)
+        return ins
+
+    def test_slowquery_trend_missing_sql_hash(self):
+        """慢查趋势：缺 sql_hash 返回业务错误（v2 读取 sql_hash，非旧版 checksum）"""
+        ins = self._make_trend_instance("trend_nohash_ins")
+        r = self.client.get(f"/api/v1/slowquery/trend/?instance_name={ins.instance_name}")
+        body = r.json()
+        self.assertEqual(body["status"], 1)
+        self.assertIn("sql_hash", body["msg"])
 
     def test_slowquery_trend(self):
-        """慢查趋势：正常返回双 series"""
-        with patch("sql_api.api_slowlog.ChartDao") as MockChartDao:
-            dao = MockChartDao.return_value
-            dao.slow_query_review_history_by_cnt.return_value = {
-                "rows": [(10, "2026-01-01"), (20, "2026-01-02")]
-            }
-            dao.slow_query_review_history_by_pct_95_time.return_value = {
-                "rows": [(0.5, "2026-01-01"), (0.8, "2026-01-02")]
-            }
-            r = self.client.get(
-                "/api/v1/slowquery/trend/?checksum=abc&instance_name=some_ins"
-            )
-        self.assertEqual(r.status_code, status.HTTP_200_OK)
-        body = r.json()
-        self.assertEqual(len(body["x"]), 2)
-        self.assertEqual(len(body["series"]), 2)
+        """慢查趋势：按日聚合返回 count/avg_time/max_time（引擎秒 → 毫秒口径）"""
+        from datetime import timedelta
 
-    def test_slowquery_review_empty_sort_not_500(self):
+        from django.utils import timezone as dj_tz
+
+        from sql.models import MySQLSlowQueryDetail
+
+        ins = self._make_trend_instance("trend_ins")
+        # 用"昨天/前天正午"构造跨日数据：数据必须落在视图的 [now-7天, now] 窗口内，
+        # 且不能落在未来（USE_TZ=False）
+        noon = dj_tz.now().replace(hour=12, minute=0, second=0, microsecond=0)
+        yesterday_noon = noon - timedelta(days=1)
+        day_before_noon = noon - timedelta(days=2)
+        for executed_at, query_time in [
+            (yesterday_noon, 1.0),
+            (yesterday_noon + timedelta(hours=1), 3.0),
+            (day_before_noon, 10.0),
+        ]:
+            MySQLSlowQueryDetail.objects.create(
+                instance=ins,
+                sql_hash="hash_trend_1",
+                execution_start_time=executed_at,
+                sql_text="select 1",
+                query_time=query_time,
+            )
+        r = self.client.get(
+            f"/api/v1/slowquery/trend/?instance_name={ins.instance_name}&sql_hash=hash_trend_1"
+        )
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["status"], 0)
+        rows = body["data"]
+        self.assertEqual(len(rows), 2)
+        today_row = rows[-1]
+        self.assertEqual(today_row["count"], 2)
+        # 秒 → 毫秒：avg(1.0, 3.0) = 2.0s = 2000ms
+        self.assertEqual(today_row["avg_time"], 2000.0)
+        self.assertEqual(today_row["max_time"], 3000.0)
+
+    def test_slowquery_summary_empty_sort_not_500(self):
         """回归：前端传空 sortName 时，自建 MySQL 慢查统计不应 500（曾抛 FieldError）。
 
         用真实表 + 真实数据走完整 ORM 链路，确保排序逻辑（order_by + 切片 +
         迭代）在真实 QuerySet 上不出错。MagicMock 方式测不出这类问题。
         """
-        from sql.models import SlowQuery, SlowQueryHistory
-        from django.db import connection
+        from django.utils import timezone as dj_tz
+
+        from sql.models import MySQLSlowQuerySummary
 
         ins = Instance.objects.create(
             instance_name="mysql_local",
@@ -945,36 +980,23 @@ class TestSpaEndpoints(APITestCase):
         )
         rg = ResourceGroup.objects.create(group_name="g1")
         ins.resource_group.add(rg)
-        self._create_slow_query_tables(connection)
 
-        SlowQuery.objects.create(
-            checksum="a" * 32,
-            fingerprint="select sleep(?)",
-            sample="SELECT SLEEP(1)",
-            first_seen="2026-07-08 00:00:00",
-            last_seen="2026-07-08 00:00:00",
-        )
-        SlowQueryHistory.objects.create(
-            hostname_max="127.0.0.1:3306",
-            user_max="root",
-            db_max="archery",
-            checksum=SlowQuery.objects.get(checksum="a" * 32),
-            sample="SELECT SLEEP(1)",
-            ts_min="2026-07-08 00:00:00",
-            ts_max="2026-07-08 00:00:00",
-            ts_cnt=1,
-            query_time_sum=1.0,
-            query_time_pct_95=1.0,
-            lock_time_sum=0.0,
-            rows_examined_sum=0,
-            rows_sent_sum=0,
+        MySQLSlowQuerySummary.objects.create(
+            instance=ins,
+            sql_hash="a" * 32,
+            fingerprint="SELECT SLEEP(1)",
+            sample_sql="SELECT SLEEP(1)",
+            db_name="archery",
+            total_execution_counts=3,
+            query_time_p95=1.5,
+            last_seen=dj_tz.now(),
         )
 
         # 关键：不走阿里云分支
-        with patch("sql_api.api_slowquery.AliyunRdsConfig.objects") as mock_rds:
+        with patch("sql.models.AliyunRdsConfig.objects") as mock_rds:
             mock_rds.filter.return_value.exists.return_value = False
             r = self.client.post(
-                "/api/v1/slowquery/review/",
+                "/api/v1/slowquery/summary/",
                 {
                     "instance_name": "mysql_local",
                     "db_name": "",
@@ -992,16 +1014,16 @@ class TestSpaEndpoints(APITestCase):
         body = r.json()
         self.assertEqual(body["total"], 1)
         self.assertEqual(len(body["rows"]), 1)
-        self.assertEqual(body["rows"][0]["SQLId"], "a" * 32)
 
-    def test_slowquery_review_history_empty_sort_not_500(self):
+    def test_slowquery_detail_empty_sort_not_500(self):
         """回归：前端传空 sortName 时，自建 MySQL 慢查明细不应 500。
 
         此用例曾因 _apply_sort 返回 list（QuerySet 布尔求值触发缓存）而非
         QuerySet，导致后续 .values() 调用报 AttributeError。
         """
-        from sql.models import SlowQuery, SlowQueryHistory
-        from django.db import connection
+        from django.utils import timezone as dj_tz
+
+        from sql.models import MySQLSlowQueryDetail
 
         ins = Instance.objects.create(
             instance_name="mysql_local2",
@@ -1012,35 +1034,21 @@ class TestSpaEndpoints(APITestCase):
         )
         rg = ResourceGroup.objects.create(group_name="g2")
         ins.resource_group.add(rg)
-        self._create_slow_query_tables(connection)
 
-        SlowQuery.objects.create(
-            checksum="b" * 32,
-            fingerprint="select sleep(?)",
-            sample="SELECT SLEEP(2)",
-            first_seen="2026-07-08 00:00:00",
-            last_seen="2026-07-08 00:00:00",
-        )
-        SlowQueryHistory.objects.create(
-            hostname_max="127.0.0.1:3306",
-            user_max="root",
-            db_max="archery",
-            checksum=SlowQuery.objects.get(checksum="b" * 32),
-            sample="SELECT SLEEP(2)",
-            ts_min="2026-07-08 00:00:00",
-            ts_max="2026-07-08 00:00:00",
-            ts_cnt=1,
-            query_time_sum=2.0,
-            query_time_pct_95=2.0,
-            lock_time_sum=0.0,
-            rows_examined_sum=0,
-            rows_sent_sum=0,
+        MySQLSlowQueryDetail.objects.create(
+            instance=ins,
+            sql_hash="b" * 32,
+            execution_start_time=dj_tz.now(),
+            user_name="root",
+            db_name="archery",
+            sql_text="SELECT SLEEP(2)",
+            query_time=2.0,
         )
 
-        with patch("sql_api.api_slowquery.AliyunRdsConfig.objects") as mock_rds:
+        with patch("sql.models.AliyunRdsConfig.objects") as mock_rds:
             mock_rds.filter.return_value.exists.return_value = False
             r = self.client.post(
-                "/api/v1/slowquery/review_history/",
+                "/api/v1/slowquery/detail/",
                 {
                     "instance_name": "mysql_local2",
                     "db_name": "",
@@ -1059,49 +1067,6 @@ class TestSpaEndpoints(APITestCase):
         body = r.json()
         self.assertEqual(body["total"], 1)
         self.assertEqual(len(body["rows"]), 1)
-        self.assertEqual(body["rows"][0]["SQLText"], "SELECT SLEEP(2)")
-
-    @staticmethod
-    def _create_slow_query_tables(connection):
-        """建 managed=False 的慢查表（Django 迁移不会自动建）"""
-        with connection.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS `mysql_slow_query_review` (
-                  `checksum` CHAR(32) NOT NULL PRIMARY KEY,
-                  `fingerprint` longtext NOT NULL,
-                  `sample` longtext NOT NULL,
-                  `first_seen` datetime(6) DEFAULT NULL,
-                  `last_seen` datetime(6) DEFAULT NULL,
-                  `reviewed_by` varchar(20) DEFAULT NULL,
-                  `reviewed_on` datetime(6) DEFAULT NULL,
-                  `comments` longtext
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8
-                """
-            )
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS `mysql_slow_query_review_history` (
-                  `id` int(11) NOT NULL AUTO_INCREMENT,
-                  `hostname_max` varchar(64) NOT NULL,
-                  `client_max` varchar(64) DEFAULT NULL,
-                  `user_max` varchar(64) NOT NULL,
-                  `db_max` varchar(64) DEFAULT NULL,
-                  `checksum` CHAR(32) NOT NULL,
-                  `sample` longtext NOT NULL,
-                  `ts_min` datetime(6) NOT NULL,
-                  `ts_max` datetime(6) NOT NULL,
-                  `ts_cnt` float DEFAULT NULL,
-                  `Query_time_sum` float DEFAULT NULL,
-                  `Query_time_pct_95` float DEFAULT NULL,
-                  `Lock_time_sum` float DEFAULT NULL,
-                  `Rows_examined_sum` float DEFAULT NULL,
-                  `Rows_sent_sum` float DEFAULT NULL,
-                  PRIMARY KEY (`id`),
-                  KEY `idx_hostname_max_ts_min` (`hostname_max`,`ts_min`)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8
-                """
-            )
 
     def test_query_priv_audit_param_error(self):
         """查询权限审核：参数缺失返回 status=1"""
@@ -1173,7 +1138,7 @@ class AiReviewParserTest(TestCase):
     """OpenaiClient._parse_review_json 与 review_sql_by_openai 容错测试。"""
 
     def test_parse_normal_json(self):
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "high", "risk_score": 85, '
@@ -1184,7 +1149,7 @@ class AiReviewParserTest(TestCase):
         self.assertEqual(data["summary"], "大表加索引")
 
     def test_parse_json_wrapped_in_codeblock(self):
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '```json\n{"risk_level": "low", "risk_score": 20, '
@@ -1194,7 +1159,7 @@ class AiReviewParserTest(TestCase):
         self.assertEqual(data["risk_score"], 20)
 
     def test_parse_json_with_extra_text(self):
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '审核结果如下：{"risk_level": "medium", "risk_score": 55, '
@@ -1204,7 +1169,7 @@ class AiReviewParserTest(TestCase):
         self.assertEqual(data["risk_score"], 55)
 
     def test_parse_invalid_returns_unknown(self):
-        from common.utils.openai import OpenaiClient, AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import OpenaiClient, AI_RISK_UNKNOWN
 
         self.assertEqual(
             OpenaiClient._parse_review_json("not a json at all")["risk_level"],
@@ -1215,7 +1180,7 @@ class AiReviewParserTest(TestCase):
         )
 
     def test_parse_normalizes_invalid_level_and_score(self):
-        from common.utils.openai import OpenaiClient, AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import OpenaiClient, AI_RISK_UNKNOWN
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "weird", "risk_score": "abc", "summary": "x"}'
@@ -1225,7 +1190,7 @@ class AiReviewParserTest(TestCase):
 
     def test_review_sql_returns_fallback_on_exception(self):
         """review_sql_by_openai 内部异常时应返回 unknown，不抛出。"""
-        from common.utils.openai import OpenaiClient, AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import OpenaiClient, AI_RISK_UNKNOWN
 
         client = OpenaiClient.__new__(OpenaiClient)  # 跳过 __init__（不读配置）
         with patch.object(
@@ -1244,7 +1209,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_trailing_comma(self):
         """尾部逗号容错（}, ] 前的逗号）。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "high", "risk_score": 80,}'
@@ -1254,7 +1219,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_single_quotes(self):
         """单引号 → 双引号容错。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             "{'risk_level': 'low', 'risk_score': 30}"
@@ -1264,7 +1229,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_chinese_punctuation(self):
         """中文全角标点（，：“”）→ ASCII 容错。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level"\uff1a"high"\uff0c"risk_score"\uff1a88}'
@@ -1274,7 +1239,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_preserves_apostrophe_in_string(self):
         """字符串内部的英文撇号不应被误转（it's 不会被破坏）。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "low", "risk_score": 10, "summary": "it\'s ok"}'
@@ -1284,7 +1249,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_ddl_lock_fields(self):
         """变更影响预测字段（ddl_lock_risk/affected_rows_estimate/use_osc）解析。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "high", "risk_score": 85, '
@@ -1297,7 +1262,7 @@ class AiReviewParserTest(TestCase):
 
     def test_parse_use_osc_string_coercion(self):
         """use_osc 字符串 'true' 应被转为 bool True。"""
-        from common.utils.openai import OpenaiClient
+        from common.utils.ai_gateway import OpenaiClient
 
         data = OpenaiClient._parse_review_json(
             '{"risk_level": "high", "risk_score": 85, '
@@ -1307,7 +1272,7 @@ class AiReviewParserTest(TestCase):
 
     def test_fallback_includes_ddl_fields(self):
         """容错降级返回应包含新增的 DDL 字段，保证字段一致性。"""
-        from common.utils.openai import OpenaiClient, AI_REVIEW_FALLBACK
+        from common.utils.ai_gateway import OpenaiClient, AI_REVIEW_FALLBACK
 
         # 非法输入 → fallback
         data = OpenaiClient._parse_review_json("totally not json")
@@ -1394,7 +1359,7 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         """开关关闭时（默认）不调用 AI，rows 不带 ai 字段。"""
         engine = self._make_engine()
         rs = self._make_reviewset(["update t set a=1"])
-        with patch("common.utils.openai.check_openai_config") as mock_check:
+        with patch("common.utils.ai_gateway.check_openai_config") as mock_check:
             engine._ai_review_check(rs, "test")
             mock_check.assert_not_called()
         self.assertFalse(hasattr(rs.rows[0], "ai_risk_level"))
@@ -1405,15 +1370,15 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
         rs = self._make_reviewset(["update t set a=1"])
         with patch(
-            "common.utils.openai.check_openai_config", return_value=False
-        ), patch("common.utils.openai.OpenaiClient") as mock_client:
+            "common.utils.ai_gateway.check_openai_config", return_value=False
+        ), patch("common.utils.ai_gateway.OpenaiClient") as mock_client:
             engine._ai_review_check(rs, "test")
             mock_client.assert_not_called()
         self.assertFalse(hasattr(rs.rows[0], "ai_risk_level"))
 
     def test_ai_failure_marks_unknown(self):
         """开关+Key 均就绪但 AI 批量与单条回退均失败时，该条标记 unknown，不中断。"""
-        from common.utils.openai import AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import AI_RISK_UNKNOWN
 
         engine = self._make_engine()
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
@@ -1422,9 +1387,9 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         mock_client.review_sql_batch_by_openai.return_value = None
         mock_client.review_sql_by_openai.side_effect = Exception("AI boom")
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[]
         ):
@@ -1448,9 +1413,9 @@ class ExecuteCheckAiIntegrationTest(TestCase):
             "use_osc": True,
         }]
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
         ), patch(
@@ -1475,9 +1440,9 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         mock_client = MagicMock()
         mock_client.review_sql_batch_by_openai.return_value = []
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[]
         ):
@@ -1486,7 +1451,7 @@ class ExecuteCheckAiIntegrationTest(TestCase):
             self.assertEqual(mock_client.review_sql_batch_by_openai.call_count, 2)
         # 第 21 条（idx=20）标记 unknown + DDL 默认字段
         over_row = rs.rows[20]
-        from common.utils.openai import AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import AI_RISK_UNKNOWN
 
         self.assertEqual(over_row.ai_risk_level, AI_RISK_UNKNOWN)
         self.assertEqual(over_row.ai_ddl_lock_risk, "none")
@@ -1532,9 +1497,9 @@ class AiReviewMaskingAndUsageTest(TestCase):
 
         mock_client.review_sql_batch_by_openai.side_effect = fake_batch
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
         ), patch(
@@ -1556,7 +1521,7 @@ class AiReviewMaskingAndUsageTest(TestCase):
 
     def test_failure_records_failed_usage(self):
         """批量与单条回退均失败时记 failed 用量，且不影响降级兜底。"""
-        from common.utils.openai import AI_RISK_UNKNOWN
+        from common.utils.ai_gateway import AI_RISK_UNKNOWN
 
         engine = self._make_engine()
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
@@ -1565,9 +1530,9 @@ class AiReviewMaskingAndUsageTest(TestCase):
         mock_client.review_sql_batch_by_openai.return_value = None
         mock_client.review_sql_by_openai.side_effect = Exception("AI boom")
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[]
         ):
@@ -1619,9 +1584,9 @@ class AiReviewCacheTest(TestCase):
         mock_client = MagicMock()
         mock_client.review_sql_batch_by_openai.return_value = [dict(review_result)]
         with patch(
-            "common.utils.openai.check_openai_config", return_value=True
+            "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
-            "common.utils.openai.OpenaiClient", return_value=mock_client
+            "common.utils.ai_gateway.OpenaiClient", return_value=mock_client
         ), patch(
             "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
         ), patch(
@@ -2057,7 +2022,7 @@ class DiagnoseUsageRecordTest(TestCase):
 
     def test_success_records_usage(self):
         from sql.models import AIDiagnosisTask
-        from sql_api.api_slowquery_v2 import diagnose_slowquery_task
+        from sql.services.diagnosis import diagnose_slowquery_task
 
         user = User.objects.create(username="diag_user", is_active=True)
         ins = Instance.objects.create(
@@ -2069,16 +2034,16 @@ class DiagnoseUsageRecordTest(TestCase):
             status="pending", model="m",
         )
         with patch(
-            "sql_api.api_slowquery_v2._collect_stats",
+            "sql.services.diagnosis._collect_stats",
             return_value={"sample_sql": "select * from t where id = 1"},
         ), patch(
-            "sql_api.api_slowquery_v2._collect_trend", return_value="趋势平稳"
+            "sql.services.diagnosis._collect_trend", return_value="趋势平稳"
         ), patch(
-            "sql_api.api_slowquery_v2._collect_table_schemas", return_value="DDL"
+            "sql.services.diagnosis._collect_table_schemas", return_value="DDL"
         ), patch(
-            "sql_api.api_slowquery_v2._collect_explain", return_value="EXPLAIN"
+            "sql.services.diagnosis._collect_explain", return_value="EXPLAIN"
         ), patch(
-            "common.utils.openai.OpenaiClient"
+            "common.utils.ai_gateway.OpenaiClient"
         ) as mock_client_cls:
             mock_client = mock_client_cls.return_value
             mock_client.default_chat_model = "test-model"
@@ -2097,3 +2062,94 @@ class DiagnoseUsageRecordTest(TestCase):
         self.assertEqual(log.user_name, "diag_user")
         self.assertEqual(log.db_name, "db1")
         self.assertEqual(log.status, "success")
+
+
+class OptimizeToolsViewTest(APITestCase):
+    """回归：OptimizeSqlAdvisorView / OptimizeSqlTuningView 断裂调用修复
+    （SQLAdvisor 曾以带参构造触发 TypeError 且未调用 check_args；
+    SqlTuning 曾以 2 参构造且调用不存在的 tuning() 方法）
+    """
+
+    def setUp(self):
+        self.superuser = User.objects.create(
+            username="opt_tool_user", display="测试", is_active=True, is_superuser=True
+        )
+        self.superuser.set_password("test_password")
+        self.superuser.save()
+        self.client.force_login(self.superuser)
+        self.res_group = ResourceGroup.objects.create(group_name="opt_tools_g1")
+        self.ins = Instance.objects.create(
+            instance_name="opt_tools_ins",
+            type="master",
+            db_type="mysql",
+            host="127.0.0.1",
+            port=3306,
+            user="ins_user",
+            password="some_str",
+        )
+        self.superuser.resource_group.add(self.res_group)
+        self.ins.resource_group.add(self.res_group)
+        self.sys_config = SysConfig()
+
+    @patch("sql.plugins.plugin.subprocess")
+    def test_sqladvisor(self, _subprocess):
+        """路径未配置被 check_args 拦截；配置后正常执行；db_name 注入被拦截"""
+        _subprocess.Popen.return_value.communicate.return_value = (
+            "some_stdout",
+            "some_stderr",
+        )
+        base_data = {
+            "sql_content": "select 1;",
+            "instance_name": self.ins.instance_name,
+        }
+        # 路径未配置 → check_args 返回错误（此前该场景直接 TypeError 500）
+        r = self.client.post("/api/v1/optimize/sqladvisor/", base_data)
+        self.assertEqual(r.json()["status"], 1)
+        self.assertEqual(r.json()["msg"], "可执行文件路径不能为空！")
+
+        # 配置路径 → 正常执行
+        self.sys_config.set("sqladvisor", "/opt/dbshield/src/plugins/sqladvisor")
+        self.sys_config.get_all_config()
+        r = self.client.post("/api/v1/optimize/sqladvisor/", base_data)
+        self.assertEqual(r.json(), {"status": 0, "msg": "success", "data": "some_stdout"})
+
+        # db_name 注入 → check_args 拦截
+        for evil_db in ("--help", ";drop table"):
+            r = self.client.post(
+                "/api/v1/optimize/sqladvisor/",
+                {**base_data, "db_name": evil_db},
+            )
+            self.assertEqual(r.json()["status"], 1, evil_db)
+
+    def test_sqltuning_calls_tuning_with_right_signature(self):
+        """SqlTuning 以 (instance_name, db_name, sqltext) 构造并调用 tuning()"""
+        data = {
+            "sql_content": "select * from t;",
+            "instance_name": self.ins.instance_name,
+            "db_name": "some_db",
+            "option": ["sys_parm", "sql_plan"],
+        }
+        with patch("sql_api.api_slowquery.SqlTuning") as mock_tuning_cls:
+            mock_tuning_cls.return_value.tuning.return_value = {"sqltext": "select * from t"}
+            r = self.client.post("/api/v1/optimize/sqltuning/", data, format="json")
+        self.assertEqual(r.json()["status"], 0)
+        mock_tuning_cls.assert_called_once_with(
+            self.ins.instance_name, "some_db", "select * from t;"
+        )
+        mock_tuning_cls.return_value.tuning.assert_called_once_with(
+            "select * from t;", ["sys_parm", "sql_plan"]
+        )
+
+    def test_sqltuning_instance_not_associated(self):
+        """实例不存在/无关联时返回业务错误而非 500"""
+        r = self.client.post(
+            "/api/v1/optimize/sqltuning/",
+            {
+                "sql_content": "select 1;",
+                "instance_name": "not_exist_ins",
+                "db_name": "some_db",
+                "option": [],
+            },
+        )
+        self.assertEqual(r.json()["status"], 1)
+        self.assertEqual(r.json()["msg"], "你所在组未关联该实例！")

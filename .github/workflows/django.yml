@@ -86,8 +86,9 @@ jobs:
       env:
         SECRET_KEY: XViQ1NfutP1RraqhHV3M3akMsB3JWZr9
       run: |
-        python manage.py makemigrations
-        python manage.py makemigrations sql
+        # 门禁：模型有变更但未提交迁移时直接失败，
+        # 防止测试库结构与生产库漂移（此前先 makemigrations 再测试会掩盖漏提交）
+        python manage.py makemigrations --check --dry-run
         pytest --cov --cov-report xml
 
     - name: Upload coverage to Codecov

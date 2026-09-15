@@ -202,7 +202,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   { key: "custom_title_suffix", label: "自定义标题后缀", type: "text", section: "其他配置", subsection: "基础配置" },
 
   // ── 其他配置 / 慢日志配置 ──────────────────────────────────
-  { key: "slow_query_retention_days", label: "数据保留天数", type: "number", section: "其他配置", subsection: "慢日志配置", desc: "超过此天数的慢查询明细数据将被自动清理，默认30天" },
+  { key: "slow_query_retention_days", label: "数据保留天数", type: "number", section: "其他配置", subsection: "慢日志配置", desc: "超过此天数的慢查询明细与统计数据将被自动清理（明细按入库时间、统计按最后出现时间），默认30天" },
   { key: "slow_query_cleanup_batch_size", label: "每批删除数量", type: "number", section: "其他配置", subsection: "慢日志配置", desc: "批量删除时每批处理的记录数，默认5000" },
   { key: "slow_query_cleanup_batch_sleep", label: "批次间隔(秒)", type: "number", section: "其他配置", subsection: "慢日志配置", desc: "每批删除后的等待秒数，避免数据库压力过大，默认1秒" },
 ];

@@ -4,6 +4,7 @@ import os
 import tempfile
 import csv
 import hashlib
+import re
 import shutil
 import datetime
 import xml.etree.ElementTree as ET
@@ -368,6 +369,29 @@ def save_to_format_file(
     return zip_file_name
 
 
+# Excel 单元格最多保留 15 位有效数字，双击打开 CSV 时 16 位以上的纯整数
+# （如 BIGINT 雪花 ID 219034306784399364）会被截断显示成 219034306784399000，
+# 且在 Excel 里保存会真实丢数据。写成 ="数字" 公式文本可让 Excel 按字符串原样展示。
+_EXCEL_LONG_INTEGER_RE = re.compile(r"^-?\d{16,}$")
+
+
+def excel_safe_cell(value):
+    """CSV 单元格值转 Excel 安全形式：16 位以上的纯整数用 ="..." 包裹，其余原样返回。"""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        text = str(value)
+    elif isinstance(value, str):
+        text = value
+    else:
+        return value
+    if _EXCEL_LONG_INTEGER_RE.match(text):
+        return f'="{text}"'
+    return value
+
+
 def save_csv(file_path, result, columns):
     """
     保存CSV文件，将查询结果写入CSV文件。
@@ -384,7 +408,7 @@ def save_csv(file_path, result, columns):
             csv_writer.writerow(columns)
 
         for row in result:
-            csv_row = ["null" if value is None else value for value in row]
+            csv_row = [excel_safe_cell(value) for value in row]
             csv_writer.writerow(csv_row)
 
 

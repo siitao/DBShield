@@ -42,7 +42,6 @@ urlpatterns = [
     path("v1/user/group/<int:pk>/", api_user.GroupDetail.as_view()),
     path("v1/user/resourcegroup/", api_user.ResourceGroupList.as_view()),
     path("v1/user/resourcegroup/<int:pk>/", api_user.ResourceGroupDetail.as_view()),
-    path("v1/user/auth/", api_user.UserAuth.as_view()),
     path("v1/user/2fa/", api_user.TwoFA.as_view()),
     path("v1/user/2fa/context/", api_user.TwoFAVerifyContext.as_view()),
     path("v1/user/2fa/state/", api_user.TwoFAState.as_view()),
@@ -127,8 +126,6 @@ urlpatterns = [
     path("v1/diagnostic/trxandlocks/", api_diagnostic.TrxAndLocksView.as_view()),
     path("v1/diagnostic/innodb_trx/", api_diagnostic.InnodbTrxView.as_view()),
     # ---- 慢查日志（新版本） ----
-    path("v1/slowquery/review/", api_slowquery_v2.SlowQuerySummaryView.as_view()),
-    path("v1/slowquery/review_history/", api_slowquery_v2.SlowQueryDetailView.as_view()),
     path("v1/slowquery/summary/", api_slowquery_v2.SlowQuerySummaryView.as_view()),
     path("v1/slowquery/detail/", api_slowquery_v2.SlowQueryDetailView.as_view()),
     path("v1/slowquery/trend/", api_slowquery_v2.SlowQueryTrendView.as_view()),
@@ -166,7 +163,6 @@ urlpatterns = [
     path("v1/group/changeauditors/", api_resource_group.ChangeAuditorsView.as_view()),
     # ---- 审计 ----
     path("v1/audit/log/", api_misc.AuditLogView.as_view()),
-    path("v1/audit/sqlworkflow/", api_misc.AuditSqlWorkflowView.as_view()),
     path("v1/audit/querylog/", api_misc.AuditQueryLogView.as_view()),
     # ---- binlog / my2sql ----
     path("v1/binlog/list/", api_misc.BinlogListView.as_view()),
@@ -197,5 +193,6 @@ urlpatterns = [
     path("v1/archive/once/", api_archiver.ArchiveOnceView.as_view()),
     path("info", views.info),
     path("debug", views.debug),
-    path("do_once/mirage", views.mirage),
+    # do_once/mirage（Archery 1.8 一次性密码重加密端点）已下线：
+    # 超管误触会对全部 Instance.password 重加密，且依赖含硬编码密钥的 aes_decryptor
 ]

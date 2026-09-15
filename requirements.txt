@@ -1,4 +1,5 @@
 Django>=4.2
+sqlparse>=0.5.0             # SQL 解析核心依赖，勿仅靠传递引入
 mysqlclient==2.*
 requests==2.31.0
 simplejson==3.17.2
@@ -9,13 +10,11 @@ pymongo==4.6.3
 psycopg2-binary==2.*
 pglast==6.*                 # PostgreSQL 原生 SQL 语法树解析，用于 PgSQL 工单审核
 pymysql==0.9.3
-mysql-replication==0.22
 django-q2==1.9.0
 django-redis>=5.4.0
 redis>=5.0.0,<6.0.0
 pyodbc==5.*
 gunicorn==22.0.0
-pyecharts==2.0.4
 aliyun-python-sdk-rds==2.1.1
 aliyun-python-sdk-dds==3.5.0
 aliyun-python-sdk-r-kvstore==2.20.17
@@ -54,6 +53,5 @@ django_storages==1.14.6
 boto3
 azure_storage_blob==12.26.0
 openpyxl==3.1.5
-parameterized
 pymemcache==4.0.0
 taos-ws-py==0.6.9

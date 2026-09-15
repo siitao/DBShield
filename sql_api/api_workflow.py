@@ -15,6 +15,7 @@ from rest_framework import views, generics, status, serializers, permissions
 from rest_framework.response import Response
 
 from common.config import SysConfig
+from common.utils.ai_risk import score_band
 from common.utils.const import WorkflowStatus, WorkflowType, WorkflowAction
 from sql.engines import get_engine
 from sql.models import (
@@ -29,7 +30,7 @@ from sql.models import (
 )
 from sql.notify import notify_for_audit, notify_for_execute
 from sql_api.api_misc import _query_apply_audit_call_back
-from sql.utils.resource_group import user_groups, user_instances
+from sql.utils.resource_group import user_groups, user_instances, get_current_reviewers
 from sql.utils.sql_review import (
     can_cancel,
     can_execute,
@@ -203,10 +204,6 @@ class WorkflowAuditList(generics.ListAPIView):
     queryset = WorkflowAudit.objects.filter(
         current_status=WorkflowStatus.WAITING
     ).order_by("-audit_id")
-
-    @extend_schema(exclude=True)
-    def get(self, request):
-        return Response({"detail": "方法 “GET” 不被允许。"})
 
     @extend_schema(
         summary="待审核清单",
@@ -506,10 +503,6 @@ class WorkflowLogList(generics.ListAPIView):
     serializer_class = WorkflowLogListSerializer
     queryset = WorkflowLog.objects.all()
 
-    @extend_schema(exclude=True)
-    def get(self, request):
-        return Response({"detail": "方法 “GET” 不被允许。"})
-
     @staticmethod
     def _can_view_workflow(user, workflow_id, workflow_type):
         """工单日志归属校验：防止任意登录用户按 workflow_id 枚举他人审批日志"""
@@ -593,20 +586,11 @@ class WorkflowDetail(views.APIView):
             }
             for node in review_info_obj.nodes
         ]
-        # 当前审核人（当前节点权限组内、属于该工单资源组的活跃用户）
-        current_reviewers = []
-        for node in review_info_obj.nodes:
-            if not node.is_current_node or not node.group:
-                continue
-            for audit_user in node.group.user_set.filter(is_active=1):
-                group_names = [g.group_name for g in user_groups(audit_user)]
-                if workflow_detail.group_name in group_names:
-                    current_reviewers.append(
-                        {
-                            "username": audit_user.username,
-                            "display": audit_user.display,
-                        }
-                    )
+        # 当前审核人（当前节点权限组内、属于该工单资源组的活跃用户；
+        # 批量预取实现，避免逐节点逐用户 N+1）
+        current_reviewers = get_current_reviewers(
+            review_info_obj.nodes, workflow_detail.group_name
+        )
 
         # 操作权限标志 + 最近操作信息（自动审核不通过时全部不可操作）
         if workflow_detail.status != "workflow_autoreviewwrong":
@@ -720,11 +704,9 @@ class WorkflowDetail(views.APIView):
 
         if not has_ai:
             return fallback
-        # max_level 兜底（按 score 推断）
+        # max_level 兜底（按 score 推断，阈值单点维护于 ai_risk.score_band）
         if not max_level:
-            max_level = (
-                "high" if max_score > 70 else "medium" if max_score >= 40 else "low"
-            )
+            max_level = score_band(max_score)
         return {
             "ai_max_risk_level": max_level,
             "ai_max_risk_score": max(0, max_score),

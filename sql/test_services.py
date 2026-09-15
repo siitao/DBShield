@@ -60,7 +60,7 @@ def test_list_user_accessible_instances_returns_compat_shape(monkeypatch):
 def test_list_instance_resources_returns_not_found_when_no_permission(monkeypatch):
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             resource_service.Instance.DoesNotExist
         ),
@@ -85,7 +85,7 @@ def test_list_instance_resources_database_success(monkeypatch):
     )
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: SimpleNamespace(id=1),
     )
     monkeypatch.setattr(resource_service, "get_engine", lambda instance: fake_engine)
@@ -110,7 +110,7 @@ def test_list_instance_resources_invalid_resource_type(monkeypatch):
     )
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: SimpleNamespace(id=1),
     )
     monkeypatch.setattr(resource_service, "get_engine", lambda instance: fake_engine)
@@ -130,7 +130,7 @@ def test_list_instance_resources_invalid_resource_type(monkeypatch):
 def test_describe_table_structure_returns_not_found_when_no_permission(monkeypatch):
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             resource_service.Instance.DoesNotExist
         ),
@@ -160,7 +160,7 @@ def test_describe_table_structure_success(monkeypatch):
     )
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: SimpleNamespace(id=1),
     )
     monkeypatch.setattr(resource_service, "get_engine", lambda instance: fake_engine)
@@ -187,7 +187,7 @@ def test_describe_table_structure_engine_error_field(monkeypatch):
     )
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: SimpleNamespace(id=1),
     )
     monkeypatch.setattr(resource_service, "get_engine", lambda instance: fake_engine)
@@ -213,7 +213,7 @@ def test_describe_table_structure_exception(monkeypatch):
     )
     monkeypatch.setattr(
         resource_service,
-        "_resolve_instance_for_user",
+        "resolve_instance",
         lambda *args, **kwargs: SimpleNamespace(id=1),
     )
     monkeypatch.setattr(resource_service, "get_engine", lambda instance: fake_engine)

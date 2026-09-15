@@ -589,18 +589,14 @@ def test_get_review_info(
 def test_get_review_info_auto_pass(
     sql_query_apply,
     fake_generate_audit_setting,
-    admin_client,
 ):
-    # 自动通过的情况
+    # 自动通过的情况（旧 /queryapplydetail/ 详情页路由已随 SPA 化删除，
+    # 仅验证审批流的 auto_pass 节点语义）
     fake_generate_audit_setting.return_value = AuditSetting(auto_pass=True)
     audit = AuditV2(workflow=sql_query_apply)
     audit.create_audit()
     review_info = audit.get_review_info()
     assert review_info.nodes[0].node_type == ReviewNodeType.AUTO_PASS
-    # 测一下详情页 get
-    response = admin_client.get(f"/queryapplydetail/{sql_query_apply.apply_id}/")
-    assert response.status_code == 200
-    assert "无需审批" in response.content.decode("utf-8")
 
 
 def test_auto_review_with_auto_reject(sql_workflow, mocker: MockFixture):
@@ -958,6 +954,22 @@ def test_review_info_current_node():
     info = review_info.readable_info
     assert "g1(passed)" in info
     assert "g2(current)" in info
+
+
+def test_review_info_current_node_repeat_and_first_node():
+    """回归：current_node 可重复访问（缓存索引而非节点对象），且索引 0 不被当作 falsy"""
+    g1 = MagicMock()
+    g1.name = "g1"
+    g2 = MagicMock()
+    g2.name = "g2"
+    # 当前节点位于索引 0：连续两次访问都应返回 node1
+    info_first = ReviewInfo(nodes=[ReviewNode(group=g1, is_current_node=True),
+                                   ReviewNode(group=g2)])
+    assert info_first.current_node.group.name == "g1"
+    assert info_first.current_node.group.name == "g1"
+    assert info_first.current_node_index == 0
+    # 同一实例上先访问 current_node 再访问 readable_info 不报错
+    assert "g1(current)" in info_first.readable_info
 
 
 def test_post_init_sys_config_none(sql_query_apply):

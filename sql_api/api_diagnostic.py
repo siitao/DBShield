@@ -155,16 +155,13 @@ class KillSessionView(APIView):
         r = None
         db_type = instance.db_type
 
-        if db_type in ("mysql", "doris", "clickhouse"):
+        if db_type in ("mysql", "doris"):
+            # mysql 的 kill_connection 语义是断开自身连接，会话终止走 kill(thread_ids)
             r = engine.kill(thread_ids)
-        elif db_type == "mongo":
-            r = engine.kill_op(thread_ids)
-        elif db_type == "oracle":
-            r = engine.kill_session(thread_ids)
-        elif db_type == "tdengine":
-            r = engine.kill_query(thread_ids)
-        elif db_type == "pgsql":
-            r = engine.kill(thread_ids)
+        elif db_type in ("mongo", "oracle", "clickhouse", "tdengine", "pgsql"):
+            # 各引擎已将自身 kill 方法以 kill_connection 类属性别名暴露，统一出口，
+            # 避免新增引擎时调错方法名拿到基类空实现而静默不 kill
+            r = engine.kill_connection(thread_ids)
         else:
             return JsonResponse(
                 {"status": 1, "msg": f"暂时不支持{db_type}类型数据库终止会话", "data": []}

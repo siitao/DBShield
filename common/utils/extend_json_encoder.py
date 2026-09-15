@@ -114,10 +114,6 @@ class ExtendJSONEncoderFTime(json.JSONEncoder):
             return super(ExtendJSONEncoderFTime, self).default(obj)
 
 
-# 使用simplejson处理形如 b'\xaa' 的bytes类型数据会失败，但使用json模块构造这个对象时不能使用bigint_as_string方法
-import json
-
-
 class ExtendJSONEncoderBytes(json.JSONEncoder):
     def default(self, obj):
         try:
@@ -125,8 +121,8 @@ class ExtendJSONEncoderBytes(json.JSONEncoder):
             # 不是utf-8格式的bytes格式需要先进行base64编码转换
             if isinstance(obj, bytes):
                 try:
-                    return o.decode("utf-8")
-                except:
+                    return obj.decode("utf-8")
+                except UnicodeDecodeError:
                     return base64.b64encode(obj).decode("utf-8")
             else:
                 return convert(obj)

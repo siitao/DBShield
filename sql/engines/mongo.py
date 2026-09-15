@@ -784,12 +784,6 @@ class MongoEngine(EngineBase):
             )
             return False, str(traceback.format_exc()), 0
 
-    def execute_workflow(self, workflow):
-        """执行上线单，返回Review set"""
-        return self.execute(
-            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
-        )
-
     def execute(self, db_name=None, sql=""):
         """mongo命令执行语句"""
         self.get_master()
@@ -1138,7 +1132,10 @@ class MongoEngine(EngineBase):
         return check_result
 
     def get_connection(self, db_name=None):
+        # 复用已有连接：此前每次调用都新建 MongoClient 且不关旧的，连接池会持续泄漏
         self.db_name = db_name or self.instance.db_name or "admin"
+        if self.conn:
+            return self.conn
         auth_db = self.instance.db_name or "admin"
 
         options = {
@@ -1158,17 +1155,10 @@ class MongoEngine(EngineBase):
             options["tls"] = True
             options["tlsInsecure"] = not self.instance.verify_ssl
 
-        if self.user and self.password:
-            self.conn = pymongo.MongoClient(**options)
-        else:
-            self.conn = pymongo.MongoClient(**options)
+        # 用户名/密码为空时 pymongo 自行按无认证处理，无需分支
+        self.conn = pymongo.MongoClient(**options)
 
         return self.conn
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
 
     name = "Mongo"
 
@@ -1422,11 +1412,22 @@ class MongoEngine(EngineBase):
             result["bad_query"] = True
         return result
 
+    # pymongo 基础查询方法白名单（与 parse_query_sentence 能产生的 method 一一对应）
+    _QUERY_METHOD_WHITELIST = {
+        "find",
+        "aggregate",
+        "count_documents",
+        "find_one",
+        "distinct",
+        "index_information",
+    }
+    # cursor 链式方法白名单
+    _CURSOR_CHAIN_WHITELIST = {"sort", "limit", "skip", "explain"}
+
     def query(self, db_name=None, sql="", limit_num=0, close_conn=True, **kwargs):
         """执行查询"""
 
         result_set = ResultSet(full_sql=sql)
-        find_cmd = ""
 
         # 提取命令中()中的内容
         query_dict = self.parse_query_sentence(sql)
@@ -1434,95 +1435,115 @@ class MongoEngine(EngineBase):
         de = JsonDecoder()
 
         collection_name = query_dict["collection"]
-        if "method" in query_dict and query_dict["method"]:
-            method = query_dict["method"]
-            find_cmd = "collection." + method
-            if method == "index_information":
-                find_cmd += "()"
-        if "condition" in query_dict:
-            if method == "aggregate":
-                condition = query_dict["condition"]
-                # 给aggregate查询加limit行数限制，防止返回结果过多导致dbshield挂掉
-                condition.append({"$limit": limit_num})
-            if method == "find":
-                condition = de.decode(query_dict["condition"])
-            if method == "count":
-                condition = (
-                    de.decode(query_dict["condition"])
-                    if query_dict.get("condition")
-                    else {}
-                )
-                condition = condition or {}
-            find_cmd += "(condition)"
-        if "projection" in query_dict and query_dict["projection"]:
-            projection = de.decode(query_dict["projection"])
-            find_cmd = find_cmd[:-1] + ",projection)"
-        if "sort" in query_dict and query_dict["sort"]:
-            sorting = []
-            for k, v in de.decode(query_dict["sort"]).items():
-                sorting.append((k, v))
-            find_cmd += ".sort(sorting)"
-        if (
-            method == "find"
-            and "limit" not in query_dict
-            and "explain" not in query_dict
-        ):
-            find_cmd += ".limit(limit_num)"
-        if "limit" in query_dict and query_dict["limit"]:
-            query_limit = int(query_dict["limit"])
-            limit = min(limit_num, query_limit) if query_limit else limit_num
-            find_cmd += f".limit({limit})"
-        if "skip" in query_dict and query_dict["skip"]:
-            query_skip = int(query_dict["skip"])
-            find_cmd += f".skip({query_skip})"
-        if "count" in query_dict:
-            if condition:
-                find_cmd = "collection.count_documents(condition)"
-            else:
-                find_cmd = "collection.count_documents({})"
-        if "explain" in query_dict:
-            find_cmd += ".explain()"
+        method = query_dict.get("method", "")
+        projection = None
 
-        # 覆盖 findOne/countDocuments/distinct/stats 对应的 pymongo 命令
-        if method == "findOne":
+        # ---- 构造调用计划（替代旧版 eval 字符串拼接）----
+        # 旧实现把 "collection.<method>(...)" 拼成字符串后 eval——method 来自用户
+        # 输入，属于注入面。现改为「白名单方法名 + 已解析参数」的结构化调用。
+        base_fn = None      # (方法名, 位置参数, 关键字参数)
+        chain = []          # cursor 链式调用 [(方法名, 位置参数)]
+        db_command = None   # stats 特例：db.command 调用
+
+        if method == "find":
+            condition = de.decode(query_dict["condition"])
+            if query_dict.get("projection"):
+                projection = de.decode(query_dict["projection"])
+                base_fn = ("find", (condition, projection), {})
+            else:
+                base_fn = ("find", (condition,), {})
+            if "limit" not in query_dict and "explain" not in query_dict:
+                chain.append(("limit", (limit_num,)))
+        elif method == "aggregate":
+            condition = query_dict["condition"]
+            # 给aggregate查询加limit行数限制，防止返回结果过多导致dbshield挂掉
+            condition.append({"$limit": limit_num})
+            base_fn = ("aggregate", (condition,), {})
+        elif method == "count":
+            condition = (
+                de.decode(query_dict["condition"])
+                if query_dict.get("condition")
+                else {}
+            )
+            base_fn = ("count_documents", ((condition or {}),), {})
+        elif method == "index_information":
+            base_fn = ("index_information", (), {})
+        elif method == "findOne":
             findone_filter = de.decode(query_dict.get("findOne_filter", "{}")) or {}
             if "findOne_projection" in query_dict:
-                findone_projection = de.decode(query_dict["findOne_projection"])
-                find_cmd = "collection.find_one(findone_filter, findone_projection)"
+                base_fn = (
+                    "find_one",
+                    (findone_filter, de.decode(query_dict["findOne_projection"])),
+                    {},
+                )
             else:
-                find_cmd = "collection.find_one(findone_filter)"
+                base_fn = ("find_one", (findone_filter,), {})
         elif method == "countDocuments":
             countdoc_filter = (
                 de.decode(query_dict.get("countDocuments_filter", "{}")) or {}
             )
             if "countDocuments_options" in query_dict:
-                countdoc_options = de.decode(query_dict["countDocuments_options"]) or {}
-                find_cmd = (
-                    "collection.count_documents(countdoc_filter, **countdoc_options)"
+                base_fn = (
+                    "count_documents",
+                    (countdoc_filter,),
+                    de.decode(query_dict["countDocuments_options"]) or {},
                 )
             else:
-                find_cmd = "collection.count_documents(countdoc_filter)"
+                base_fn = ("count_documents", (countdoc_filter,), {})
         elif method == "distinct":
             distinct_parts = self.__split_args(query_dict.get("distinct_args", "")) or [
                 ""
             ]
             distinct_field = distinct_parts[0].strip().strip('"').strip("'")
             if len(distinct_parts) > 1 and distinct_parts[1].strip():
-                distinct_filter = de.decode(distinct_parts[1]) or {}
-                find_cmd = "collection.distinct(distinct_field, distinct_filter)"
+                base_fn = (
+                    "distinct",
+                    (distinct_field, de.decode(distinct_parts[1]) or {}),
+                    {},
+                )
             else:
-                find_cmd = "collection.distinct(distinct_field)"
+                base_fn = ("distinct", (distinct_field,), {})
         elif method == "stats":
-            find_cmd = 'db.command("collStats", collection_name)'
+            db_command = ("collStats", collection_name)
+        else:
+            # 与旧版行为一致地落入 except：未识别的方法不给执行
+            base_fn = None
+
+        # 链式子句（原顺序 sort → limit → skip → explain）
+        if "sort" in query_dict and query_dict["sort"]:
+            sorting = [(k, v) for k, v in de.decode(query_dict["sort"]).items()]
+            chain.append(("sort", (sorting,)))
+        if "limit" in query_dict and query_dict["limit"]:
+            query_limit = int(query_dict["limit"])
+            chain.append(
+                ("limit", (min(limit_num, query_limit) if query_limit else limit_num,))
+            )
+        if "skip" in query_dict and query_dict["skip"]:
+            query_skip = int(query_dict["skip"])
+            chain.append(("skip", (query_skip,)))
+        if "explain" in query_dict:
+            chain.append(("explain", ()))
 
         try:
             conn = self.get_connection()
             db = conn[db_name]
             collection = db[collection_name]
 
-            # 执行语句
-            logger.debug(find_cmd)
-            cursor = eval(find_cmd)
+            # 执行语句（方法名过白名单后才可调用）
+            logger.debug(f"mongo query: method={method}, base={base_fn}, chain={chain}")
+            if db_command is not None:
+                cursor = db.command(db_command[0], db_command[1])
+            elif base_fn is None:
+                raise ValueError(f"不支持的查询方法: {method!r}")
+            else:
+                fn_name, args, kwargs = base_fn
+                if fn_name not in self._QUERY_METHOD_WHITELIST:
+                    raise ValueError(f"不支持的查询方法: {fn_name!r}")
+                cursor = getattr(collection, fn_name)(*args, **kwargs)
+                for chain_name, chain_args in chain:
+                    if chain_name not in self._CURSOR_CHAIN_WHITELIST:
+                        raise ValueError(f"不支持的链式调用: {chain_name!r}")
+                    cursor = getattr(cursor, chain_name)(*chain_args)
 
             columns = []
             rows = []
@@ -1769,6 +1790,9 @@ class MongoEngine(EngineBase):
                 )
                 result.error = str(e)
         return result
+
+    # 统一出口：诊断页经 EngineBase.kill_connection 调用
+    kill_connection = kill_op
 
     # 排除的系统库
     forbidden_databases = [

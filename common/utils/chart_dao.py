@@ -131,67 +131,46 @@ class ChartDao(object):
         limit 20;""".format(start_date, end_date)
         return self.__query(sql)
 
-    # 慢日志历史趋势图(按次数)
-    def slow_query_review_history_by_cnt(self, checksum):
-        sql = f"""select sum(ts_cnt),date(date_add(ts_min, interval 8 HOUR))
-from mysql_slow_query_review_history
-where checksum = '{checksum}'
-group by date(date_add(ts_min, interval 8 HOUR));"""
-        return self.__query(sql)
-
-    # 慢日志历史趋势图(按时长)
-    def slow_query_review_history_by_pct_95_time(self, checksum):
-        sql = f"""select truncate(MAX(Query_time_pct_95),6),date(date_add(ts_min, interval 8 HOUR))
-from mysql_slow_query_review_history
-where checksum = '{checksum}'
-group by date(date_add(ts_min, interval 8 HOUR));"""
-        return self.__query(sql)
-
-    # Redis慢日志历史趋势图(按次数)
-    def redis_slow_query_review_history_by_cnt(self, checksum, hostnames):
-        hostname_list = "','".join(hostnames)
-        sql = f"""select sum(cnt),date(ts_min)
-from redis_slow_query_review_history
-where checksum = '{checksum}'
-and hostname in ('{hostname_list}')
-group by date(ts_min);"""
-        return self.__query(sql)
-
-    # Redis慢日志历史趋势图(按时长)
-    def redis_slow_query_review_history_by_pct_95_time(self, checksum, hostnames):
-        hostname_list = "','".join(hostnames)
-        sql = f"""select truncate(MAX(duration_pct_95),6),date(ts_min)
-from redis_slow_query_review_history
-where checksum = '{checksum}'
-and hostname in ('{hostname_list}')
-group by date(ts_min);"""
-        return self.__query(sql)
-
-    # 慢日志db/user维度统计
+    # 慢日志 db/user 维度统计（v2 明细表，近 24 小时；替代 v1 mysql_slow_query_review_history）
     def slow_query_count_by_db_by_user(self):
-        sql = """
-        select
-            concat(db_max,' user: ' ,user_max),
-            sum(ts_cnt) 
-        from mysql_slow_query_review_history 
-        where ts_min >= date_sub(now(),INTERVAL 24 hour)
-        and db_max is not null
-        group by db_max,user_max order by sum(ts_cnt) desc limit 50;
-        """
-        return self.__query(sql)
+        from datetime import datetime
 
-    # 慢日志db维度统计
+        from django.db.models import Count
+        from sql.models import MySQLSlowQueryDetail
+
+        cutoff = datetime.now() - timedelta(hours=24)
+        rows = (
+            MySQLSlowQueryDetail.objects
+            .filter(execution_start_time__gte=cutoff)
+            .exclude(db_name="")
+            .values("db_name", "user_name")
+            .annotate(cnt=Count("id"))
+            .order_by("-cnt")[:50]
+        )
+        return {
+            "rows": [
+                (f"{r['db_name']} user: {r['user_name']}", r["cnt"])
+                for r in rows
+            ]
+        }
+
+    # 慢日志 db 维度统计（v2 明细表，近 24 小时）
     def slow_query_count_by_db(self):
-        sql = """
-        select
-            db_max,
-            sum(ts_cnt) 
-        from mysql_slow_query_review_history 
-        where ts_min >= date_sub(now(),INTERVAL 24 hour)
-        and db_max is not null
-        group by db_max order by sum(ts_cnt) desc limit 50;
-        """
-        return self.__query(sql)
+        from datetime import datetime
+
+        from django.db.models import Count
+        from sql.models import MySQLSlowQueryDetail
+
+        cutoff = datetime.now() - timedelta(hours=24)
+        rows = (
+            MySQLSlowQueryDetail.objects
+            .filter(execution_start_time__gte=cutoff)
+            .exclude(db_name="")
+            .values("db_name")
+            .annotate(cnt=Count("id"))
+            .order_by("-cnt")[:50]
+        )
+        return {"rows": [(r["db_name"], r["cnt"]) for r in rows]}
 
     # 数据库实例类型统计
     def instance_count_by_type(self):

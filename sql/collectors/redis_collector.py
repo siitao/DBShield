@@ -16,17 +16,20 @@ class RedisSlowQueryCollector(BaseSlowQueryCollector):
     """Redis 慢查询采集器"""
 
     def _get_redis_connection(self):
-        """获取 Redis 连接"""
-        import redis
+        """经引擎层获取连接：与在线查询同一出口，
+        统一覆盖密码解密（Vault 插件）、username、SSL 等配置。
+        旧实现绕过引擎直连，实例配置 SSL 或密码需解密时采集必失败。
+        """
+        from sql.engines.redis import RedisEngine
 
-        return redis.Redis(
-            host=self.instance.host,
-            port=self.instance.port,
-            password=self.instance.password or None,
-            decode_responses=True,
-            socket_timeout=5,
-            socket_connect_timeout=5,
-        )
+        engine = RedisEngine(instance=self.instance)
+        try:
+            return engine.get_connection(
+                db_name=self.instance.db_name or 0
+            ), engine
+        except Exception:
+            engine.close()
+            raise
 
     def _normalize_command(self, command_parts: list) -> str:
         """
@@ -123,8 +126,10 @@ class RedisSlowQueryCollector(BaseSlowQueryCollector):
 
     def collect_detail(self, start_time: datetime, end_time: datetime):
         """从 SLOWLOG GET 采集明细数据（使用统一游标管理器）"""
+        engine = None
         try:
-            r = self._get_redis_connection()
+            # _get_redis_connection 返回 (redis客户端, engine)，engine 用于 finally 归还连接
+            r, engine = self._get_redis_connection()
 
             # 创建游标管理器
             cursor_mgr = self.create_cursor_manager()
@@ -210,3 +215,6 @@ class RedisSlowQueryCollector(BaseSlowQueryCollector):
 
         except Exception as e:
             logger.error(f"[{self.instance_name}] 采集Redis明细数据失败: {e}", exc_info=True)
+        finally:
+            if engine:
+                engine.close()

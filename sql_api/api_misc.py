@@ -15,7 +15,6 @@ binlog / My2SQL / 查询 / 审计 / 回滚 / 导出 DRF APIView 集 · 收尾所
 
 路由：
   POST /api/v1/audit/log/                 — 通用审计日志
-  POST /api/v1/audit/sqlworkflow/         — SQL 上线工单审计
   POST /api/v1/audit/querylog/            — 查询日志审计
   POST /api/v1/binlog/list/               — binlog 列表
   POST /api/v1/binlog/my2sql/             — my2sql 解析
@@ -60,7 +59,7 @@ from sql.models import (
     ArchiveConfig, ArchiveLog,
     AuditEntry, Instance, QueryLog,
     QueryPrivileges, QueryPrivilegesApply,
-    ResourceGroup, SlowQueryHistory, SqlWorkflow,
+    ResourceGroup, SqlWorkflow,
 )
 from sql.notify import notify_for_audit
 from sql.plugins.my2sql import My2SQL
@@ -76,6 +75,15 @@ logger = logging.getLogger("default")
 
 
 # ---------- permissions ----------
+
+
+def _safe_int(value, default=0):
+    """安全转整数，空/非数字入参返回默认值（避免非法入参触发 HTTP 500）"""
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
+
 
 class AuditUserPermission(BasePermission):
     def has_permission(self, request, view):
@@ -125,8 +133,8 @@ class AuditLogView(APIView):
     permission_classes = [IsAuthenticated, AuditUserPermission]
 
     def post(self, request):
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         limit = limit if limit else None
         search = request.data.get("search", "")
@@ -167,8 +175,8 @@ class AuditSqlWorkflowView(APIView):
         group_id = request.data.get("group_id")
         start_date = request.data.get("start_date")
         end_date = request.data.get("end_date")
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         limit = limit if limit else None
         search = request.data.get("search")
@@ -216,8 +224,8 @@ class AuditQueryLogView(APIView):
     permission_classes = [IsAuthenticated, AuditUserPermission]
 
     def post(self, request):
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         limit = limit if limit else None
         search = request.data.get("search", "")
@@ -495,7 +503,7 @@ class GenerateSqlView(APIView):
             table_schema = tb_name
 
         # AI 生成 + 统一用量记账（成功/失败都记，tokens/延迟取 client 已捕获部分）
-        from common.utils.openai import OpenaiClient, record_ai_usage
+        from common.utils.ai_gateway import OpenaiClient, record_ai_usage
 
         usage_ctx = dict(
             capability="nl2sql",
@@ -530,7 +538,7 @@ class CheckOpenAIView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from common.utils.openai import check_openai_config
+        from common.utils.ai_gateway import check_openai_config
 
         return JsonResponse(
             {"status": 0, "msg": "ok", "data": {"openai": check_openai_config()}}
@@ -556,45 +564,10 @@ def _tb_priv(user, instance, db_name, tb_name):
 
 
 def _query_apply_audit_call_back(apply_id, workflow_status):
-    apply_info = QueryPrivilegesApply.objects.get(apply_id=apply_id)
-    if workflow_status == WorkflowStatus.PASSED:
-        apply_info.status = WorkflowStatus.PASSED
-        apply_info.save()
-        # 通过后写入权限表
-        ins = apply_info.instance
-        if apply_info.priv_type == 1:
-            for db in apply_info.db_list.split(","):
-                QueryPrivileges.objects.update_or_create(
-                    user_name=apply_info.user_name,
-                    user_display=apply_info.user_display,
-                    instance=ins,
-                    db_name=db,
-                    priv_type=1,
-                    defaults={
-                        "table_name": "",
-                        "limit_num": apply_info.limit_num,
-                        "valid_date": apply_info.valid_date,
-                        "is_deleted": 0,
-                    },
-                )
-        elif apply_info.priv_type == 2:
-            for tb in apply_info.table_list.split(","):
-                QueryPrivileges.objects.update_or_create(
-                    user_name=apply_info.user_name,
-                    user_display=apply_info.user_display,
-                    instance=ins,
-                    db_name=apply_info.db_list,
-                    priv_type=2,
-                    defaults={
-                        "table_name": tb,
-                        "limit_num": apply_info.limit_num,
-                        "valid_date": apply_info.valid_date,
-                        "is_deleted": 0,
-                    },
-                )
-    elif workflow_status == WorkflowStatus.REJECTED:
-        apply_info.status = WorkflowStatus.REJECTED
-        apply_info.save()
+    # 授权落库逻辑单点收口于 services（兼容旧 import 路径）
+    from sql.services.privilege_service import query_apply_audit_call_back
+
+    return query_apply_audit_call_back(apply_id, workflow_status)
 
 
 class QueryApplyListView(APIView):
@@ -602,8 +575,8 @@ class QueryApplyListView(APIView):
 
     def post(self, request):
         user = request.user
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         search = request.data.get("search", "")
 
@@ -632,8 +605,8 @@ class UserPrivilegesView(APIView):
     def post(self, request):
         user = request.user
         user_display = request.data.get("user_display", "all")
-        limit = int(request.data.get("limit", 0))
-        offset = int(request.data.get("offset", 0))
+        limit = _safe_int(request.data.get("limit"), 0)
+        offset = _safe_int(request.data.get("offset"), 0)
         limit = offset + limit
         search = request.data.get("search", "")
 
@@ -710,7 +683,7 @@ class ApplyForPrivilegesView(APIView):
         apply_info = QueryPrivilegesApply(
             title=title, group_id=group_id, group_name=group_name,
             audit_auth_groups="", user_name=user.username, user_display=user.display,
-            instance=ins, priv_type=int(priv_type), valid_date=valid_date,
+            instance=ins, priv_type=_safe_int(priv_type, -1), valid_date=valid_date,
             status=WorkflowStatus.WAITING, limit_num=limit_num,
         )
         if int(priv_type) == 1:
@@ -851,8 +824,16 @@ class SchemaSyncView(APIView):
             db_name = "*"
             target_db_name = "*"
 
-        instance = Instance.objects.get(instance_name=instance_name)
-        target_instance = Instance.objects.get(instance_name=target_instance_name)
+        # 资源组校验：源/目标实例都须在用户所在资源组内。
+        # 此前直接 Instance.objects.get，持菜单权限者可对任意实例做结构对比
+        # 并通过 DSN 读取其账号密码
+        try:
+            instance = resolve_instance(request.user, instance_name=instance_name)
+            target_instance = resolve_instance(
+                request.user, instance_name=target_instance_name
+            )
+        except Exception:
+            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
 
         from sql.plugins.schemasync import SchemaSync
         schema_sync = SchemaSync()

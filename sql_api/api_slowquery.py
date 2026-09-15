@@ -24,7 +24,7 @@ from pathlib import Path
 import sqlparse
 from common.config import SysConfig
 from common.utils.extend_json_encoder import encode_json as _encode
-from common.utils.openai import OpenaiClient, check_openai_config, record_ai_usage
+from common.utils.ai_gateway import OpenaiClient, check_openai_config, record_ai_usage
 from django.core.cache import cache
 from django.http import JsonResponse
 from rest_framework.permissions import BasePermission, IsAuthenticated
@@ -37,12 +37,13 @@ from sql.services.instance_service import resolve_instance
 from sql.sql_tuning import SqlTuning
 from sql.utils.resource_group import user_instances
 from sql.utils.sql_utils import (
+    extract_mongo_collections,
     extract_tables,
     generate_sql,
     mask_sql_literals,
     sanitize_explain_sql,
 )
-from sql_api.ai_optimizer import extract_mongo_collections, run_agent_optimize
+from sql_api.ai_optimizer import run_agent_optimize
 
 logger = logging.getLogger("default")
 
@@ -199,20 +200,23 @@ class OptimizeSqlAdvisorView(APIView):
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
-        # 检查 sqladvisor 程序路径
-        sqladvisor_path = SysConfig().get("sqladvisor") or "sqladvisor"
-        sqladvisor = SQLAdvisor(sqladvisor_path)
+        # SQLAdvisor() 自行从 SysConfig 读取可执行文件路径；路径未配置时 check_args 会拦截
+        sqladvisor = SQLAdvisor()
 
         # 获取连接信息
         user, password = instance.get_username_password()
         online_dsn = f"{user}:{password}@{instance.host}:{instance.port}/{db_name}"
 
-        # 执行 SQLAdvisor
+        # 执行 SQLAdvisor（q 为必须参数；d 参与 check_args 的库名注入校验）
         args = {
-            "query": sql_content,
+            "q": sql_content,
+            "d": db_name,
             "online-dsn": online_dsn,
             "verbose": verbose,
         }
+        args_check_result = sqladvisor.check_args(args=args)
+        if args_check_result["status"] != 0:
+            return JsonResponse({"status": 1, "msg": args_check_result["msg"]})
         cmd_args = sqladvisor.generate_args2cmd(args=args)
         stdout, stderr = sqladvisor.execute_cmd(cmd_args).communicate()
 
@@ -270,6 +274,10 @@ class OptimizeSqlTuningView(APIView):
         instance_name = request.data.get("instance_name")
         db_name = request.data.get("db_name")
         option = request.data.get("option", [])
+        # form 提交时 DRF 会把重复 key 折叠成最后一个值（str），统一按列表处理，
+        # 避免 "sys_parm" in "sql_plan" 这类子串误判导致静默空报告
+        if isinstance(option, str):
+            option = [option]
 
         # 参数验证
         if not sql_content or not instance_name or not db_name:
@@ -283,7 +291,7 @@ class OptimizeSqlTuningView(APIView):
 
         # 执行调优
         try:
-            tuning = SqlTuning(instance, db_name)
+            tuning = SqlTuning(instance.instance_name, db_name, sql_content)
             result = tuning.tuning(sql_content, option)
             return JsonResponse({"status": 0, "msg": "success", "data": result})
         except Exception as e:
@@ -445,6 +453,7 @@ class OptimizeAIView(APIView):
                 return JsonResponse({"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"})
 
         # 非 mysql：单轮模式（无 DDL 上下文，人设按实际类型）
+        client = None
         try:
             # 场景化配置：90s/次（含 1 次重试最坏 ~180s），
             # 需 < 前端该接口的 300s 超时，避免响应送到时连接已被掐断
@@ -470,6 +479,18 @@ class OptimizeAIView(APIView):
             return JsonResponse({"status": 0, "msg": "success", "data": result})
         except Exception as e:
             logger.error(f"AI 优化建议失败: {e}", exc_info=True)
+            # 失败同样记账（与 Agent 分支口径一致，否则用量页失败率对单轮模式失真）
+            record_ai_usage(
+                capability="sql_optimize",
+                client=client,
+                db_type=db_type,
+                instance_name=instance.instance_name if instance else "",
+                db_name=db_name or "",
+                user_name=request.user.username,
+                latency_ms=int((time.monotonic() - started) * 1000),
+                status="failed",
+                error=str(e)[:500],
+            )
             return JsonResponse({"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"})
 
 

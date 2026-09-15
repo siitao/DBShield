@@ -206,12 +206,6 @@ class MemcachedEngine(EngineBase):
 
         return check_result
 
-    def execute_workflow(self, workflow: SqlWorkflow):
-        """执行上线单，返回Review set"""
-        return self.execute(
-            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
-        )
-
     def get_execute_percentage(self):
         """获取执行进度"""
         return 100

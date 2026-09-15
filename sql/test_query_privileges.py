@@ -1,11 +1,10 @@
 import json
 from datetime import datetime, timedelta, date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 from django.contrib.auth.models import Permission
 from django.test import TestCase, Client
-from pytest_django.asserts import assertRedirects
 
 import sql.query_privileges
 from common.config import SysConfig
@@ -134,7 +133,7 @@ class TestQueryPrivilegesApply(TestCase):
         """
         data = {"limit": 14, "offset": 0, "search": "some_title1"}
         self.client.force_login(self.superuser)
-        r = self.client.post(path="/query/applylist/", data=data)
+        r = self.client.post(path="/api/v1/query/applylist/", data=data)
         self.assertEqual(json.loads(r.content)["total"], 1)
         keys = list(json.loads(r.content)["rows"][0].keys())
         self.assertListEqual(
@@ -167,7 +166,7 @@ class TestQueryPrivilegesApply(TestCase):
         self.user.user_permissions.add(query_review)
         self.user.resource_group.add(self.group)
         self.client.force_login(self.user)
-        r = self.client.post(path="/query/applylist/", data=data)
+        r = self.client.post(path="/api/v1/query/applylist/", data=data)
         self.assertEqual(json.loads(r.content)["total"], 1)
         keys = list(json.loads(r.content)["rows"][0].keys())
         self.assertListEqual(
@@ -198,7 +197,7 @@ class TestQueryPrivilegesApply(TestCase):
         self.user.user_permissions.add(menu_queryapplylist)
         self.user.resource_group.add(self.group)
         self.client.force_login(self.user)
-        r = self.client.post(path="/query/applylist/", data=data)
+        r = self.client.post(path="/api/v1/query/applylist/", data=data)
         self.assertEqual(json.loads(r.content), {"total": 0, "rows": []})
 
     def test_user_query_priv_with_search(self):
@@ -217,7 +216,7 @@ class TestQueryPrivilegesApply(TestCase):
             priv_type=2,
         )
         self.client.force_login(self.superuser)
-        r = self.client.post(path="/query/userprivileges/", data=data)
+        r = self.client.post(path="/api/v1/query/userprivileges/", data=data)
         self.assertEqual(json.loads(r.content)["total"], 1)
         keys = list(json.loads(r.content)["rows"][0].keys())
         self.assertListEqual(
@@ -255,7 +254,7 @@ class TestQueryPrivilegesApply(TestCase):
         self.user.user_permissions.add(query_mgtpriv)
         self.user.resource_group.add(self.group)
         self.client.force_login(self.user)
-        r = self.client.post(path="/query/userprivileges/", data=data)
+        r = self.client.post(path="/api/v1/query/userprivileges/", data=data)
         self.assertEqual(json.loads(r.content)["total"], 1)
         keys = list(json.loads(r.content)["rows"][0].keys())
         self.assertListEqual(
@@ -291,7 +290,7 @@ class TestQueryPrivilegesApply(TestCase):
         self.user.user_permissions.add(menu_queryapplylist)
         self.user.resource_group.add(self.group)
         self.client.force_login(self.user)
-        r = self.client.post(path="/query/userprivileges/", data=data)
+        r = self.client.post(path="/api/v1/query/userprivileges/", data=data)
         self.assertEqual(json.loads(r.content), {"total": 0, "rows": []})
 
 
@@ -514,9 +513,8 @@ class TestQueryPrivilegesCheck(TestCase):
         "sql.query_privileges._table_ref",
         return_value=[{"schema": "archery", "name": "sql_users"}],
     )
-    @patch("sql.query_privileges._tb_priv", return_value=False)
-    @patch("sql.query_privileges._db_priv", return_value=False)
-    def test_query_priv_check_no_priv(self, __db_priv, __tb_priv, __table_ref):
+    @patch("sql.query_privileges._load_user_priv_rows", return_value=[])
+    def test_query_priv_check_no_priv(self, _load_priv_rows, _table_ref):
         """
         测试用户权限校验，mysql实例、普通用户 无库表权限，inception语法树正常打印
         :return:
@@ -541,13 +539,15 @@ class TestQueryPrivilegesCheck(TestCase):
         "sql.query_privileges._table_ref",
         return_value=[{"schema": "archery", "name": "sql_users"}],
     )
-    @patch("sql.query_privileges._tb_priv", return_value=False)
-    @patch("sql.query_privileges._db_priv", return_value=1000)
-    def test_query_priv_check_db_priv_exist(self, __db_priv, __tb_priv, __table_ref):
+    @patch("sql.query_privileges._load_user_priv_rows")
+    def test_query_priv_check_db_priv_exist(self, _load_priv_rows, _table_ref):
         """
         测试用户权限校验，mysql实例、普通用户 有库权限，inception语法树正常打印
         :return:
         """
+        _load_priv_rows.return_value = [
+            MagicMock(priv_type=1, db_name="archery", table_name="", limit_num=1000)
+        ]
         r = sql.query_privileges.query_priv_check(
             user=self.user,
             instance=self.slave,
@@ -564,13 +564,17 @@ class TestQueryPrivilegesCheck(TestCase):
         "sql.query_privileges._table_ref",
         return_value=[{"schema": "archery", "name": "sql_users"}],
     )
-    @patch("sql.query_privileges._tb_priv", return_value=10)
-    @patch("sql.query_privileges._db_priv", return_value=False)
-    def test_query_priv_check_tb_priv_exist(self, __db_priv, __tb_priv, __table_ref):
+    @patch("sql.query_privileges._load_user_priv_rows")
+    def test_query_priv_check_tb_priv_exist(self, _load_priv_rows, _table_ref):
         """
         测试用户权限校验，mysql实例、普通用户 ，有表权限，inception语法树正常打印
         :return:
         """
+        _load_priv_rows.return_value = [
+            MagicMock(
+                priv_type=2, db_name="archery", table_name="sql_users", limit_num=10
+            )
+        ]
         r = sql.query_privileges.query_priv_check(
             user=self.user,
             instance=self.slave,
@@ -583,16 +587,12 @@ class TestQueryPrivilegesCheck(TestCase):
         )
 
     @patch("sql.query_privileges._table_ref")
-    @patch("sql.query_privileges._tb_priv", return_value=False)
-    @patch("sql.query_privileges._db_priv", return_value=False)
-    def test_query_priv_check_table_ref_Exception_and_no_db_priv(
-        self, __db_priv, __tb_priv, __table_ref
-    ):
+    def test_query_priv_check_table_ref_Exception_and_no_db_priv(self, _table_ref):
         """
         测试用户权限校验，mysql实例、普通用户 ，inception语法树抛出异常
         :return:
         """
-        __table_ref.side_effect = RuntimeError("语法错误")
+        _table_ref.side_effect = RuntimeError("语法错误")
         self.sys_config.get_all_config()
         r = sql.query_privileges.query_priv_check(
             user=self.user,
@@ -610,10 +610,10 @@ class TestQueryPrivilegesCheck(TestCase):
             },
         )
 
-    @patch("sql.query_privileges._db_priv", return_value=False)
-    def test_query_priv_check_with_pgsql_db_priv(self, __db_priv):
+    @patch("sql.query_privileges._load_user_priv_rows", return_value=[])
+    def test_query_priv_check_with_pgsql_db_priv(self, _load_priv_rows):
         """
-        测试用户权限校验,pgsql实例、普通用户
+        测试用户权限校验,pgsql实例、普通用户，无库权限被拦截
         """
         pgsql_instance = Instance(
             instance_name="pgsql",
@@ -631,14 +631,18 @@ class TestQueryPrivilegesCheck(TestCase):
             sql_content="select * from should_not_used.sql_users;",
             limit_num=100,
         )
-        __db_priv.assert_called_with(self.user, pgsql_instance, self.db_name)
+        self.assertEqual(r["status"], 2)
+        self.assertIn(self.db_name, r["msg"])
 
-    @patch("sql.query_privileges._db_priv", return_value=1000)
-    def test_query_priv_check_not_mysql_db_priv_exist(self, __db_priv):
+    @patch("sql.query_privileges._load_user_priv_rows")
+    def test_query_priv_check_not_mysql_db_priv_exist(self, _load_priv_rows):
         """
         测试用户权限校验，非mysql实例、普通用户 有库权限
         :return:
         """
+        _load_priv_rows.return_value = [
+            MagicMock(priv_type=1, db_name=self.db_name, table_name="", limit_num=1000)
+        ]
         mssql_instance = Instance(
             instance_name="mssql",
             type="slave",
@@ -660,8 +664,8 @@ class TestQueryPrivilegesCheck(TestCase):
             {"data": {"limit_num": 100, "priv_check": True}, "msg": "ok", "status": 0},
         )
 
-    @patch("sql.query_privileges._db_priv", return_value=False)
-    def test_query_priv_check_not_mysql_db_priv_not_exist(self, __db_priv):
+    @patch("sql.query_privileges._load_user_priv_rows", return_value=[])
+    def test_query_priv_check_not_mysql_db_priv_not_exist(self, _load_priv_rows):
         """
         测试用户权限校验，非mysql实例、普通用户 无库权限
         :return:
@@ -699,17 +703,17 @@ def test_query_privilege_audit(
     auditor = AuditV2(workflow=sql_query_apply)
     auditor.create_audit()
     response = client.post(
-        "/query/privaudit/",
+        "/api/v1/query_priv/audit/",
         data={
             "apply_id": sql_query_apply.apply_id,
             "audit_status": WorkflowAction.PASS,
             "audit_remark": "test",
         },
     )
-    assertRedirects(
-        response,
-        fetch_redirect_response=False,
-        expected_url=f"/queryapplydetail/{sql_query_apply.apply_id}/",
-    )
+    # JSON 版审核接口：通过后返回 {status: 0}（不再 302 跳详情页）
+    body = response.json()
+    assert body["status"] == 0
+    sql_query_apply.refresh_from_db()
+    assert sql_query_apply.status == WorkflowStatus.PASSED
     sql_query_apply.refresh_from_db()
     assert sql_query_apply.status == WorkflowStatus.PASSED

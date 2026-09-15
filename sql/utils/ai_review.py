@@ -172,7 +172,7 @@ def _attach(row, result):
 
 def _attach_unknown(row, summary=_UNKNOWN_SUMMARY):
     """挂载 unknown 占位字段（失败/跳过/缺失统一形态，保证前端字段齐全）。"""
-    from common.utils.openai import AI_LOCK_NONE, AI_RISK_UNKNOWN
+    from common.utils.ai_gateway import AI_LOCK_NONE, AI_RISK_UNKNOWN
 
     row.ai_risk_level = AI_RISK_UNKNOWN
     row.ai_risk_score = 0
@@ -202,7 +202,7 @@ def review_statements(engine, client, db_type, db_name, statements, instance_nam
     每项为归一结果 dict；该项 AI 完全不可用时为 {"error": ...} 占位
     （调用方按 "risk_level" 不存在判 unknown）。不会抛出异常。
     """
-    from common.utils.openai import record_ai_usage
+    from common.utils.ai_gateway import record_ai_usage
 
     masked = [mask_sql_literals(s or "") for s in statements]
     model = str(client.default_chat_model)
@@ -303,9 +303,12 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
     开关（ai_review_enabled）/ OpenAI 配置不满足时静默跳过；任何异常
     均降级为 unknown 占位，绝不影响检测主流程（errlevel 等不变）。
     """
-    if not engine.config.get("ai_review_enabled", False):
+    # 仅 mysql/clickhouse/tdengine 在 __init__ 里设了 self.config，
+    # mongo/pgsql 等引擎没有该属性——缺失时视为未开启，而非 AttributeError
+    engine_config = getattr(engine, "config", None) or {}
+    if not engine_config.get("ai_review_enabled", False):
         return
-    from common.utils.openai import OpenaiClient, check_openai_config
+    from common.utils.ai_gateway import OpenaiClient, check_openai_config
 
     if not check_openai_config():
         return

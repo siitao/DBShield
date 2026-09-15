@@ -6,7 +6,7 @@
 - 严重度统计规则（severity_from_stats：p95 / 扫描返回比阈值单点维护，
   诊断 prompt 的判定说明与代码兜底共用，改阈值只改这里）
 - 审核分数量级换算（score_band，与审核 prompt 的评分标准一致）
-- 中文标签映射（等级 / 锁表风险 / 瓶颈类型），供报告拼装与前端兜底
+- 瓶颈类型合法集合（BOTTLENECK_LABELS，网关侧校验用；中文展示标签由前端维护）
 """
 
 AI_LEVEL_LOW = "low"
@@ -22,20 +22,6 @@ SEVERITY_HIGH_P95_MS = 5000
 SEVERITY_HIGH_SCAN_RATIO = 1000
 SEVERITY_MEDIUM_P95_MS = 1000
 SEVERITY_MEDIUM_SCAN_RATIO = 100
-
-LEVEL_LABELS = {
-    AI_LEVEL_LOW: "低危",
-    AI_LEVEL_MEDIUM: "中危",
-    AI_LEVEL_HIGH: "高危",
-    AI_LEVEL_UNKNOWN: "未知",
-}
-
-LOCK_LABELS = {
-    "none": "非 DDL/无锁表风险",
-    "low": "低",
-    "medium": "中",
-    "high": "高",
-}
 
 BOTTLENECK_LABELS = {
     "full_scan": "全表扫描",
@@ -87,11 +73,3 @@ def score_band(score) -> str:
     if score >= 40:
         return AI_LEVEL_MEDIUM
     return AI_LEVEL_LOW
-
-
-def level_label(level) -> str:
-    return LEVEL_LABELS.get(normalize_level(level), "未知")
-
-
-def bottleneck_label(bottleneck_type) -> str:
-    return BOTTLENECK_LABELS.get(str(bottleneck_type or ""), "其他")

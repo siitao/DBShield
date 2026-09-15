@@ -61,6 +61,31 @@ class SqlTuning(object):
         """获取sql语句中的表名"""
         return [i["name"].strip("`") for i in extract_tables(self.sqltext)]
 
+    def tuning(self, sqltext, option=None):
+        """
+        SQL 调优报告编排：按 option 维度采集并组装结果。
+        option 取值与前端复选框一致：sys_parm / sql_plan / obj_stat / sql_profile
+        """
+        if option is None:
+            option = []
+        # 去除结尾分号：explain 与 profiling 执行都不需要
+        self.sqltext = sqltext.strip().rstrip(";")
+        result = {}
+        if "sys_parm" in option:
+            result["basic_information"] = self.basic_information()
+            result["sys_parameter"] = self.sys_parameter()
+            result["optimizer_switch"] = self.optimizer_switch()
+        if "sql_plan" in option:
+            plan, optimizer_rewrite_sql = self.sqlplan()
+            result["plan"] = plan
+            result["optimizer_rewrite_sql"] = optimizer_rewrite_sql
+        if "obj_stat" in option:
+            result["object_statistics"] = self.object_statistics()
+        if "sql_profile" in option:
+            result["session_status"] = self.exec_sql()
+        result["sqltext"] = self.sqltext
+        return result
+
     def basic_information(self):
         return self.engine.query(sql="select @@version").to_sep_dict()
 

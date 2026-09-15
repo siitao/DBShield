@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted } from "vue";
+import { ref, reactive, computed, watch, nextTick, onMounted } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useInstanceSelect } from "@/composables/useInstanceSelect";
 import {
@@ -16,6 +16,7 @@ import {
 } from "@/api/instance_admin";
 import { fetchQueryResources } from "@/api/sqlquery";
 import { useAuthStore } from "@/stores/auth";
+import { parseShowGrants, type ParsedGrants } from "@/utils/mysqlGrants";
 import {
   MYSQL_PRIVILEGES,
   PRIV_LEVEL_LABEL,
@@ -116,6 +117,60 @@ const currentLevelMeta = computed<PrivLevelMeta | undefined>(
   () => MYSQL_PRIVILEGES[grantForm.priv_type]
 );
 
+// 账号当前已有权限（列表接口每行自带 SHOW GRANTS 结果，解析后用于弹窗回显）
+const currentGrants = ref<ParsedGrants | null>(null);
+
+/** 当前层级/库/表范围内实际持有的权限名（大写；ALL 展开为该级全选）。
+ * 库/表名大小写不敏感匹配：grant 语句中的写法可能与实际库名大小写不一致。 */
+const heldPrivsForScope = computed<Set<string>>(() => {
+  const held = new Set<string>();
+  const grants = currentGrants.value;
+  if (!grants) return held;
+  const addAll = (names: string[]) => {
+    for (const n of names) {
+      if (n === "ALL" || n === "ALL PRIVILEGES") {
+        for (const g of currentLevelMeta.value?.groups ?? []) {
+          g.privs.forEach((p) => held.add(p.toUpperCase()));
+        }
+      } else {
+        held.add(n.toUpperCase());
+      }
+    }
+  };
+  const dbEntry = (db: string) => {
+    const key = Object.keys(grants.dbs).find(
+      (k) => k.toLowerCase() === db.toLowerCase()
+    );
+    return key ? grants.dbs[key] : [];
+  };
+  const tbEntry = (db: string, tb: string) => {
+    const key = Object.keys(grants.tables).find(
+      (k) => k.toLowerCase() === `${db}.${tb}`.toLowerCase()
+    );
+    return key ? grants.tables[key] : [];
+  };
+  if (grantForm.priv_type === 0) {
+    addAll(grants.global);
+  } else if (grantForm.priv_type === 1) {
+    const db = grantForm.db_name[0];
+    if (db) addAll(dbEntry(db));
+  } else if (grantForm.priv_type === 2) {
+    const db = grantForm.db_name[0];
+    const tb = grantForm.tb_name[0];
+    if (db && tb) addAll(tbEntry(db, tb));
+  }
+  return held;
+});
+
+/** 权限在当前操作下是否可选：
+ * 赋权时已持有的禁用（重复授权无意义）；回收时未持有的禁用（回收不存在的权限会报错）。
+ * 列级不限制——勾选对象是"列"，已有列级授权在摘要中查看。 */
+function isPrivEnabled(priv: string): boolean {
+  if (grantForm.priv_type === 3) return true;
+  const isHeld = heldPrivsForScope.value.has(priv.toUpperCase());
+  return grantForm.op_type === 0 ? !isHeld : isHeld;
+}
+
 const privTreeData = computed(() => {
   const meta = currentLevelMeta.value;
   if (!meta) return [];
@@ -123,7 +178,11 @@ const privTreeData = computed(() => {
     id: `group-${meta.level}-${g.group}`,
     label: g.group,
     disabled: true,
-    children: g.privs.map((p) => ({ id: p, label: p })),
+    children: g.privs.map((p) => ({
+      id: p,
+      label: p,
+      disabled: !isPrivEnabled(p),
+    })),
   }));
 });
 
@@ -149,7 +208,10 @@ function removeGrantPerm(p: string) {
 }
 
 function selectAllGrantPerms() {
-  const all = (currentLevelMeta.value?.groups ?? []).flatMap((g) => g.privs);
+  // 全选仅作用于当前操作下可选项（禁用节点不参与）
+  const all = (currentLevelMeta.value?.groups ?? [])
+    .flatMap((g) => g.privs)
+    .filter((p) => isPrivEnabled(p));
   grantForm.privs = [...new Set(all)];
   grantTreeRef.value?.setCheckedKeys(grantForm.privs);
 }
@@ -168,12 +230,56 @@ function filterGrantPermNode(value: string, data: { label?: string }): boolean {
   return (data.label || "").toLowerCase().includes(value.toLowerCase());
 }
 
+/** 已有权限摘要（逐行可读文本） */
+const grantSummaryLines = computed(() => {
+  const g = currentGrants.value;
+  if (!g) return [];
+  const lines: string[] = [];
+  if (g.global.length) lines.push(`全局：${g.global.join("、")}`);
+  for (const [db, privs] of Object.entries(g.dbs)) {
+    lines.push(`库 ${db}：${privs.join("、")}`);
+  }
+  for (const [tb, privs] of Object.entries(g.tables)) {
+    lines.push(`表 ${tb}：${privs.join("、")}`);
+  }
+  for (const c of g.columns) lines.push(`列：${c}`);
+  return lines;
+});
+
+/** 按操作类型回显勾选：回收预勾选实际持有的权限（未持有的已禁用）；
+ * 赋权不预勾——已持有的已禁用，勾选只针对新增权限。
+ * 列级的目标对象是"列"而非权限，不回显，仅在摘要中展示。 */
+function syncGrantChecks() {
+  const meta = currentLevelMeta.value;
+  if (!meta || grantForm.priv_type === 3) return;
+  let checked: string[] = [];
+  if (grantForm.op_type === 1) {
+    const held = heldPrivsForScope.value;
+    checked = meta.groups.flatMap((g) => g.privs).filter((p) => held.has(p.toUpperCase()));
+  }
+  grantForm.privs = checked;
+  grantTreeRef.value?.setCheckedKeys(checked);
+}
+
+// 操作类型/层级/库/表变化时重新计算禁用与回显；手动增删勾选不经过此逻辑。
+// flush=post：权限树 data 变化重建节点会重置勾选态，须等重渲染完成后再回填
+watch(
+  () => [grantForm.op_type, grantForm.priv_type, grantForm.db_name, grantForm.tb_name],
+  () => syncGrantChecks(),
+  { flush: "post" }
+);
+
 async function openGrant(row: AccountRow) {
   if (!currentInstance.value) return;
   grantTarget.user_host = String(row.user_host || `${row.user}@${row.host}`);
   grantTarget.display = grantTarget.user_host;
+  // 回显该账号已有权限（SHOW GRANTS 解析）与 Mongo 现有角色
+  //（Mongo updateUser 语义是整体替换，不回显会导致提交时误清空全部角色）
+  currentGrants.value = parseShowGrants(row.privileges);
   mongoGrantForm.db_name_user = String(row.db_name_user || "");
-  mongoGrantForm.roles = [];
+  mongoGrantForm.roles = Array.isArray(row.roles)
+    ? (row.roles as string[]).map(String)
+    : [];
   grantPermFilter.value = "";
   Object.assign(grantForm, {
     op_type: 0,
@@ -187,6 +293,9 @@ async function openGrant(row: AccountRow) {
   if (currentDbType.value !== "mongo") {
     loadGrantDbs();
   }
+  // 弹窗复用不销毁，清掉上一轮在权限树上的勾选残留（表单 privs 已重置）
+  await nextTick();
+  grantTreeRef.value?.setCheckedKeys(grantForm.privs);
 }
 
 // Mongo 授权（角色模型）
@@ -502,6 +611,14 @@ onMounted(() => loadInstances());
             <el-radio :value="1">回收</el-radio>
           </el-radio-group>
         </el-form-item>
+        <el-form-item label="已有权限">
+          <div class="current-grants">
+            <template v-if="grantSummaryLines.length">
+              <div v-for="line in grantSummaryLines" :key="line">{{ line }}</div>
+            </template>
+            <span v-else class="muted">无（该账号当前未授予任何权限）</span>
+          </div>
+        </el-form-item>
         <el-form-item label="权限范围">
           <el-radio-group v-model="grantForm.priv_type">
             <el-radio v-for="(meta, idx) in MYSQL_PRIVILEGES" :key="meta.level" :value="idx">
@@ -546,6 +663,13 @@ onMounted(() => loadInstances());
         <!-- 权限树选择 -->
         <el-form-item label="权限">
           <div class="perm-selector">
+            <div
+              v-if="grantForm.priv_type >= 1 && !grantForm.db_name.length"
+              class="scope-hint"
+            >
+              先选择{{ grantForm.priv_type >= 2 ? "库和表" : "库" }}，下方权限将按该范围
+              <b>已有权限</b> 置灰与回显（赋权=已有的不可选，回收=只可选已有的）
+            </div>
             <div class="perm-tags">
               <el-tag
                 v-for="p in grantSelectedPermNames"
@@ -580,7 +704,30 @@ onMounted(() => loadInstances());
               :filter-node-method="filterGrantPermNode"
               :default-checked-keys="grantForm.privs"
               @check="onGrantTreeCheck"
-            />
+            >
+              <template #default="{ data }">
+                <span
+                  v-if="String(data.id).startsWith('group-')"
+                  class="priv-group"
+                >{{ data.label }}</span>
+                <span
+                  v-else
+                  class="priv-node"
+                  :class="{ 'is-unavailable': data.disabled }"
+                >
+                  {{ data.label }}
+                  <el-tag
+                    v-if="data.disabled"
+                    size="small"
+                    effect="plain"
+                    :type="grantForm.op_type === 0 ? 'success' : 'info'"
+                    class="priv-flag"
+                  >
+                    {{ grantForm.op_type === 0 ? "已持有" : "未持有" }}
+                  </el-tag>
+                </span>
+              </template>
+            </el-tree>
           </div>
         </el-form-item>
       </el-form>
@@ -665,6 +812,15 @@ onMounted(() => loadInstances());
   max-height: 460px;
   overflow-y: auto;
   width: 100%;
+
+  .scope-hint {
+    margin-bottom: 10px;
+    padding: 6px 10px;
+    background: var(--el-fill-color-light);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--el-text-color-secondary);
+  }
 }
 
 .perm-tags {
@@ -686,5 +842,43 @@ onMounted(() => loadInstances());
   gap: 8px;
   margin-bottom: 12px;
   align-items: center;
+}
+
+.priv-group {
+  font-weight: 600;
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+}
+
+// 不可操作的权限：置灰 + 删除线 + 原因标签，与可勾选项拉开视觉差
+.priv-node {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+
+  &.is-unavailable {
+    color: var(--el-text-color-placeholder);
+    text-decoration: line-through;
+  }
+
+  .priv-flag {
+    transform: scale(0.85);
+    text-decoration: none;
+  }
+}
+
+.current-grants {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--el-fill-color-light);
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.9;
+  word-break: break-all;
+
+  .muted {
+    color: var(--el-text-color-placeholder);
+  }
 }
 </style>

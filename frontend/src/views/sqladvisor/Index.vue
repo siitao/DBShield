@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import { ElMessage } from "element-plus";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import { useInstanceSelect } from "@/composables/useInstanceSelect";
+import { useAiOptimizeStore } from "@/stores/aiOptimize";
 import { fetchQueryResources } from "@/api/sqlquery";
 import SqlEditor from "@/components/SqlEditor.vue";
 import {
@@ -11,8 +12,6 @@ import {
   optimizeSoar,
   optimizeSqlTuning,
   explainSql,
-  optimizeSqlByAIAsync,
-  pollOptimizeTask,
   type AiOptimizeStep,
 } from "@/api/phase2";
 import TruncateCell from "@/components/TruncateCell.vue";
@@ -35,78 +34,37 @@ const resultText = ref(""); // advisor/soar/ai 的文本结果（markdown 与否
 const resultTool = ref<OptTool | "">(""); // 当前 resultText 由哪个工具产生，决定渲染方式（pre/markdown）
 const explainCols = ref<string[]>([]);
 const explainRows = ref<unknown[][]>([]);
-// AI Agent 取证轨迹（仅 AI 优化）
-const aiSteps = ref<AiOptimizeStep[]>([]);
-// AI 优化异步任务轮询（独立于工具选择：切走工具/运行其他工具都不中断）
-const aiPolling = ref(false);
-let aiPollTimer: number | null = null;
 
-function stopAiPolling() {
-  if (aiPollTimer) {
-    clearInterval(aiPollTimer);
-    aiPollTimer = null;
-  }
-  aiPolling.value = false;
-}
+// AI 优化异步任务：轮询与任务态在全局 store（切菜单不中断；不持久化，
+// 刷新/重登后即清空），页面只负责展示。提交入口 → store.submit。
+const aiStore = useAiOptimizeStore();
+const aiSteps = computed(() => aiStore.steps);
+const aiPolling = computed(() => aiStore.polling);
+const aiError = computed(() => aiStore.error);
 
-const AI_POLL_INTERVAL_MS = 3000;
-const AI_POLL_TIMEOUT_MS = 300000; // 与后端 Agent 预算（240s）+ 余量对齐
-
-/** 轮询异步优化任务直至成功/失败/超时（独立于当前工具选择） */
-function pollAiTask(taskId: number) {
-  aiPolling.value = true;
-  const startedAt = Date.now();
-  aiPollTimer = window.setInterval(async () => {
-    try {
-      const t = await pollOptimizeTask(taskId);
-      if (t?.status === "success") {
-        resultText.value = t.report || "";
-        resultTool.value = "ai";
-        aiSteps.value = t.steps || [];
-        stopAiPolling();
-        // 完成时若用户停留在其他工具上，主动提示报告已就绪
-        if (tool.value !== "ai") {
-          ElMessage.success("AI 优化报告已完成，切回「AI 优化」可查看完整报告与取证轨迹");
-        }
-      } else if (t?.status === "failed") {
-        ElMessage.error(t.error || "AI 优化失败，请稍后重试");
-        stopAiPolling();
-      } else if (Date.now() - startedAt > AI_POLL_TIMEOUT_MS) {
-        ElMessage.error("AI 优化任务超时，请稍后重试");
-        stopAiPolling();
-      }
-    } catch {
-      // 拦截器已提示
-      stopAiPolling();
+// 任务实时完成（report 变化）时直接回填展示——包括用户正在看其他工具结果的情况
+watch(
+  () => aiStore.report,
+  (r) => {
+    if (r) {
+      resultText.value = r;
+      resultTool.value = "ai";
     }
-  }, AI_POLL_INTERVAL_MS);
-}
+  }
+);
 
-/** AI 优化入口：异步提交（缓存命中直接出报告）+ 轮询取报告 */
+/** AI 优化入口：异步提交（缓存命中直接出报告），轮询由全局 store 接管 */
 async function runAiOptimize() {
-  // 重跑 AI 时先停掉在途轮询（后端同指纹去重会复用任务，避免双定时器）
-  stopAiPolling();
-  const submitted = await optimizeSqlByAIAsync({
-    instance_name: instanceName.value,
-    db_name: dbName.value,
-    sql_content: sqlText.value,
-  });
-  if (submitted?.hit_cache) {
-    resultText.value = submitted.report || "";
-    resultTool.value = "ai";
-    aiSteps.value = submitted.steps || [];
+  try {
+    // 重跑会清空旧任务态并重建（后端同指纹去重会复用在跑任务，避免烧 token）
+    await aiStore.submit({
+      instance_name: instanceName.value,
+      db_name: dbName.value,
+      sql_content: sqlText.value,
+    });
+  } finally {
     loading.value = false;
-    return;
   }
-  const taskId = submitted?.task_id;
-  if (!taskId) {
-    loading.value = false;
-    return;
-  }
-  resultText.value = "";
-  aiSteps.value = [];
-  loading.value = false;
-  pollAiTask(taskId);
 }
 
 const AI_STEP_LABELS: Record<string, string> = {
@@ -239,15 +197,14 @@ async function onRun() {
   if (!instanceName.value || !dbName.value)
     return ElMessage.warning("请选择实例和库");
   if (!sqlText.value.trim()) return ElMessage.warning("请输入 SQL");
-  // 注意：不在这里停 AI 轮询——轮询独立于工具选择，运行其他工具不影响
-  // 在途的 AI 任务，报告完成后照常回填展示（runAiOptimize 内部自行管理轮询）
+  // 注意：不在这里停 AI 轮询——轮询在全局 store，运行其他工具不影响
+  // 在途的 AI 任务，报告完成后照常回填展示（runAiOptimize 内部自行管理）
   loading.value = true;
   resultText.value = "";
   resultTool.value = "";
   explainCols.value = [];
   explainRows.value = [];
   tuningData.value = {};
-  aiSteps.value = [];
   try {
     if (tool.value === "advisor") {
       resultText.value = await optimizeSqlAdvisor({
@@ -287,8 +244,15 @@ async function onRun() {
   }
 }
 
-onMounted(loadInstances);
-onUnmounted(stopAiPolling);
+onMounted(() => {
+  loadInstances();
+  // 切菜单回来时 store 中的任务态仍在（内存态，轮询未中断），直接回填展示；
+  // 刷新/重登后 store 为空，页面即为初始状态（不做前端持久化）
+  if (aiStore.report && (!resultText.value || resultTool.value === "ai")) {
+    resultText.value = aiStore.report;
+    resultTool.value = "ai";
+  }
+});
 </script>
 
 <template>
@@ -352,7 +316,15 @@ onUnmounted(stopAiPolling);
       :closable="false"
       show-icon
       class="polling-hint"
-      title="AI 正在主动取证分析（查看表结构 / 索引 / 执行计划）——与当前选择的工具无关，完成后会自动展示报告"
+      title="AI 正在主动取证分析（查看表结构 / 索引 / 执行计划）——可切换到其他菜单，任务不会中断，完成后会全局提示并保留报告"
+    />
+    <el-alert
+      v-if="aiError && !aiPolling"
+      type="error"
+      :closable="true"
+      show-icon
+      class="polling-hint"
+      :title="aiError"
     />
     <el-card v-if="tool === 'ai' && aiSteps.length" shadow="never">
       <template #header>AI 诊断过程（{{ aiSteps.length }} 次取证）</template>

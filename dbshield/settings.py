@@ -56,14 +56,15 @@ env = environ.Env(
             "pgsql",
             "oracle",
             "mongo",
-            "phoenix",
-            "odps",
-            "cassandra",
             "doris",
             "elasticsearch",
             "opensearch",
-            "memcached",
             "tdengine",
+            # 默认不启用 phoenix/odps/cassandra/memcached：
+            # 完成度低（phoenix 零测试且 query_check 有 bug、odps 工单链路静默空转、
+            # cassandra/phoenix 工单审核 dummy 全放行、memcached 仅 8 个命令白名单），
+            # 且均不脱敏。如需使用请在环境变量 ENABLED_ENGINES 中显式追加
+            # （可用类型见 AVAILABLE_ENGINES）。
         ],
     ),
     ENABLED_NOTIFIERS=(
@@ -178,7 +179,8 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "common.utils.global_info.global_info",
+                # global_info 上下文处理器已随旧版 base.html 移除：
+                # 其输出（待办/水印/公告等）仅被旧模板消费，SPA 经独立 API 获取
             ],
         },
     },
@@ -203,9 +205,9 @@ DATE_FORMAT = "Y-m-d"
 # Static files (CSS, JavaScript, Images)
 STATIC_URL = "/static/"
 STATIC_ROOT = os.path.join(BASE_DIR, "static")
-STATICFILES_DIRS = [
-    os.path.join(BASE_DIR, "common/static"),
-]
+# 旧版静态资源目录 common/static 已随 base.html 清理；前端产物经构建阶段
+# 复制到 frontend/dist（nginx 直接服务），Django 不再托管额外静态目录
+STATICFILES_DIRS = []
 STATICFILES_STORAGE = "common.storage.ForgivingManifestStaticFilesStorage"
 
 # 扩展django admin里users字段用到，指定了sql/models.py里的class users

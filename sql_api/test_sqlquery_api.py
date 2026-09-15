@@ -89,6 +89,7 @@ def test_describetable_returns_expected_shape(
 
 @pytest.mark.django_db
 def test_execute_requires_query_permission_or_superuser(api_client, authenticated_user):
+    """权限不足统一返回 HTTP 403（body 保留 {status,msg} 供前端弹错）"""
     api_client.force_authenticate(user=authenticated_user)
     payload = {
         "instance_name": "some_ins",
@@ -97,7 +98,7 @@ def test_execute_requires_query_permission_or_superuser(api_client, authenticate
         "limit_num": 10,
     }
     response = api_client.post(CANONICAL["execute"], payload, format="json")
-    assert response.status_code == 200
+    assert response.status_code == 403
     assert response.json()["status"] == 1
     assert "无执行查询权限" in response.json()["msg"]
 

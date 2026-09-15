@@ -111,6 +111,71 @@ class EngineBase:
     def kill_connection(self, thread_id):
         """终止数据库连接"""
 
+    def close(self):
+        """关闭并清空缓存连接（各引擎 get_connection 自行维护 self.conn）"""
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
+    @staticmethod
+    def get_backup_connection():
+        """goInception 备份库连接（goinception/oracle 等引擎共用）"""
+        import MySQLdb
+
+        from common.config import SysConfig
+
+        archer_config = SysConfig()
+        backup_host = archer_config.get("inception_remote_backup_host")
+        backup_port = int(archer_config.get("inception_remote_backup_port", 3306))
+        backup_user = archer_config.get("inception_remote_backup_user")
+        backup_password = archer_config.get("inception_remote_backup_password", "")
+        return MySQLdb.connect(
+            host=backup_host,
+            port=backup_port,
+            user=backup_user,
+            passwd=backup_password,
+            charset="utf8mb4",
+            autocommit=True,
+        )
+
+    def rewrite_limit_sql(self, sql="", limit_num=0):
+        """对查询 SQL 增加 limit 限制：limit n / limit n offset m / limit m,n
+        统一改写为 limit n（mysql/clickhouse/tdengine 的 filter_sql 共用实现）。
+        """
+        sql = sql.rstrip(";").strip()
+        if re.match(r"^select", sql, re.I):
+            # LIMIT N
+            limit_n = re.compile(r"limit\s+(\d+)\s*$", re.I)
+            # LIMIT M OFFSET N
+            limit_offset = re.compile(r"limit\s+(\d+)\s+offset\s+(\d+)\s*$", re.I)
+            # LIMIT M,N
+            offset_comma_limit = re.compile(r"limit\s+(\d+)\s*,\s*(\d+)\s*$", re.I)
+            if limit_n.search(sql):
+                sql_limit = limit_n.search(sql).group(1)
+                limit_num = min(int(limit_num), int(sql_limit))
+                sql = limit_n.sub(f"limit {limit_num};", sql)
+            elif limit_offset.search(sql):
+                sql_limit = limit_offset.search(sql).group(1)
+                sql_offset = limit_offset.search(sql).group(2)
+                limit_num = min(int(limit_num), int(sql_limit))
+                sql = limit_offset.sub(f"limit {limit_num} offset {sql_offset};", sql)
+            elif offset_comma_limit.search(sql):
+                sql_offset = offset_comma_limit.search(sql).group(1)
+                sql_limit = offset_comma_limit.search(sql).group(2)
+                limit_num = min(int(limit_num), int(sql_limit))
+                sql = offset_comma_limit.sub(f"limit {sql_offset},{limit_num};", sql)
+            else:
+                sql = f"{sql} limit {limit_num};"
+        else:
+            sql = f"{sql};"
+        return sql
+
+    def execute_workflow(self, workflow):
+        """执行上线单（默认委托 execute；有备份/只读等前置逻辑的引擎自行覆写）"""
+        return self.execute(
+            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
+        )
+
     def get_all_databases(self):
         """获取数据库列表, 返回一个ResultSet，rows=list"""
         return ResultSet()

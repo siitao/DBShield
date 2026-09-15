@@ -2,5 +2,5 @@ pytest
 pytest-django
 pytest-mock
 pytest-cov
-codecov
-flake8
+parameterized
+black

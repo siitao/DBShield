@@ -1,7 +1,7 @@
 import logging
 
 from drf_spectacular.utils import extend_schema
-from rest_framework import permissions, serializers, views
+from rest_framework import permissions, serializers, status, views
 from rest_framework.response import Response
 
 from sql.services.querylog_service import list_query_logs, update_favorite
@@ -84,7 +84,11 @@ class SQLQueryExecuteView(views.APIView):
     @extend_schema(summary="SQLQuery 执行查询")
     def post(self, request):
         if not (request.user.is_superuser or request.user.has_perm("sql.query_submit")):
-            return Response({"status": 1, "msg": "无执行查询权限", "data": {}})
+            # 权限类错误统一走 HTTP 403（前端拦截器提取 msg 弹错）
+            return Response(
+                {"status": 1, "msg": "无执行查询权限", "data": {}},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = SqlQueryExecuteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = execute_sql_query(user=request.user, **serializer.validated_data)
@@ -117,7 +121,10 @@ class SQLQueryFavoritesView(views.APIView):
         if not (
             request.user.is_superuser or request.user.has_perm("sql.menu_sqlquery")
         ):
-            return Response({"status": 1, "msg": "无收藏操作权限"})
+            return Response(
+                {"status": 1, "msg": "无收藏操作权限"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = SqlQueryFavoriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = update_favorite(user=request.user, **serializer.validated_data)

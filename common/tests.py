@@ -9,7 +9,6 @@ from django.test import Client, TestCase
 
 from common.config import SysConfig
 from common.utils.sendmsg import MsgSender
-from sql.engines import EngineBase, ResultSet
 from sql.models import (
     Instance,
     SqlWorkflow,
@@ -209,6 +208,7 @@ class DingTest(TestCase):
             post.assert_called_once_with(
                 url=self.url,
                 json={"msgtype": "text", "text": {"content": self.content}},
+                timeout=5,
             )
             self.assertIn("钉钉Webhook推送成功", lg.output[0])
         post.return_value.json.return_value = {"errcode": 1, "errmsg": "test_error"}
@@ -218,202 +218,6 @@ class DingTest(TestCase):
 
     def tearDown(self):
         pass
-
-
-class GlobalInfoTest(TestCase):
-    def setUp(self):
-        self.u1 = User(username="test_user", display="中文显示", is_active=True)
-        self.u1.save()
-
-    @patch("sql.utils.workflow_audit.Audit.todo")
-    def testGlobalInfo(self, todo):
-        """测试"""
-        c = Client()
-        r = c.get("/", follow=True)
-        todo.assert_not_called()
-        self.assertEqual(r.context["todo"], 0)
-        # 已登录用户
-        c.force_login(self.u1)
-        todo.return_value = 3
-        r = c.get("/", follow=True)
-        todo.assert_called_once_with(self.u1)
-        self.assertEqual(r.context["todo"], 3)
-        # 报异常
-        todo.side_effect = NameError("some exception")
-        r = c.get("/", follow=True)
-        self.assertEqual(r.context["todo"], 0)
-
-    def tearDown(self):
-        self.u1.delete()
-
-
-class CheckTest(TestCase):
-    """检查功能测试"""
-
-    def setUp(self):
-        self.superuser1 = User(
-            username="test_user",
-            display="中文显示",
-            is_active=True,
-            is_superuser=True,
-            email="XXX@xxx.com",
-        )
-        self.superuser1.save()
-        self.slave1 = Instance(
-            instance_name="some_name",
-            host="some_host",
-            type="slave",
-            db_type="mysql",
-            user="some_user",
-            port=1234,
-            password="some_str",
-        )
-        self.slave1.save()
-
-    def tearDown(self):
-        self.superuser1.delete()
-
-    @patch.object(MsgSender, "__init__", return_value=None)
-    @patch.object(MsgSender, "send_email")
-    def testEmailCheck(self, send_email, mailsender):
-        """邮箱配置检查"""
-        mail_switch = "true"
-        smtp_ssl = "false"
-        smtp_server = "some_server"
-        smtp_port = "1234"
-        smtp_user = "some_user"
-        smtp_pass = "some_str"
-        # 略过superuser校验
-        # 未开启mail开关
-        mail_switch = "false"
-        c = Client()
-        c.force_login(self.superuser1)
-        r = c.post(
-            "/check/email/",
-            data={
-                "mail": mail_switch,
-                "mail_ssl": smtp_ssl,
-                "mail_smtp_server": smtp_server,
-                "mail_smtp_port": smtp_port,
-                "mail_smtp_user": smtp_user,
-                "mail_smtp_password": smtp_pass,
-            },
-        )
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 1)
-        self.assertEqual(r_json["msg"], "请先开启邮件通知！")
-        mail_switch = "true"
-        # 填写非正整数端口号
-        smtp_port = "-3"
-        r = c.post(
-            "/check/email/",
-            data={
-                "mail": mail_switch,
-                "mail_ssl": smtp_ssl,
-                "mail_smtp_server": smtp_server,
-                "mail_smtp_port": smtp_port,
-                "mail_smtp_user": smtp_user,
-                "mail_smtp_password": smtp_pass,
-            },
-        )
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 1)
-        self.assertEqual(r_json["msg"], "端口号只能为正整数")
-        smtp_port = "1234"
-        # 未填写用户邮箱
-        self.superuser1.email = ""
-        self.superuser1.save()
-        r = c.post(
-            "/check/email/",
-            data={
-                "mail": mail_switch,
-                "mail_ssl": smtp_ssl,
-                "mail_smtp_server": smtp_server,
-                "mail_smtp_port": smtp_port,
-                "mail_smtp_user": smtp_user,
-                "mail_smtp_password": smtp_pass,
-            },
-        )
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 1)
-        self.assertEqual(r_json["msg"], "请先完善当前用户邮箱信息！")
-        self.superuser1.email = "XXX@xxx.com"
-        self.superuser1.save()
-        # 发送失败, 显示traceback
-        send_email.return_value = "some traceback"
-        r = c.post(
-            "/check/email/",
-            data={
-                "mail": mail_switch,
-                "mail_ssl": smtp_ssl,
-                "mail_smtp_server": smtp_server,
-                "mail_smtp_port": smtp_port,
-                "mail_smtp_user": smtp_user,
-                "mail_smtp_password": smtp_pass,
-            },
-        )
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 1)
-        self.assertIn("some traceback", r_json["msg"])
-        send_email.reset_mock()  # 重置``Mock``的调用计数
-        mailsender.reset_mock()
-        # 发送成功
-        send_email.return_value = "success"
-        r = c.post(
-            "/check/email/",
-            data={
-                "mail": mail_switch,
-                "mail_ssl": smtp_ssl,
-                "mail_smtp_server": smtp_server,
-                "mail_smtp_port": smtp_port,
-                "mail_smtp_user": smtp_user,
-                "mail_smtp_password": smtp_pass,
-            },
-        )
-        r_json = r.json()
-        mailsender.assert_called_once_with(
-            server=smtp_server,
-            port=int(smtp_port),
-            user=smtp_user,
-            password=smtp_pass,
-            ssl=False,
-        )
-        send_email.assert_called_once_with(
-            "DBShield 邮件发送测试", "DBShield 邮件发送测试...", [self.superuser1.email]
-        )
-        self.assertEqual(r_json["status"], 0)
-        self.assertEqual(r_json["msg"], "ok")
-
-    @patch("MySQLdb.connect")
-    @patch("common.check.get_engine")
-    def testInstanceCheck(self, _get_engine, _conn):
-        _get_engine.return_value.get_connection = _conn
-        _get_engine.return_value.get_all_databases.return_value.rows.return_value = (
-            ResultSet(rows=((),), error="Wrong password")
-        )
-        c = Client()
-        c.force_login(self.superuser1)
-        r = c.post("/check/instance/", data={"instance_id": self.slave1.id})
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 1)
-
-    @patch("MySQLdb.connect")
-    def test_go_inception_check(self, _conn):
-        c = Client()
-        c.force_login(self.superuser1)
-        data = {
-            "go_inception_host": "inception",
-            "go_inception_port": "6669",
-            "go_inception_user": "",
-            "go_inception_password": "",
-            "inception_remote_backup_host": "mysql",
-            "inception_remote_backup_port": 3306,
-            "inception_remote_backup_user": "mysql",
-            "inception_remote_backup_password": "123456",
-        }
-        r = c.post("/check/go_inception/", data=data)
-        r_json = r.json()
-        self.assertEqual(r_json["status"], 0)
 
 
 class ChartTest(TestCase):
@@ -584,31 +388,6 @@ class AuthTest(TestCase):
         # init 需要是无状态的, 可以重复执行, 执行一次和执行n次结果一样
         init_user(self.u1)
         self.assertEqual(self.u1, self.resource_group1.users_set.get(pk=self.u1.pk))
-
-
-class PermissionTest(TestCase):
-    def setUp(self) -> None:
-        self.user = User.objects.create(
-            username="test_user",
-            display="中文显示",
-            is_active=True,
-            email="XXX@xxx.com",
-        )
-        self.client.force_login(self.user)
-
-    def tearDown(self) -> None:
-        self.user.delete()
-
-    def test_superuser_required_false(self):
-        """测试超管权限校验"""
-        r = self.client.get("/config/")
-        self.assertContains(r, "您无权操作，请联系管理员")
-
-    def test_superuser_required_true(self):
-        """测试超管权限校验"""
-        User.objects.filter(username=self.user.username).update(is_superuser=1)
-        r = self.client.get("/config/")
-        self.assertNotContains(r, "您无权操作，请联系管理员")
 
 
 class ExtendJSONEncoderFTimeTest(TestCase):

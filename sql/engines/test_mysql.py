@@ -84,6 +84,7 @@ class TestMysql(SimpleTestCase):
 
         columns_result = [
             {
+                "TABLE_NAME": "test_table",
                 "COLUMN_NAME": "id",
                 "COLUMN_TYPE": "int",
                 "COLUMN_DEFAULT": None,
@@ -93,6 +94,7 @@ class TestMysql(SimpleTestCase):
                 "COLUMN_COMMENT": "",
             },
             {
+                "TABLE_NAME": "test_table",
                 "COLUMN_NAME": "name",
                 "COLUMN_TYPE": "varchar(255)",
                 "COLUMN_DEFAULT": None,
@@ -128,6 +130,7 @@ class TestMysql(SimpleTestCase):
                 "TABLE_INFO": {"TABLE_SCHEMA": "test_db", "TABLE_NAME": "test_table"},
                 "COLUMNS": [
                     {
+                        "TABLE_NAME": "test_table",
                         "COLUMN_NAME": "id",
                         "COLUMN_TYPE": "int",
                         "COLUMN_DEFAULT": None,
@@ -137,6 +140,7 @@ class TestMysql(SimpleTestCase):
                         "COLUMN_COMMENT": "",
                     },
                     {
+                        "TABLE_NAME": "test_table",
                         "COLUMN_NAME": "name",
                         "COLUMN_TYPE": "varchar(255)",
                         "COLUMN_DEFAULT": None,
@@ -1065,15 +1069,19 @@ class TestMysql(SimpleTestCase):
         self.assertIn("command= 'Query';", query.call_args_list[0].args[1])
         self.assertIn("Query\\'", query.call_args_list[1].args[1])
 
+    @patch.object(MysqlEngine, "execute")
     @patch.object(MysqlEngine, "query")
-    def test_get_kill_command_and_kill_reject_invalid_ids(self, query):
+    def test_get_kill_command_and_kill_reject_invalid_ids(self, query, execute):
         engine = MysqlEngine(instance=self.ins1)
 
-        self.assertIsNone(engine.get_kill_command([1, "2"]))
+        # 含非法 thread_id（非 int/纯数字）时直接拒绝：返回 None 且不触发任何查询
+        self.assertIsNone(engine.get_kill_command([1, "1;drop table x"]))
+        query.assert_not_called()
+
+        execute.return_value = ResultSet()
         result = engine.kill([1, "2"])
 
         self.assertIsInstance(result, ResultSet)
-        query.assert_not_called()
 
     @patch.object(MysqlEngine, "query")
     def test_tablespace_search_filters_are_escaped(self, query):

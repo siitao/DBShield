@@ -147,7 +147,7 @@ class MsgSender(object):
             "msgtype": "text",
             "text": {"content": "{}".format(content)},
         }
-        r = requests.post(url=url, json=data)
+        r = requests.post(url=url, json=data, timeout=5)
         r_json = r.json()
         if r_json["errcode"] == 0:
             logger.debug(f"钉钉Webhook推送成功\n通知对象：{url}\n消息内容：{content}")
@@ -240,7 +240,7 @@ class MsgSender(object):
                 },
             }
 
-        r = requests.post(url=url, json=data)
+        r = requests.post(url=url, json=data, timeout=5)
         r_json = r.json()
         if (
             "ok" in r_json
@@ -269,6 +269,7 @@ class MsgSender(object):
             url=url,
             json=data,
             headers={"Authorization": "Bearer " + get_feishu_access_token()},
+            timeout=5,
         ).json()
         if r["code"] == 0:
             logger.debug(f"飞书单推推送成功\n通知对象：{url}\n消息内容：{content}")

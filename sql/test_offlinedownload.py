@@ -17,6 +17,7 @@ from sql.models import SqlWorkflow, SqlWorkflowContent, Instance, Config, AuditE
 from sql.offlinedownload import (
     OffLineDownLoad,
     StorageFileResponse,
+    excel_safe_cell,
     get_single_export_statement,
     save_to_format_file,
     save_csv,
@@ -527,8 +528,8 @@ class TestOfflineDownload(TestCase):
         # 执行测试
         save_csv(temp_file.name, result, columns)
 
-        # 验证结果
-        with open(temp_file.name, "r", encoding="utf-8") as f:
+        # 验证结果（utf-8-sig 写入，读取需剥 BOM，否则首个单元格会带上 \ufeff 且引号无法解包）
+        with open(temp_file.name, "r", encoding="utf-8-sig") as f:
             reader = csv.reader(f)
             rows = list(reader)
             self.assertEqual(rows[0], columns)
@@ -569,6 +570,52 @@ class TestOfflineDownload(TestCase):
 
         # 清理
         os.unlink(temp_file.name)
+
+    def test_save_csv_long_integer_excel_safe(self):
+        """
+        测试save_csv方法 - BIGINT超15位整数写成Excel文本公式，防止打开时截断
+        """
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file.close()
+
+        result = [(219034306784399364, "test1"), (999999999999999, None)]
+        columns = ["id", "name"]
+
+        save_csv(temp_file.name, result, columns)
+
+        with open(temp_file.name, "r", encoding="utf-8-sig") as f:
+            rows = list(csv.reader(f))
+            # ="..." 字段按CSV规则整体加引号、内部引号翻倍
+            self.assertEqual(rows[0], columns)
+            self.assertEqual(rows[1], ['="219034306784399364"', "test1"])
+            # 15位是Excel精度边界内的最大位数，保持原样
+            self.assertEqual(rows[2], ["999999999999999", "null"])
+
+        os.unlink(temp_file.name)
+
+    def test_excel_safe_cell(self):
+        """
+        测试excel_safe_cell方法 - 各类值的转换规则
+        """
+        # 16位及以上纯整数（int 或 bigint_safe 转出的数字字符串）包裹为公式文本
+        self.assertEqual(excel_safe_cell(219034306784399364), '="219034306784399364"')
+        self.assertEqual(excel_safe_cell(-9223372036854775808), '="-9223372036854775808"')
+        self.assertEqual(
+            excel_safe_cell("1767432277098876929"), '="1767432277098876929"'
+        )
+        # 15位及以内保持原样
+        self.assertEqual(excel_safe_cell(999999999999999), 999999999999999)
+        self.assertEqual(excel_safe_cell("999999999999999"), "999999999999999")
+        # 非纯整数（小数、普通文本）不动
+        self.assertEqual(
+            excel_safe_cell("219034306784399364.00"), "219034306784399364.00"
+        )
+        self.assertEqual(excel_safe_cell("abc123"), "abc123")
+        self.assertEqual(excel_safe_cell(1.5), 1.5)
+        # None/bool 保持原有语义
+        self.assertEqual(excel_safe_cell(None), "null")
+        self.assertIs(excel_safe_cell(True), True)
+        self.assertIs(excel_safe_cell(False), False)
 
     def test_save_json(self):
         """

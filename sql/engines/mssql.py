@@ -836,8 +836,3 @@ then DATA_TYPE + '(' + convert(varchar(max), CHARACTER_MAXIMUM_LENGTH) + ')' els
         if close_conn:
             self.close()
         return execute_result
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None

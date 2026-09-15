@@ -314,9 +314,11 @@ async function onOscControl(command: "pause" | "resume" | "kill") {
 
 async function onPass() {
   try {
+    // 后端 AuditWorkflowSerializer 要求 audit_remark 必填非空，此处必须强校验
     const { value } = await ElMessageBox.prompt("审核备注", "审核通过", {
       inputType: "textarea",
-      inputPlaceholder: "请输入审核备注（可空）",
+      inputPlaceholder: "请输入审核备注（必填）",
+      inputValidator: (v) => !!v?.trim() || "审核备注不能为空",
       confirmButtonText: "通过",
       cancelButtonText: "取消",
     });
@@ -324,7 +326,7 @@ async function onPass() {
       engineer: auth.user?.username || "",
       workflow_id: workflowId,
       audit_type: "pass",
-      audit_remark: value || "",
+      audit_remark: value.trim(),
     });
     ElMessage.success("已审核通过");
     afterAction();

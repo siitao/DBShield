@@ -6,6 +6,7 @@
 @time: 2019/03/24
 """
 
+import hashlib
 import logging
 import datetime
 import re
@@ -13,6 +14,7 @@ import traceback
 
 import simplejson as json
 from django.contrib.auth.decorators import permission_required
+from django.core.cache import cache
 from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
@@ -35,6 +37,46 @@ __author__ = "hhyo"
 
 
 # TODO 权限校验内的语法解析和判断独立到每个engine内
+def _load_user_priv_rows(user, instance):
+    """一次性取回用户在该实例上的全部有效权限行（按 id 升序）。
+
+    query_priv_check 热路径优化：旧实现在表/库循环里重复调用 _db_priv/_tb_priv/
+    _priv_limit，每个引用对象最多产生 8 条查询；这里一次取回后由调用方在内存中匹配。
+    """
+    return list(
+        QueryPrivileges.objects.filter(
+            user_name=user.username,
+            instance=instance,
+            valid_date__gte=datetime.datetime.now(),
+            is_deleted=0,
+        ).order_by("id")
+    )
+
+
+def _match_db_priv(priv_rows, user, schema):
+    """在已取回的权限行中按 _db_priv 语义匹配库权限（含通配 *），命中返回 limit，否则 False"""
+    if user.is_superuser:
+        return int(SysConfig().get("admin_query_limit", 5000))
+    for p in priv_rows:
+        if p.priv_type == 1 and p.db_name in (str(schema), "*"):
+            return p.limit_num
+    return False
+
+
+def _match_tb_priv(priv_rows, user, schema, name):
+    """在已取回的权限行中按 _tb_priv 语义匹配表权限，命中返回 limit，否则 False"""
+    if user.is_superuser:
+        return int(SysConfig().get("admin_query_limit", 5000))
+    for p in priv_rows:
+        if (
+            p.priv_type == 2
+            and p.db_name == str(schema)
+            and p.table_name == str(name)
+        ):
+            return p.limit_num
+    return False
+
+
 def query_priv_check(user, instance, db_name, sql_content, limit_num):
     """
     查询权限校验
@@ -69,25 +111,39 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
             # explain和show create跳过权限校验
             if re.match(r"^explain|^show\s+create", sql_content, re.I):
                 return result
-            # 其他权限校验
-            table_ref = _table_ref(sql_content, instance, db_name)
-            # 循环验证权限，可能存在性能问题，但一次查询涉及的库表数量有限
+            # 语法树解析走 goInception 外部服务：同一语句短期内重复执行时
+            # 用短缓存避免重复外呼（表引用由 SQL 文本+库唯一决定，TTL 内不变）
+            cache_key = (
+                f"query_priv_table_ref:{instance.pk}:{db_name}:"
+                f"{hashlib.md5(sql_content.encode('utf-8', errors='ignore')).hexdigest()}"
+            )
+            table_ref = cache.get(cache_key)
+            if table_ref is None:
+                table_ref = _table_ref(sql_content, instance, db_name)
+                cache.set(cache_key, table_ref, 60)
+            # 热路径优化：一次取回全部有效权限行，内存匹配（旧实现每表最多 8 条查询）
+            priv_rows = _load_user_priv_rows(user, instance)
             for table in table_ref:
+                schema, name = str(table["schema"]), table["name"]
+                db_limit = _match_db_priv(priv_rows, user, schema)
+                tb_limit = _match_tb_priv(priv_rows, user, schema, name)
                 # 既无库权限也无表权限则鉴权失败
-                if not _db_priv(user, instance, table["schema"]) and not _tb_priv(
-                    user, instance, table["schema"], table["name"]
-                ):
+                if not db_limit and not tb_limit:
                     # 没有库表查询权限时的staus为2
                     result["status"] = 2
                     result["msg"] = (
                         f"你无{table['schema']}.{table['name']}表的查询权限！请先到查询权限管理进行申请"
                     )
                     return result
-            # 获取查询涉及库/表权限的最小limit限制，和前端传参作对比，取最小值
-            for table in table_ref:
-                priv_limit = _priv_limit(
-                    user, instance, db_name=table["schema"], tb_name=table["name"]
-                )
+                # 与 _priv_limit 同语义：库/表权限 limit 取最小值
+                if db_limit and tb_limit:
+                    priv_limit = min(db_limit, tb_limit)
+                elif db_limit:
+                    priv_limit = db_limit
+                elif tb_limit:
+                    priv_limit = tb_limit
+                else:
+                    raise RuntimeError("用户无任何有效权限！")
                 limit_num = min(priv_limit, limit_num) if limit_num else priv_limit
             result["data"]["limit_num"] = limit_num
         except Exception as msg:
@@ -112,9 +168,11 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
         dbs = list(set(dbs))
         # 排序
         dbs.sort()
+        # 热路径优化：一次取回全部有效权限行，内存匹配
+        priv_rows = _load_user_priv_rows(user, instance)
         # 校验库权限，无库权限直接返回
         for db_name in dbs:
-            if not _db_priv(user, instance, db_name):
+            if not _match_db_priv(priv_rows, user, db_name):
                 # 没有库表查询权限时的staus为2
                 result["status"] = 2
                 result["msg"] = (
@@ -123,7 +181,7 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
                 return result
         # 有所有库权限则获取最小limit值
         for db_name in dbs:
-            priv_limit = _priv_limit(user, instance, db_name=db_name)
+            priv_limit = _match_db_priv(priv_rows, user, db_name)
             limit_num = min(priv_limit, limit_num) if limit_num else priv_limit
         result["data"]["limit_num"] = limit_num
     return result
@@ -553,48 +611,8 @@ def _priv_limit(user, instance, db_name, tb_name=None):
 
 
 def _query_apply_audit_call_back(apply_id, workflow_status):
-    """
-    查询权限申请用于工作流审核回调
-    :param apply_id: 申请id
-    :param workflow_status: 审核结果
-    :return:
-    """
-    # 更新业务表状态
-    apply_info = QueryPrivilegesApply.objects.get(apply_id=apply_id)
-    apply_info.status = workflow_status
-    apply_info.save()
-    # 审核通过插入权限信息，批量插入，减少性能消耗
-    if workflow_status == WorkflowStatus.PASSED:
-        apply_queryset = QueryPrivilegesApply.objects.get(apply_id=apply_id)
-        # 库权限
+    # 兼容旧引用路径：授权落库逻辑单点收口于 services.privilege_service
+    from sql.services.privilege_service import query_apply_audit_call_back
 
-        if apply_queryset.priv_type == 1:
-            insert_list = [
-                QueryPrivileges(
-                    user_name=apply_queryset.user_name,
-                    user_display=apply_queryset.user_display,
-                    instance=apply_queryset.instance,
-                    db_name=db_name,
-                    table_name=apply_queryset.table_list,
-                    valid_date=apply_queryset.valid_date,
-                    limit_num=apply_queryset.limit_num,
-                    priv_type=apply_queryset.priv_type,
-                )
-                for db_name in apply_queryset.db_list.split(",")
-            ]
-        # 表权限
-        elif apply_queryset.priv_type == 2:
-            insert_list = [
-                QueryPrivileges(
-                    user_name=apply_queryset.user_name,
-                    user_display=apply_queryset.user_display,
-                    instance=apply_queryset.instance,
-                    db_name=apply_queryset.db_list,
-                    table_name=table_name,
-                    valid_date=apply_queryset.valid_date,
-                    limit_num=apply_queryset.limit_num,
-                    priv_type=apply_queryset.priv_type,
-                )
-                for table_name in apply_queryset.table_list.split(",")
-            ]
-        QueryPrivileges.objects.bulk_create(insert_list)
+    return query_apply_audit_call_back(apply_id, workflow_status)
+

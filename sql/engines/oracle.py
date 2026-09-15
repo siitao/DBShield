@@ -67,23 +67,6 @@ class OracleEngine(EngineBase):
         """是否支持备份"""
         return True
 
-    @staticmethod
-    def get_backup_connection():
-        """备份库连接"""
-        archer_config = SysConfig()
-        backup_host = archer_config.get("inception_remote_backup_host")
-        backup_port = int(archer_config.get("inception_remote_backup_port", 3306))
-        backup_user = archer_config.get("inception_remote_backup_user")
-        backup_password = archer_config.get("inception_remote_backup_password")
-        return MySQLdb.connect(
-            host=backup_host,
-            port=backup_port,
-            user=backup_user,
-            passwd=backup_password,
-            charset="utf8mb4",
-            autocommit=True,
-        )
-
     @property
     def server_version(self):
         conn = self.get_connection()
@@ -704,12 +687,15 @@ class OracleEngine(EngineBase):
             cursor.execute(sql, parameters or [])
             fields = cursor.description
             if any(x[1] == cx_Oracle.CLOB for x in fields):
-                rows = [
-                    tuple([(c.read() if type(c) == cx_Oracle.LOB else c) for c in r])
-                    for r in cursor
-                ]
-                if int(limit_num) > 0:
-                    rows = rows[0 : int(limit_num)]
+                # CLOB 行逐行读取并受 limit 约束（旧实现先迭代全量再切片，
+                # 大结果集全量传输，limit 形同虚设）
+                rows = []
+                for r in cursor:
+                    rows.append(
+                        tuple([(c.read() if type(c) == cx_Oracle.LOB else c) for c in r])
+                    )
+                    if int(limit_num) > 0 and len(rows) >= int(limit_num):
+                        break
             else:
                 if int(limit_num) > 0:
                     rows = cursor.fetchmany(int(limit_num))
@@ -1454,13 +1440,18 @@ class OracleEngine(EngineBase):
             )
             result_set.error = str(e)
         finally:
-            # 结束分析任务
+            # 结束分析任务（清理失败不能掩盖主流程异常）
             if task_begin == 1:
                 end_sql = f"""DECLARE
                              begin
                              dbms_sqltune.drop_tuning_task('{task_name}');
                              end;"""
-                cursor.execute(end_sql)
+                try:
+                    cursor.execute(end_sql)
+                except Exception:
+                    logger.warning(
+                        f"drop tuning task 失败: {traceback.format_exc()}"
+                    )
             if close_conn:
                 self.close()
         return result_set
@@ -1554,6 +1545,7 @@ class OracleEngine(EngineBase):
         for row in all_kill_sql.rows:
             kill_sql = kill_sql + row[0]
         return self.execute(sql=kill_sql)
+    kill_connection = kill_session
 
     def tablespace(self, offset=0, row_count=14, schema_search=""):
         """获取表空间信息"""
@@ -1617,8 +1609,3 @@ class OracleEngine(EngineBase):
         and c.sql_hash_value = d.hash_value;"""
 
         return self.query(sql=sql)
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None

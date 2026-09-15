@@ -252,9 +252,3 @@ class CassandraEngine(EngineBase):
         if close_conn:
             self.close()
         return execute_result
-
-    def execute_workflow(self, workflow: SqlWorkflow):
-        """执行上线单，返回Review set"""
-        return self.execute(
-            db_name=workflow.db_name, sql=workflow.sqlworkflowcontent.sql_content
-        )

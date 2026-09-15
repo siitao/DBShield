@@ -48,22 +48,6 @@ class GoInceptionEngine(EngineBase):
         )
         return self.conn
 
-    @staticmethod
-    def get_backup_connection():
-        archer_config = SysConfig()
-        backup_host = archer_config.get("inception_remote_backup_host")
-        backup_port = int(archer_config.get("inception_remote_backup_port", 3306))
-        backup_user = archer_config.get("inception_remote_backup_user")
-        backup_password = archer_config.get("inception_remote_backup_password", "")
-        return MySQLdb.connect(
-            host=backup_host,
-            port=backup_port,
-            user=backup_user,
-            passwd=backup_password,
-            charset="utf8mb4",
-            autocommit=True,
-        )
-
     def escape_string(self, value: str) -> str:
         """字符串参数转义"""
         if value is None:
@@ -342,11 +326,6 @@ class GoInceptionEngine(EngineBase):
                 # else:
                 #     raise Exception("GoInception Error: not found source node")
         return table_ref
-
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
 
 
 class DictTree(dict):

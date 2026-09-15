@@ -82,6 +82,14 @@ _REVIEW_ITEM_SCHEMA = (
 )
 
 
+# 优化报告输出要求（单轮优化与 Agent 取证两条链路共用，改文案两链路同时生效）
+_OPTIMIZE_OUTPUT_RULES = (
+    "只保留最重要的建议（最多 3 条），全文控制在 500 字以内，"
+    "不要重复粘贴大段原 SQL，不要输出与优化无关的内容，"
+    "索引建议给出可执行的 DDL 语句，改写建议给出修改前后的 SQL 对比。"
+)
+
+
 def build_optimize_prompt(db_type: str, db_name: str, sql_text: str, table_schemas: str) -> str:
     """SQL 优化建议 prompt（markdown 报告，注入防护 + 表结构/SQL 数据边界）。"""
     notice = untrusted_data_notice("相关表结构", "目标查询语句")
@@ -91,14 +99,23 @@ def build_optimize_prompt(db_type: str, db_name: str, sql_text: str, table_schem
         "包括但不限于：索引建议（是否缺少索引、是否有更优索引）、"
         "SQL 改写建议、潜在的全表扫描/临时表/文件排序风险、"
         "以及执行计划的解读要点。\n"
-        "请用 Markdown 格式输出精炼的优化报告，"
-        "索引建议请给出对应的 DDL 语句，改写建议请给出修改前后的 SQL 对比。\n"
-        "输出要求：只保留最重要的建议（最多 3 条），全文控制在 500 字以内，"
-        "不要重复粘贴大段原 SQL，不要输出与优化无关的内容。\n\n"
+        "请用 Markdown 格式输出精炼的优化报告。\n"
+        f"输出要求：{_OPTIMIZE_OUTPUT_RULES}\n\n"
         f"{notice}\n\n"
         f"数据库：{db_name}\n"
         f"相关表结构：\n{table_schemas}\n\n"
         f"目标查询语句（{db_type}）：\n{sql_text}"
+    )
+
+
+def build_agent_optimize_prompt(db_type: str, obj_label: str) -> str:
+    """Agent 取证优化器的 system prompt（输出要求与单轮优化共享同一常量）。"""
+    return (
+        f"你是一位资深的 {db_type} DBA 和性能优化专家，正在诊断一条查询语句的性能问题。"
+        f"你可以调用工具主动获取需要的信息（{obj_label}结构/字段、索引、行数、执行计划），"
+        "请用尽量少的调用取到足够的信息（涉及索引判断时优先用执行计划验证），"
+        "然后输出精炼的中文 markdown 优化报告。\n"
+        f"输出要求：{_OPTIMIZE_OUTPUT_RULES}"
     )
 
 

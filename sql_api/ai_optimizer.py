@@ -21,8 +21,8 @@ import logging
 import re
 import time
 
+from common.utils.ai_prompts import build_agent_optimize_prompt
 from sql.utils.sql_utils import (
-    extract_mongo_collections,  # noqa: F401  再导出兼容旧引用
     sanitize_explain_sql,
     valid_collection_name,
 )
@@ -157,6 +157,20 @@ def _format_rows(column_list, rows, max_rows=30):
     return "\n".join(lines)
 
 
+def _run_query(engine, db_name, sql, **kwargs):
+    """工具内统一查询入口。
+
+    引擎（mysql/mongo）把执行异常吞进 ResultSet.error 后正常返回，若直接取
+    rows，失败会变成 (True, "（无结果）")，模型拿到假成功无法自我修正
+    （如 EXPLAIN 用了非法字面量报 1525）。这里还原成败语义：
+    失败返回 (False, 错误文本) 供模型修正后重试，成功返回 (True, ResultSet)。
+    """
+    rs = engine.query(db_name=db_name, sql=sql, **kwargs)
+    if getattr(rs, "error", None):
+        return False, f"查询执行失败：{rs.error}"
+    return True, rs
+
+
 def _execute_tool(engine, db_name, name, args, db_type="mysql"):
     """执行单个工具调用，返回 (ok, 文本结果)。任何异常由调用方兜底。"""
     if db_type == "mongo":
@@ -174,19 +188,20 @@ def _execute_mysql_tool(engine, db_name, name, args):
         # explain analyze 仅实际执行白名单内的 SELECT/WITH，engine 侧已限流 30s）
         clean = clean.replace("?", "1")
         prefix = "EXPLAIN ANALYZE " if name == "run_explain_analyze" else "EXPLAIN "
-        rs = engine.query(
-            db_name=db_name, sql=f"{prefix}{clean}", max_execution_time=30000
-        )
+        ok, rs = _run_query(engine, db_name, f"{prefix}{clean}", max_execution_time=30000)
+        if not ok:
+            return ok, rs
         return True, _format_rows(rs.column_list, rs.rows)
 
     if name == "list_tables":
-        rs = engine.query(
-            db_name=db_name,
-            sql=(
-                "SELECT table_name FROM information_schema.tables "
-                "WHERE table_schema = DATABASE() ORDER BY table_name"
-            ),
+        ok, rs = _run_query(
+            engine,
+            db_name,
+            "SELECT table_name FROM information_schema.tables "
+            "WHERE table_schema = DATABASE() ORDER BY table_name",
         )
+        if not ok:
+            return ok, rs
         names = [str(row[0]) for row in (rs.rows or [])]
         return True, "、".join(names) if names else "（空库）"
 
@@ -196,26 +211,31 @@ def _execute_mysql_tool(engine, db_name, name, args):
             return False, f"非法表名：{tb!r}"
 
         if name == "get_table_ddl":
-            rs = engine.query(db_name=db_name, sql=f"SHOW CREATE TABLE `{tb}`")
+            ok, rs = _run_query(engine, db_name, f"SHOW CREATE TABLE `{tb}`")
+            if not ok:
+                return ok, rs
             if not rs.rows:
                 return False, f"表 {tb} 不存在或无权查看"
             # 剥掉 AUTO_INCREMENT 计数器噪音（列定义里的自增标记不受影响）
             return True, re.sub(r"\sAUTO_INCREMENT=\d+", "", str(rs.rows[0][1]))
 
         if name == "get_table_indexes":
-            rs = engine.query(db_name=db_name, sql=f"SHOW INDEX FROM `{tb}`")
+            ok, rs = _run_query(engine, db_name, f"SHOW INDEX FROM `{tb}`")
+            if not ok:
+                return ok, rs
             return True, _format_rows(rs.column_list, rs.rows)
 
-        rs = engine.query(
-            db_name=db_name,
-            sql=(
-                "SELECT table_name, table_rows, "
-                "ROUND(data_length/1024/1024, 1) AS data_mb, "
-                "ROUND(index_length/1024/1024, 1) AS index_mb "
-                "FROM information_schema.tables "
-                f"WHERE table_schema = DATABASE() AND table_name = '{tb}'"
-            ),
+        ok, rs = _run_query(
+            engine,
+            db_name,
+            "SELECT table_name, table_rows, "
+            "ROUND(data_length/1024/1024, 1) AS data_mb, "
+            "ROUND(index_length/1024/1024, 1) AS index_mb "
+            "FROM information_schema.tables "
+            f"WHERE table_schema = DATABASE() AND table_name = '{tb}'",
         )
+        if not ok:
+            return ok, rs
         return True, _format_rows(rs.column_list, rs.rows)
 
     return False, f"未知工具：{name}"
@@ -273,7 +293,9 @@ def _execute_mongo_tool(engine, db_name, name, args):
         if not statement:
             return False, "语句为空"
         # 引擎的语句解析支持 explain 前缀（附加 .explain()，只做计划不执行）
-        rs = engine.query(db_name=db_name, sql=f"explain {statement}")
+        ok, rs = _run_query(engine, db_name, f"explain {statement}")
+        if not ok:
+            return ok, rs
         return True, _format_rows(rs.column_list, rs.rows) or "（已生成执行计划，详见返回列）"
 
     return False, f"未知工具：{name}"
@@ -290,7 +312,7 @@ def run_agent_optimize(engine, db_name, masked_sql, table_names, db_type="mysql"
         不传则内部创建
     :return: (report_markdown, steps)；steps 为取证轨迹 [{tool,args,ok,elapsed}]
     """
-    from common.utils.openai import OpenaiClient
+    from common.utils.ai_gateway import OpenaiClient
 
     if client is None:
         client = OpenaiClient(scenario="sql_optimize_agent")
@@ -300,13 +322,7 @@ def run_agent_optimize(engine, db_name, masked_sql, table_names, db_type="mysql"
     is_mongo = db_type == "mongo"
     obj_name = "集合" if is_mongo else "表"
     tools_spec = _mongo_tools_spec() if is_mongo else _mysql_tools_spec()
-    sys_prompt = (
-        f"你是一位资深的 {db_type} DBA 和性能优化专家，正在诊断一条查询语句的性能问题。"
-        f"你可以调用工具主动获取需要的信息（{obj_name}结构/字段、索引、行数、执行计划），"
-        "请用尽量少的调用取到足够的信息（涉及索引判断时优先用执行计划验证），"
-        "然后输出精炼的中文 markdown 优化报告：只保留最重要的建议（最多 3 条）、"
-        "全文 500 字以内，索引建议给出创建语句，改写建议给出修改前后对比。"
-    )
+    sys_prompt = build_agent_optimize_prompt(db_type, obj_name)
     messages = [
         {"role": "system", "content": sys_prompt},
         {

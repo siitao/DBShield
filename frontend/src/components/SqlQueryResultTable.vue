@@ -81,8 +81,14 @@ function formatCell(v: unknown): string {
   return String(v);
 }
 
+// Excel 单元格最多保留 15 位有效数字，双击打开 CSV 时 16 位以上的纯整数
+// （如 BIGINT 雪花 ID 219034306784399364）会被截断显示成 219034306784399000。
+// 写成 ="数字" 公式文本可让 Excel 按字符串原样展示，其它工具读到的是带引号的字段。
+const LONG_INTEGER_RE = /^-?\d{16,}$/;
+
 function csvCell(v: unknown): string {
-  const s = formatCell(v);
+  let s = formatCell(v);
+  if (LONG_INTEGER_RE.test(s)) s = `="${s}"`;
   if (/[",\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
   return s;
 }
