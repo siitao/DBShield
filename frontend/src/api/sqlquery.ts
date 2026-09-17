@@ -194,5 +194,5 @@ export function generateSql(params: {
  * 不 unwrap：未配置时 status 可能非 0，但不是「错误」（不弹提示），由页面判 status。
  */
 export function checkOpenai() {
-  return request.get<LegacyEnvelope<{ openai?: boolean }>>("/api/v1/query/check_openai/");
+  return request.get<LegacyEnvelope<{ openai?: boolean; nl2sql_enabled?: boolean }>>("/api/v1/query/check_openai/");
 }

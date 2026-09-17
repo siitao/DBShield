@@ -173,7 +173,9 @@ const aiLoading = ref(false);
 async function loadOpenai() {
   try {
     const { data } = await checkOpenai();
-    openaiEnabled.value = data.status === 0 && !!data.data?.openai;
+    // nl2sql_enabled 缺省视为开启（兼容旧后端响应）；开关关闭时隐藏 AI 入口
+    openaiEnabled.value =
+      data.status === 0 && !!data.data?.openai && data.data?.nl2sql_enabled !== false;
   } catch {
     openaiEnabled.value = false;
   }

@@ -435,6 +435,12 @@ class GenerateSqlView(APIView):
                 {"status": 1, "msg": "请输入查询描述", "data": ""}
             )
 
+        # 独立开关：AI 生成 SQL 可单独关闭（不影响其他 AI 能力），默认开启
+        if not SysConfig().get("ai_nl2sql_enabled", True):
+            return JsonResponse(
+                {"status": 1, "msg": "AI 生成 SQL 功能已被管理员关闭", "data": ""}
+            )
+
         # table_schema：尽量从库中取真实 DDL，取不到则退化为表名
         table_schema = ""
         sample_data = ""
@@ -541,7 +547,15 @@ class CheckOpenAIView(APIView):
         from common.utils.ai_gateway import check_openai_config
 
         return JsonResponse(
-            {"status": 0, "msg": "ok", "data": {"openai": check_openai_config()}}
+            {
+                "status": 0,
+                "msg": "ok",
+                "data": {
+                    "openai": check_openai_config(),
+                    # nl2sql 独立开关：关闭时前端隐藏「AI 生成 SQL」入口
+                    "nl2sql_enabled": bool(SysConfig().get("ai_nl2sql_enabled", True)),
+                },
+            }
         )
 
 

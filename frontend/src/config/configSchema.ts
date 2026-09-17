@@ -181,6 +181,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
 
   // ── AI 配置 ──────────────────────────────────
   { key: "ai_review_enabled", label: "开启 AI SQL 审核", type: "boolean", section: "AI 配置", desc: "开启后工单 SQL 检测会调用 AI 给出风险评分与建议（仅参考，不阻断提交）" },
+  { key: "ai_nl2sql_enabled", label: "开启 AI 生成 SQL", type: "boolean", section: "AI 配置", desc: "开启后 SQL 查询页提供「AI 生成 SQL」入口；关闭后入口隐藏且接口拒绝调用，默认开启" },
   { key: "enable_ai_slowquery_diagnosis", label: "开启 AI 慢查诊断", type: "boolean", section: "AI 配置", desc: "开启后慢查页面可使用 AI 根因诊断（需配合 sql.use_ai_diagnosis 权限）" },
   { key: "openai_base_url", label: "AI 服务商地址", type: "text", section: "AI 配置", desc: "OpenAI 兼容的 API 地址，如 https://api.openai.com/v1" },
   { key: "openai_api_key", label: "API Key", type: "password", section: "AI 配置" },
