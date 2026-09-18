@@ -164,8 +164,8 @@ function backToLogin() {
           <svg viewBox="0 0 48 48" aria-hidden="true">
             <defs>
               <linearGradient id="lg-shield" x1="0" y1="0" x2="1" y2="1">
-                <stop offset="0" stop-color="#60a5fa" />
-                <stop offset="1" stop-color="#22d3ee" />
+                <stop offset="0" stop-color="#2563eb" />
+                <stop offset="1" stop-color="#0891b2" />
               </linearGradient>
             </defs>
             <circle
@@ -174,28 +174,28 @@ function backToLogin() {
               cy="24"
               r="21"
               fill="none"
-              stroke="rgba(96, 165, 250, 0.35)"
+              stroke="rgba(37, 99, 235, 0.28)"
               stroke-width="1"
               stroke-dasharray="4 7"
             />
             <path
               d="M24 4 L40 10 V22 C40 33 33 41 24 44 C15 41 8 33 8 22 V10 Z"
-              fill="rgba(37, 99, 235, 0.12)"
+              fill="rgba(37, 99, 235, 0.07)"
               stroke="url(#lg-shield)"
               stroke-width="2.2"
               stroke-linejoin="round"
             />
-            <ellipse cx="24" cy="18" rx="7.5" ry="3.2" fill="none" stroke="#93c5fd" stroke-width="1.7" />
+            <ellipse cx="24" cy="18" rx="7.5" ry="3.2" fill="none" stroke="#2563eb" stroke-width="1.7" />
             <path
               d="M16.5 18 V28 C16.5 30 20 31.6 24 31.6 C28 31.6 31.5 30 31.5 28 V18"
               fill="none"
-              stroke="#93c5fd"
+              stroke="#2563eb"
               stroke-width="1.7"
             />
             <path
               d="M16.5 23 C16.5 25 20 26.6 24 26.6 C28 26.6 31.5 25 31.5 23"
               fill="none"
-              stroke="#93c5fd"
+              stroke="#2563eb"
               stroke-width="1.7"
             />
           </svg>
@@ -234,16 +234,16 @@ function backToLogin() {
             <svg viewBox="0 0 48 48" aria-hidden="true">
               <path
                 d="M24 4 L40 10 V22 C40 33 33 41 24 44 C15 41 8 33 8 22 V10 Z"
-                fill="rgba(37, 99, 235, 0.12)"
-                stroke="#60a5fa"
+                fill="rgba(37, 99, 235, 0.07)"
+                stroke="#2563eb"
                 stroke-width="2.2"
                 stroke-linejoin="round"
               />
-              <ellipse cx="24" cy="19" rx="7.5" ry="3.2" fill="none" stroke="#93c5fd" stroke-width="1.7" />
+              <ellipse cx="24" cy="19" rx="7.5" ry="3.2" fill="none" stroke="#2563eb" stroke-width="1.7" />
               <path
                 d="M16.5 19 V28 C16.5 30 20 31.6 24 31.6 C28 31.6 31.5 30 31.5 28 V19"
                 fill="none"
-                stroke="#93c5fd"
+                stroke="#2563eb"
                 stroke-width="1.7"
               />
             </svg>
@@ -381,19 +381,19 @@ function backToLogin() {
 
 <style scoped lang="scss">
 /* ============================================================
-   登录页 · 「精密仪器」暗色视觉
-   左：品牌叙事（网格蓝图 + 盾徽 + 能力清单）
-   右：深色玻璃表单卡
+   登录页 · 亮色版（与主应用同源：浅灰蓝底 / 白卡 / 品牌蓝）
+   左：品牌叙事（淡网格 + 盾徽 + 能力清单）
+   右：白色表单卡（与内容页卡片同一质感语言）
    ============================================================ */
 
 .login-shell {
   display: flex;
   min-height: 100vh;
   background:
-    radial-gradient(52rem 36rem at 12% -8%, rgba(37, 99, 235, 0.22), transparent 60%),
-    radial-gradient(40rem 30rem at 88% 108%, rgba(34, 211, 238, 0.1), transparent 55%),
-    #0a1220;
-  color: #e2e8f0;
+    radial-gradient(52rem 36rem at 12% -8%, rgba(37, 99, 235, 0.07), transparent 60%),
+    radial-gradient(40rem 30rem at 88% 108%, rgba(8, 145, 178, 0.05), transparent 55%),
+    var(--dbshield-bg-page, #f3f6fb);
+  color: #1e293b;
   font-family:
     "PingFang SC",
     "Microsoft YaHei",
@@ -402,15 +402,15 @@ function backToLogin() {
     sans-serif;
 }
 
-/* 细网格蓝图纹理 + 颗粒，铺满整屏 */
+/* 淡网格蓝图纹理，铺满整屏（右上淡出） */
 .login-shell::before {
   content: "";
   position: fixed;
   inset: 0;
   pointer-events: none;
   background:
-    repeating-linear-gradient(0deg, rgba(148, 163, 184, 0.05) 0 1px, transparent 1px 48px),
-    repeating-linear-gradient(90deg, rgba(148, 163, 184, 0.05) 0 1px, transparent 1px 48px);
+    repeating-linear-gradient(0deg, rgba(37, 99, 235, 0.045) 0 1px, transparent 1px 48px),
+    repeating-linear-gradient(90deg, rgba(37, 99, 235, 0.045) 0 1px, transparent 1px 48px);
   mask-image: radial-gradient(80rem 60rem at 30% 20%, #000 30%, transparent 80%);
 }
 
@@ -422,7 +422,7 @@ function backToLogin() {
   flex-direction: column;
   justify-content: space-between;
   padding: 52px 60px;
-  border-right: 1px solid rgba(148, 163, 184, 0.12);
+  border-right: 1px solid rgba(37, 99, 235, 0.1);
   overflow: hidden;
 
   // 左下角一道弧形辉光
@@ -436,7 +436,7 @@ function backToLogin() {
     border-radius: 50%;
     background: radial-gradient(
       closest-side,
-      rgba(37, 99, 235, 0.16),
+      rgba(37, 99, 235, 0.08),
       transparent 70%
     );
     pointer-events: none;
@@ -475,7 +475,7 @@ function backToLogin() {
   font-size: 22px;
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #f1f5f9;
+  color: #0f172a;
 }
 
 .brand-hero {
@@ -491,7 +491,7 @@ function backToLogin() {
   margin: 0 0 18px;
   font-size: 12px;
   letter-spacing: 0.42em;
-  color: #38bdf8;
+  color: #2563eb;
 }
 
 .brand-hero h1 {
@@ -499,11 +499,11 @@ function backToLogin() {
   font-size: clamp(30px, 3.4vw, 44px);
   font-weight: 700;
   line-height: 1.28;
-  color: #f1f5f9;
+  color: #0f172a;
 
   em {
     font-style: normal;
-    background: linear-gradient(100deg, #60a5fa 10%, #22d3ee 90%);
+    background: linear-gradient(100deg, #2563eb 10%, #0891b2 90%);
     -webkit-background-clip: text;
     background-clip: text;
     -webkit-text-fill-color: transparent;
@@ -515,7 +515,7 @@ function backToLogin() {
   max-width: 420px;
   font-size: 15px;
   line-height: 1.9;
-  color: #94a3b8;
+  color: #64748b;
 }
 
 .brand-points {
@@ -529,7 +529,7 @@ function backToLogin() {
     gap: 12px;
     padding: 9px 0;
     font-size: 14.5px;
-    color: #cbd5e1;
+    color: #334155;
   }
 
   i {
@@ -537,8 +537,8 @@ function backToLogin() {
     height: 6px;
     flex: none;
     border-radius: 50%;
-    background: #22d3ee;
-    box-shadow: 0 0 8px rgba(34, 211, 238, 0.8);
+    background: #2563eb;
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
   }
 }
 
@@ -547,7 +547,7 @@ function backToLogin() {
   justify-content: space-between;
   font-size: 12px;
   letter-spacing: 0.12em;
-  color: #475569;
+  color: #94a3b8;
 }
 
 /* ── 右侧表单区 ─────────────────────────────── */
@@ -562,13 +562,12 @@ function backToLogin() {
   width: 400px;
   max-width: 100%;
   padding: 42px 38px 26px;
-  background: rgba(13, 22, 39, 0.66);
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 18px;
+  background: #fff;
+  border: 1px solid #e3eaf4;
+  border-radius: 16px;
   box-shadow:
-    0 30px 80px rgba(2, 6, 17, 0.55),
-    inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(18px);
+    0 24px 60px rgba(15, 23, 42, 0.08),
+    0 2px 6px rgba(15, 23, 42, 0.04);
   animation: card-in 0.55s cubic-bezier(0.22, 0.9, 0.32, 1) both;
 }
 
@@ -588,7 +587,7 @@ function backToLogin() {
   .brand-name-sm {
     font-size: 18px;
     font-weight: 700;
-    color: #f1f5f9;
+    color: #0f172a;
   }
 
   .emblem-sm {
@@ -609,52 +608,34 @@ function backToLogin() {
     margin: 0;
     font-size: 24px;
     font-weight: 700;
-    color: #f1f5f9;
+    color: #0f172a;
   }
 
   p {
     margin: 8px 0 0;
     font-size: 13.5px;
-    color: #7c8aa0;
+    color: #8a97ab;
   }
 }
 
-/* Element Plus 深色玻璃输入框 */
+/* 输入框：亮色质感，聚焦品牌蓝辉光 */
 .login-form {
   :deep(.el-input__wrapper) {
-    background: rgba(148, 163, 184, 0.07);
-    box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.22) inset;
+    border-radius: 10px;
+    box-shadow: 0 0 0 1px #dbe3ef inset;
     transition:
       box-shadow var(--dbshield-transition),
       background var(--dbshield-transition);
 
     &:hover {
-      box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.38) inset;
+      box-shadow: 0 0 0 1px #b9c8e2 inset;
     }
 
     &.is-focus {
-      background: rgba(148, 163, 184, 0.1);
       box-shadow:
-        0 0 0 1px rgba(59, 130, 246, 0.85) inset,
-        0 0 0 4px rgba(59, 130, 246, 0.16);
+        0 0 0 1px rgba(37, 99, 235, 0.85) inset,
+        0 0 0 4px rgba(37, 99, 235, 0.12);
     }
-  }
-
-  :deep(.el-input__inner) {
-    color: #e2e8f0;
-
-    &::placeholder {
-      color: #5d6b80;
-    }
-  }
-
-  :deep(.el-input__prefix),
-  :deep(.el-input__suffix) {
-    color: #64748b;
-  }
-
-  :deep(.el-form-item__error) {
-    color: #f87171;
   }
 }
 
@@ -662,7 +643,7 @@ function backToLogin() {
   letter-spacing: 0.35em;
 }
 
-/* 主按钮：品牌渐变 + 悬停辉光 */
+/* 主按钮：品牌渐变 + 悬停抬升 */
 .login-btn {
   width: 100%;
   height: 44px;
@@ -673,21 +654,21 @@ function backToLogin() {
   text-indent: 0.3em;
   border: none;
   border-radius: 10px;
-  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 55%, #1e40af 100%);
+  background: linear-gradient(135deg, #2f6fee 0%, #2563eb 55%, #1e4fbc 100%);
   box-shadow:
-    0 8px 22px rgba(37, 99, 235, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+    0 8px 22px rgba(37, 99, 235, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
   transition:
     transform var(--dbshield-transition),
     box-shadow var(--dbshield-transition),
     filter var(--dbshield-transition);
 
   &:hover {
-    filter: brightness(1.12);
+    filter: brightness(1.08);
     transform: translateY(-1px);
     box-shadow:
-      0 12px 30px rgba(37, 99, 235, 0.45),
-      inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      0 12px 28px rgba(37, 99, 235, 0.4),
+      inset 0 1px 0 rgba(255, 255, 255, 0.25);
   }
 
   &:active {
@@ -698,14 +679,14 @@ function backToLogin() {
 .back-btn {
   width: 100%;
   margin: 14px 0 0;
-  color: #64748b;
+  color: #94a3b8;
 
   &:hover {
-    color: #93c5fd;
+    color: #2563eb;
   }
 }
 
-/* SSO：幽灵描边按钮 */
+/* SSO：白底描边按钮 */
 .sso-btn {
   display: block;
   width: 100%;
@@ -713,20 +694,22 @@ function backToLogin() {
   margin-bottom: 12px;
   text-align: center;
   font-size: 14.5px;
-  color: #93c5fd;
-  background: rgba(37, 99, 235, 0.08);
-  border: 1px solid rgba(96, 165, 250, 0.35);
+  color: #2563eb;
+  background: #fff;
+  border: 1px solid #d4dff0;
   border-radius: 10px;
   text-decoration: none;
   transition:
     background var(--dbshield-transition),
     border-color var(--dbshield-transition),
-    color var(--dbshield-transition);
+    color var(--dbshield-transition),
+    box-shadow var(--dbshield-transition);
 
   &:hover {
-    color: #dbeafe;
-    background: rgba(37, 99, 235, 0.18);
-    border-color: rgba(96, 165, 250, 0.6);
+    color: #1e4fbc;
+    background: #f2f6fe;
+    border-color: #a9c0ea;
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.12);
   }
 }
 
@@ -735,13 +718,13 @@ function backToLogin() {
   align-items: center;
   margin: 16px 0 18px;
   font-size: 12px;
-  color: #5d6b80;
+  color: #9aa7ba;
 
   &::before,
   &::after {
     content: "";
     flex: 1;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    border-bottom: 1px solid #e5eaf2;
   }
 
   span {
@@ -754,7 +737,7 @@ function backToLogin() {
   text-align: center;
   font-size: 10px;
   letter-spacing: 0.32em;
-  color: #3b4a61;
+  color: #c2cbd8;
 }
 
 /* ── 入场编排 ─────────────────────────────── */
