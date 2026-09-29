@@ -167,6 +167,8 @@ urlpatterns = [
     # ---- binlog / my2sql ----
     path("v1/binlog/list/", api_misc.BinlogListView.as_view()),
     path("v1/binlog/my2sql/", api_misc.My2sqlView.as_view()),
+    path("v1/binlog/my2sql/task/", api_misc.My2sqlTaskView.as_view()),
+    path("v1/binlog/my2sql/download/", api_misc.My2sqlDownloadView.as_view()),
     # ---- 查询 / AI ----
     path("v1/query/generate_sql/", api_misc.GenerateSqlView.as_view()),
     path("v1/query/check_openai/", api_misc.CheckOpenAIView.as_view()),

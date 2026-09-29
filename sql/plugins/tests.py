@@ -7,12 +7,14 @@
 """
 
 import json
+import os
+import tempfile
 from django.test import Client, TestCase
 from unittest.mock import patch, ANY, Mock
 from pytest_mock import MockerFixture
 from django.contrib.auth import get_user_model
 
-from sql.plugins.my2sql import My2SQL
+from sql.plugins.my2sql import My2SQL, describe_failure, is_failure
 from sql.plugins.schemasync import SchemaSync
 from sql.plugins.soar import Soar
 from sql.plugins.sqladvisor import SQLAdvisor
@@ -178,6 +180,85 @@ class TestPlugin(TestCase):
         schema_sync = SchemaSync()
         cmd_args = schema_sync.generate_args2cmd(args)
         self.assertIsInstance(cmd_args, list)
+
+    def test_my2sql_build_args_flag_names(self):
+        """
+        测试my2sql参数名与工具 flag 一致（写错名字会导致整次解析 exit 2 失败）
+        :return:
+        """
+        self.sys_config.set("my2sql", "/opt/dbshield/src/plugins/my2sql")
+        self.sys_config.get_all_config()
+        my2sql = My2SQL()
+        args = My2SQL.build_args(
+            host="127.0.0.1",
+            port=3306,
+            user="root",
+            password="123456",
+            output_dir="/tmp/my2sql",
+            work_type="rollback",
+            threads=2,
+            start_file="mysql-bin.000043",
+            start_pos=4,
+            stop_file="mysql-bin.000043",
+            stop_pos=1000,
+            databases="db1,db2",
+            tables="tb1",
+            sql_types=["insert", "update"],
+            add_extra_info=True,
+            ignore_primary_key=True,
+            no_db_prefix=True,
+        )
+        cmd_args = my2sql.generate_args2cmd(args)
+        self.assertIsInstance(cmd_args, list)
+        # 列表参数必须是逗号分隔字符串，不能是 python 列表字面量
+        self.assertEqual(cmd_args[cmd_args.index("-databases") + 1], "db1,db2")
+        self.assertEqual(cmd_args[cmd_args.index("-tables") + 1], "tb1")
+        self.assertEqual(cmd_args[cmd_args.index("-sql") + 1], "insert,update")
+        # flag 名必须与 my2sql 一致
+        self.assertIn("-ignore-primaryKey-forInsert", cmd_args)
+        self.assertIn("-do-not-add-prifixDb", cmd_args)
+        self.assertIn("-add-extraInfo", cmd_args)
+        self.assertIn("-mode", cmd_args)
+        self.assertNotIn("-ignore-primary-key-for-rollback", cmd_args)
+        self.assertNotIn("-no-db-prefix", cmd_args)
+        # 未启用的开关不应出现在命令行里
+        self.assertNotIn("-full-columns", cmd_args)
+        self.assertNotIn("-file-per-table", cmd_args)
+
+    def test_my2sql_failure_from_stdout(self):
+        """
+        测试失败判定：my2sql 日志在 stdout，解析中断（[fatal]）不能被当成成功
+        :return:
+        """
+        fatal = (
+            "[2026/09/23 09:17:00] [fatal] events.go:87 db.tb column count 5 in binlog > "
+            "in table structure 4, usually means DDL in the middle"
+        )
+        self.assertTrue(is_failure(fatal, "", 1))
+        self.assertTrue(is_failure("", "flag provided but not defined: -x", 2))
+        self.assertFalse(is_failure("[info] finish", "", 0))
+        self.assertIn("DDL", describe_failure(fatal, "", 1))
+
+    def test_my2sql_collect_sql_rows(self):
+        """
+        测试读取 my2sql 输出：跳过隐藏文件（rollback 中间文件），保留 # 附加信息
+        :return:
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with open(os.path.join(tmp_dir, "forward.1.sql"), "w", encoding="utf-8") as f:
+                f.write(
+                    "# datetime=2020-07-16_10:44:09 database=d1 table=t1\n"
+                    "INSERT INTO `d1`.`t1` (`id`) VALUES (1);\n"
+                    "COMMIT;\n"
+                )
+            # rollback 模式的中间文件是 .<db>.<tb>.rollback.<n>.sql，应被跳过
+            with open(os.path.join(tmp_dir, ".d1.t1.rollback.1.sql"), "w", encoding="utf-8") as f:
+                f.write("DELETE FROM `d1`.`t1` WHERE `id`=1;\n")
+            rows = My2SQL.collect_sql_rows(tmp_dir, limit=10)
+            self.assertEqual(1, len(rows))
+            self.assertIn("INSERT INTO", rows[0]["sql"])
+            self.assertIn("database=d1", rows[0]["extra_info"])
+            self.assertEqual(1, My2SQL.count_sql_rows(tmp_dir))
 
     def test_my2sql_generate_args2cmd(self):
         """

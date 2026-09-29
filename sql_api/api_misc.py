@@ -17,7 +17,9 @@ binlog / My2SQL / 查询 / 审计 / 回滚 / 导出 DRF APIView 集 · 收尾所
   POST /api/v1/audit/log/                 — 通用审计日志
   POST /api/v1/audit/querylog/            — 查询日志审计
   POST /api/v1/binlog/list/               — binlog 列表
-  POST /api/v1/binlog/my2sql/             — my2sql 解析
+  POST /api/v1/binlog/my2sql/             — my2sql 解析（save_sql=true 走异步）
+  GET  /api/v1/binlog/my2sql/task/        — 异步解析任务状态
+  GET  /api/v1/binlog/my2sql/download/    — 下载异步解析结果
   POST /api/v1/query/generate_sql/        — AI 生成 SQL
   GET  /api/v1/query/check_openai/        — 探测 OpenAI
   POST /api/v1/query/applylist/           — 查询权限申请列表
@@ -62,7 +64,12 @@ from sql.models import (
     ResourceGroup, SqlWorkflow,
 )
 from sql.notify import notify_for_audit
-from sql.plugins.my2sql import My2SQL
+from sql.plugins.my2sql import (
+    SYNC_TIMEOUT as MY2SQL_SYNC_TIMEOUT,
+    My2SQL,
+    describe_failure as describe_my2sql_failure,
+    is_failure as is_my2sql_failure,
+)
 from sql.plugins.soar import Soar
 from sql.services.instance_service import resolve_instance
 from sql.utils.resource_group import user_groups, user_instances
@@ -285,121 +292,387 @@ class BinlogListView(APIView):
         return JsonResponse({"status": 1, "msg": query_result.error})
 
 
+# My2SQL 输出根目录（下载页 / 结果文件都落在这里）
+MY2SQL_OUTPUT_ROOT = os.path.join(settings.BASE_DIR, "downloads", "my2sql")
+# my2sql -sql 支持的取值
+MY2SQL_SQL_TYPES = ("insert", "update", "delete")
+
+
+def _my2sql_int(value, label):
+    """空值 → None；非法值抛 ValueError（转成前端友好提示）。"""
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError("%s必须是整数" % label)
+
+
+def _my2sql_datetime(value, label):
+    """校验 my2sql 要求的时间格式 YYYY-MM-DD HH:MM:SS。"""
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    try:
+        _dt.datetime.strptime(text, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        raise ValueError("%s格式应为 YYYY-MM-DD HH:MM:SS" % label)
+    return text
+
+
+def _my2sql_names(values, label):
+    """库/表过滤：列表或逗号分隔字符串 → 逗号分隔字符串（my2sql 的入参格式）。"""
+    if not values:
+        return None
+    if isinstance(values, str):
+        values = values.split(",")
+    names = []
+    for item in values:
+        for name in str(item).split(","):
+            name = name.strip()
+            if not name:
+                continue
+            if any(c.isspace() for c in name):
+                raise ValueError("%s不能包含空格" % label)
+            if name not in names:
+                names.append(name)
+    return ",".join(names) or None
+
+
+def _get_my2sql_task(user, task_id):
+    """按 task_id 取 my2sql 异步任务并校验归属。
+
+    :return: (task, None) 或 (None, 错误提示)
+    """
+    from django_q.models import Task
+
+    if not task_id:
+        return None, "缺少 task_id"
+    try:
+        task = Task.objects.get(id=task_id)
+    except Exception:
+        return None, "任务不存在或已被清理"
+    # 只认本接口提交的任务，避免用别人的 task_id 读到其它队列任务的结果
+    if not (task.name or "").startswith("my2sql-"):
+        return None, "任务不存在或已被清理"
+    submitter = (task.kwargs or {}).get("user")
+    if not user.is_superuser and submitter != user.username:
+        return None, "无权查看该任务"
+    return task, None
+
+
 class My2sqlView(APIView):
+    """binlog 解析（my2sql）。
+
+    - 同步（默认）：在本次请求里解析，返回前 num 条 SQL，适合几十秒内的小范围；
+    - 异步（save_sql=true）：提交 django-q 任务后立即返回 task_id，解析完成由
+      sql.notify.notify_for_my2sql 通知提交人，文件在 /binlog/my2sql/download/ 下载。
+
+    百 MB 级 binlog 解析耗时以分钟计，同步请求必然超过前端超时（页面一直转圈），
+    所以大范围务必走异步。
+    """
+
     permission_classes = [My2sqlPermission]
 
-    def post(self, request):
-        instance_name = request.data.get("instance_name")
-        rollback = request.data.get("rollback") == "true"
-        work_type = "rollback" if rollback else "2sql"
-        num = 30 if not request.data.get("num") else int(request.data.get("num"))
-        threads = 4 if not request.data.get("threads") else int(request.data.get("threads"))
-        start_file = request.data.get("start_file")
-        start_pos = request.data.get("start_pos")
-        end_file = request.data.get("end_file")
-        end_pos = request.data.get("end_pos")
-        stop_time = request.data.get("stop_time")
-        start_time = request.data.get("start_time")
-        only_schemas = request.data.getlist("only_schemas")
-        only_tables = request.data.getlist("only_tables[]")
-        sql_type = request.data.getlist("sql_type[]")
-        extra_info = request.data.get("extra_info") == "true"
-        ignore_primary_key = request.data.get("ignore_primary_key") == "true"
-        full_columns = request.data.get("full_columns") == "true"
-        no_db_prefix = request.data.get("no_db_prefix") == "true"
-        file_per_table = request.data.get("file_per_table") == "true"
+    @staticmethod
+    def _parse_options(request):
+        """请求参数 → My2SQL.build_args 入参（校验失败抛 ValueError）。"""
+        data = request.data
+        start_file = (data.get("start_file") or "").strip() or None
+        end_file = (data.get("end_file") or "").strip() or None
+        start_pos = _my2sql_int(data.get("start_pos"), "起始解析位置")
+        end_pos = _my2sql_int(data.get("end_pos"), "终止解析位置")
+        start_time = _my2sql_datetime(data.get("start_time"), "起始解析时间")
+        stop_time = _my2sql_datetime(data.get("stop_time"), "终止解析时间")
+        threads = _my2sql_int(data.get("threads"), "解析线程数") or 4
+        num = _my2sql_int(data.get("num"), "解析行数") or 30
 
+        # 起始条件：给文件按 pos 解析，或只给时间由 my2sql 自行定位 binlog 文件
+        if not start_file and not start_time:
+            raise ValueError("请选择起始解析文件，或填写起始解析时间")
+        if start_file and not end_file:
+            end_file = start_file
+        # my2sql 的 -stop-pos 缺省是 4，只给 -stop-file 时会被判成"起始位置不小于终止位置"
+        # 直接退出，所以终止位置必须显式给出
+        if end_file and end_pos is None:
+            raise ValueError("请填写终止解析位置（与起始文件相同时可填该文件大小）")
+        if start_file and end_file and start_pos and end_pos and (start_file, start_pos) >= (end_file, end_pos):
+            raise ValueError("起始位置必须早于终止位置")
+        if start_time and stop_time and start_time >= stop_time:
+            raise ValueError("起始时间必须早于终止时间")
+        if threads < 1 or threads > 64:
+            raise ValueError("解析线程数需在 1~64 之间")
+        if num < 1:
+            raise ValueError("解析行数至少为 1")
+
+        sql_types = []
+        for item in data.getlist("sql_type[]"):
+            for sql_type in str(item).split(","):
+                sql_type = sql_type.strip().lower()
+                if not sql_type:
+                    continue
+                if sql_type not in MY2SQL_SQL_TYPES:
+                    raise ValueError("SQL 类型仅支持 insert、update、delete")
+                if sql_type not in sql_types:
+                    sql_types.append(sql_type)
+
+        return {
+            "work_type": "rollback" if data.get("rollback") == "true" else "2sql",
+            "threads": threads,
+            "num": num,
+            "start_file": start_file,
+            "start_pos": start_pos,
+            "stop_file": end_file,
+            "stop_pos": end_pos,
+            "start_datetime": start_time,
+            "stop_datetime": stop_time,
+            "databases": _my2sql_names(data.getlist("only_schemas"), "库名"),
+            "tables": _my2sql_names(data.getlist("only_tables[]"), "表名"),
+            "sql_types": sql_types,
+            "add_extra_info": data.get("extra_info") == "true",
+            "ignore_primary_key": data.get("ignore_primary_key") == "true",
+            "full_columns": data.get("full_columns") == "true",
+            "no_db_prefix": data.get("no_db_prefix") == "true",
+            "file_per_table": data.get("file_per_table") == "true",
+            "save_sql": data.get("save_sql") == "true",
+        }
+
+    def post(self, request):
+        instance_name = (request.data.get("instance_name") or "").strip()
         if not instance_name:
-            return JsonResponse({"status": 1, "msg": "缺少实例名"})
+            return JsonResponse({"status": 1, "msg": "缺少实例名", "data": []})
 
         # 资源组校验（H3）：仅可解析自己所在资源组内的实例
         try:
             instance = resolve_instance(request.user, instance_name=instance_name)
         except Exception:
             return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
-        my2sql = My2SQL()
+
+        try:
+            options = self._parse_options(request)
+        except ValueError as e:
+            return JsonResponse({"status": 1, "msg": str(e), "data": []})
+
         username, password = instance.get_username_password()
-
-        # 处理默认值
-        if start_pos == "" or start_pos is None:
-            start_pos = None
-        else:
-            start_pos = int(start_pos)
-        if end_pos == "" or end_pos is None:
-            end_pos = None
-        else:
-            end_pos = int(end_pos)
-
-        args = {
-            "work-type": work_type,
-            "host": instance.host,
-            "port": instance.port,
-            "user": username,
-            "password": password,
-            "add-extraInfo": extra_info,
-            "ignore-primary-key-for-rollback": ignore_primary_key,
-            "full-columns": full_columns,
-            "no-db-prefix": no_db_prefix,
-            "file-per-table": file_per_table,
-            "threads": threads,
-            "databases": only_schemas,
-            "tables": only_tables,
-            "sql": sql_type,
-            "start-file": start_file,
-            "start-pos": start_pos,
-            "stop-file": end_file,
-            "stop-pos": end_pos,
-            "stop-datetime": stop_time,
-            "start-datetime": start_time,
-            "output-dir": os.path.join(settings.BASE_DIR, "downloads", "my2sql", str(time.time())),
-        }
-        output_dir = args["output-dir"]
+        # 每次解析独立目录：目录名即提交时间，下载时据此定位结果
+        output_dir = os.path.join(MY2SQL_OUTPUT_ROOT, str(time.time()))
         os.makedirs(output_dir, exist_ok=True)
+        args = My2SQL.build_args(
+            host=instance.host,
+            port=instance.port,
+            user=username,
+            password=password,
+            output_dir=output_dir,
+            work_type=options["work_type"],
+            threads=options["threads"],
+            start_file=options["start_file"],
+            start_pos=options["start_pos"],
+            stop_file=options["stop_file"],
+            stop_pos=options["stop_pos"],
+            start_datetime=options["start_datetime"],
+            stop_datetime=options["stop_datetime"],
+            databases=options["databases"],
+            tables=options["tables"],
+            sql_types=options["sql_types"],
+            add_extra_info=options["add_extra_info"],
+            ignore_primary_key=options["ignore_primary_key"],
+            full_columns=options["full_columns"],
+            no_db_prefix=options["no_db_prefix"],
+            file_per_table=options["file_per_table"],
+        )
 
+        # 异步解析：立即返回 task_id，完成后通知 + 可下载完整文件
+        if options["save_sql"]:
+            task_id = async_task(
+                "sql_api.tasks.my2sql_execute",
+                user=request.user.username,
+                args=args,
+                output_dir=output_dir,
+                hook="sql.notify.notify_for_my2sql",
+                timeout=-1,
+                task_name="my2sql-%s" % os.path.basename(output_dir),
+            )
+            logger.info(
+                "my2sql 异步解析已提交 task_id=%s 实例=%s 输出目录=%s",
+                task_id,
+                instance_name,
+                output_dir,
+            )
+            return JsonResponse(
+                {
+                    "status": 0,
+                    "msg": "已提交后台解析，完成后会通知你，可稍后在页面下载结果",
+                    "data": [],
+                    "task_id": task_id,
+                }
+            )
+
+        my2sql = My2SQL()
+        # 工具路径来自「系统配置 → 工具插件 → my2sql」，未配置时给出明确指引
+        # （否则 subprocess 会抛 TypeError，用户只看到"解析失败"）
+        if not my2sql.path:
+            return JsonResponse(
+                {
+                    "status": 1,
+                    "msg": "未配置 my2sql 工具路径，请在 系统配置 → 工具插件 中填写 my2sql 可执行文件路径",
+                    "data": [],
+                }
+            )
         args_check = my2sql.check_args(args)
         if args_check["status"] == 1:
-            return JsonResponse(args_check)
+            return JsonResponse(
+                {"status": 1, "msg": args_check["msg"], "data": []}
+            )
         cmd_args = my2sql.generate_args2cmd(args)
         try:
-            stdout, stderr = my2sql.execute_cmd(cmd_args).communicate()
-        except Exception as e:
-            logger.error(f"my2sql 执行失败: {traceback.format_exc()}")
+            stdout, stderr, returncode, timed_out = my2sql.run(
+                cmd_args, MY2SQL_SYNC_TIMEOUT
+            )
+        except Exception:
+            logger.error("my2sql 执行失败: %s", traceback.format_exc())
             # 通用错误文案，避免泄漏引擎/连接细节（H3）
             return JsonResponse({"status": 1, "msg": "my2sql 解析失败，请检查实例连接与参数配置", "data": []})
 
-        if stderr:
-            logger.error(f"my2sql stderr: {stderr}")
-            return JsonResponse({"status": 1, "msg": "my2sql 解析失败，请检查实例连接与参数配置", "data": []})
+        if timed_out:
+            my2sql.remove_sql_files(output_dir)
+            return JsonResponse(
+                {
+                    "status": 1,
+                    "msg": "解析超时（超过 %d 秒），请缩小解析范围，或勾选「保存到文件（异步）」"
+                    "交给后台解析。" % MY2SQL_SYNC_TIMEOUT,
+                    "data": [],
+                }
+            )
+        # my2sql 的日志在 stdout（含 [fatal]），只判 stderr 会把解析中断当成功，
+        # 于是页面展示被截断的 SQL 且无人察觉
+        if is_my2sql_failure(stdout, stderr, returncode):
+            logger.error(
+                "my2sql 解析失败 rc=%s\nstdout:\n%s\nstderr:\n%s",
+                returncode,
+                (stdout or "")[-4000:],
+                (stderr or "")[-4000:],
+            )
+            my2sql.remove_sql_files(output_dir)
+            return JsonResponse(
+                {"status": 1, "msg": describe_my2sql_failure(stdout, stderr, returncode), "data": []}
+            )
 
-        # 读取输出文件
-        rows = []
-        current_extra = ""
-        for root, _, files in os.walk(output_dir):
-            for fn in sorted(files):
-                if not fn.endswith(".sql") or fn.startswith("."):
-                    continue
-                fp = os.path.join(root, fn)
-                with open(fp, encoding="utf-8") as f:
-                    for line in f:
-                        stripped = line.rstrip("\r\n")
-                        content = stripped.lstrip()
-                        if content.startswith("#"):
-                            current_extra = content
-                            continue
-                        if content[:6].upper() in ("INSERT", "DELETE", "UPDATE"):
-                            sql = content if content.endswith(";") else content + ";"
-                            ri = {"sql": sql}
-                            if current_extra:
-                                ri["extra_info"] = current_extra
-                            rows.append(ri)
-                            if len(rows) >= num:
-                                break
-                    if len(rows) >= num:
-                        break
-            if len(rows) >= num:
-                break
-
+        rows = my2sql.collect_sql_rows(output_dir, limit=options["num"])
         return JsonResponse({"status": 0, "msg": "ok", "data": rows})
+
+
+class My2sqlTaskView(APIView):
+    """异步解析任务状态（前端轮询）。
+
+    django-q 要等 worker 接手任务才写 Task 表，刚提交的几秒内查不到属正常，
+    此时返回 state=queued / registered=false，前端继续轮询即可 —— 不能报
+    "任务不存在"，否则用户刚点完提交就看到一句误导性的错误提示。
+    """
+
+    permission_classes = [My2sqlPermission]
+
+    def get(self, request):
+        from django_q.models import Task
+
+        task_id = (request.GET.get("task_id") or "").strip()
+        if not task_id:
+            return JsonResponse({"status": 1, "msg": "缺少 task_id", "data": {}})
+        try:
+            task = Task.objects.filter(id=task_id).first()
+        except Exception:
+            task = None
+        if task is None:
+            # 还在队列里（或集群未消费）：只回状态，不含任何任务内容
+            return JsonResponse(
+                {
+                    "status": 0,
+                    "msg": "ok",
+                    "data": {
+                        "state": "queued",
+                        "registered": False,
+                        "sql_count": 0,
+                        "has_file": False,
+                        "error": "",
+                    },
+                }
+            )
+        # 只认本接口提交的任务，避免用别人的 task_id 读到其它队列任务的结果
+        if not (task.name or "").startswith("my2sql-"):
+            return JsonResponse({"status": 1, "msg": "任务不存在或已被清理", "data": {}})
+        submitter = (task.kwargs or {}).get("user")
+        if not request.user.is_superuser and submitter != request.user.username:
+            return JsonResponse({"status": 1, "msg": "无权查看该任务", "data": {}})
+
+        if not task.started:
+            state = "queued"
+        elif not task.stopped:
+            state = "running"
+        else:
+            state = "success" if task.success else "failure"
+        data = {
+            "state": state,
+            "registered": True,
+            "sql_count": 0,
+            "has_file": False,
+            "error": "",
+        }
+        if task.stopped:
+            result = task.result
+            if task.success and isinstance(result, (list, tuple)) and len(result) > 1:
+                data["sql_count"] = result[0]
+                data["has_file"] = True
+            elif not task.success:
+                data["error"] = str(result).splitlines()[0][:300]
+        return JsonResponse({"status": 0, "msg": "ok", "data": data})
+
+
+class My2sqlDownloadView(APIView):
+    """下载异步解析结果：单个 .sql 直接返回，多文件（-file-per-table）打包 zip。"""
+
+    permission_classes = [My2sqlPermission]
+
+    def get(self, request):
+        import zipfile
+
+        task, error = _get_my2sql_task(request.user, request.GET.get("task_id"))
+        if error:
+            return JsonResponse({"status": 1, "msg": error, "data": []})
+        result = task.result
+        output_dir = (
+            result[1] if isinstance(result, (list, tuple)) and len(result) > 1 else ""
+        )
+        # 目录白名单：task.result 落库可被改，下载前必须确认在 downloads/my2sql 下
+        root = os.path.realpath(MY2SQL_OUTPUT_ROOT)
+        real_dir = os.path.realpath(output_dir) if output_dir else ""
+        if not real_dir.startswith(root + os.sep) or not os.path.isdir(real_dir):
+            return JsonResponse({"status": 1, "msg": "没有可下载的解析结果", "data": []})
+
+        sql_files = [
+            os.path.join(real_dir, fn)
+            for fn in sorted(os.listdir(real_dir))
+            if fn.endswith(".sql") and not fn.startswith(".")
+            and os.path.isfile(os.path.join(real_dir, fn))
+        ]
+        if not sql_files:
+            return JsonResponse({"status": 1, "msg": "没有可下载的解析结果", "data": []})
+        if len(sql_files) == 1:
+            file_path = sql_files[0]
+            return FileResponse(
+                open(file_path, "rb"),
+                as_attachment=True,
+                filename=os.path.basename(file_path),
+            )
+        # 按表拆分的多文件：打包后下载（首次生成后复用）
+        zip_path = os.path.join(real_dir, "my2sql-sql.zip")
+        if not os.path.exists(zip_path):
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for file_path in sql_files:
+                    zf.write(file_path, arcname=os.path.basename(file_path))
+        return FileResponse(
+            open(zip_path, "rb"),
+            as_attachment=True,
+            filename=os.path.basename(zip_path),
+        )
 
 
 # ========== 查询 / AI ==========

@@ -78,6 +78,9 @@ class Plugin:
             p = subprocess.Popen(
                 cmd_args,
                 shell=False,
+                # stdin 置空：外部工具在缺少参数时（如 my2sql 的 -password 为空会
+                # fmt.Scanln 读密码）会一直等标准输入，导致请求/任务永久挂住
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 universal_newlines=True,

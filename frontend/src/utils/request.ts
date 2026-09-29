@@ -5,6 +5,13 @@ import axios, {
 import { ElMessage } from "element-plus";
 import { getCookie } from "./auth";
 
+declare module "axios" {
+  export interface AxiosRequestConfig {
+    /** 静默请求：失败时不弹全局错误提示，由调用方自行处理（如轮询） */
+    silent?: boolean;
+  }
+}
+
 /** 需要 CSRF 校验的 HTTP 方法 */
 const CSRF_METHODS = ["post", "put", "patch", "delete"];
 
@@ -47,9 +54,26 @@ service.interceptors.response.use(
   (error) => {
     const status = error?.response?.status;
     const data = error?.response?.data;
+    // 静默请求（轮询等）：错误交给调用方处理，不弹全局提示
+    const silent = error?.config?.silent === true;
 
     if (status === 401) {
       if (!suppressAuthRedirect) onUnauthorized?.();
+      return Promise.reject(error);
+    }
+
+    // 无响应：超时/断网/后端未起。以前这里静默失败，页面只看到 loading 一直转，
+    // 用户以为"没反应"，必须明确提示
+    if (!error?.response) {
+      if (!silent) {
+        const timedOut =
+          error?.code === "ECONNABORTED" || /timeout/i.test(error?.message || "");
+        ElMessage.error(
+          timedOut
+            ? "请求超时：服务端可能仍在处理，请稍后确认结果或改用异步方式"
+            : "网络异常或后端服务不可用，请稍后重试"
+        );
+      }
       return Promise.reject(error);
     }
 
@@ -65,6 +89,7 @@ service.interceptors.response.use(
       const errs = data.errors;
       msg = typeof errs === "string" ? errs : JSON.stringify(errs);
     }
+    if (silent) return Promise.reject(error);
     // 防御：当响应体是 HTML（Django 异常页/登录重定向页等）或超长内容时，
     // 不要把整段原文弹到页面，改用通用提示
     if (msg) {
