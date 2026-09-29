@@ -11,7 +11,7 @@ from drf_spectacular.views import (
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from . import api_user, api_instance, api_workflow, api_sqlquery, api_document, api_query_priv, api_archiver, api_dashboard, api_config, api_auth_config, api_dictionary, api_instance_admin, api_diagnostic, api_slowquery, api_slowquery_v2, api_resource_group, api_misc, api_auth, ai_usage_api
+from . import api_user, api_instance, api_workflow, api_sqlquery, api_document, api_query_priv, api_archiver, api_dashboard, api_config, api_auth_config, api_dictionary, api_instance_admin, api_diagnostic, api_slowquery, api_slowquery_v2, api_resource_group, api_misc, api_auth, api_schema, ai_usage_api
 
 router = routers.DefaultRouter()
 router.register(
@@ -183,6 +183,7 @@ urlpatterns = [
     path("v1/sqlworkflow/osc_control/", api_misc.OscControlView.as_view()),
     # ---- SchemaSync ----
     path("v1/schemasync/", api_misc.SchemaSyncView.as_view()),
+    path("v1/schema/tablediff/", api_schema.TableDiffView.as_view()),
     # ---- 回滚 / 导出（文件流 + 预检） ----
     path("v1/rollback/", api_misc.RollbackDownloadView.as_view()),
     path("v1/sqlexport/pre_check/", api_misc.SqlexportPreCheckView.as_view()),

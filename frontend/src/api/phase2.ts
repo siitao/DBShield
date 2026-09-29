@@ -544,6 +544,61 @@ export function schemaSync(params: {
     .then((res) => checkStatus(res.data).data as SchemaSyncResult);
 }
 
+// ============ 表级结构对比（information_schema 自研 diff，POST /api/v1/schema/tablediff/） ============
+
+export interface TableDiffItem {
+  kind: "column" | "index" | "table_option" | "table";
+  action: "add" | "drop" | "modify" | "rename" | "missing";
+  object: string;
+  source: string | null;
+  target: string | null;
+  patch: string;
+  revert: string;
+  danger: boolean;
+}
+
+export interface TableDiffTable {
+  table: string;
+  status: "diff" | "same" | "only_in_source" | "only_in_target";
+  items: TableDiffItem[];
+  patch_sql: string;
+  revert_sql: string;
+}
+
+export interface TableDiffSummary {
+  total: number;
+  diff: number;
+  same: number;
+  missing: number;
+  objects: number;
+}
+
+export interface TableDiffResult {
+  summary: TableDiffSummary;
+  tables: TableDiffTable[];
+  objects: { kind: string; name: string; side: "source_only" | "target_only" }[];
+  patch_sql: string;
+  revert_sql: string;
+}
+
+export function tableSchemaDiff(params: {
+  instance_name: string;
+  db_name: string;
+  target_instance_name: string;
+  target_db_name: string;
+  tables?: string[];
+  sync_auto_inc?: boolean;
+  sync_comments?: boolean;
+}) {
+  return request
+    .post<{ status: number; msg: string; data?: TableDiffResult }>(
+      "/api/v1/schema/tablediff/",
+      params,
+      { timeout: 120000 }
+    )
+    .then((res) => checkStatus(res.data).data as TableDiffResult);
+}
+
 // ============ 系统审计 audit_log.py + 复用工单/查询审计 ============
 
 /** 通用审计日志（POST /api/v1/audit/log/，limit/offset 有默认） */

@@ -1154,6 +1154,38 @@ class SchemaSyncView(APIView):
             diff_stdout = "执行对比命令失败，请联系管理员"
 
         result["data"]["diff_stdout"] = diff_stdout
+
+        # schemasync 的 stdout 只有摘要日志，patch/revert 脚本写在 output-directory，
+        # 文件名格式为 <目标库>_<tag>.<YYYYMMDD>.(patch|revert).sql（utils.create_pnames）。
+        # 目标库为 * 等字符时文件名本身含通配符，不能用 glob，按「_<tag>.」定位本次运行的文件
+        patch_parts, revert_parts = [], []
+        try:
+            entries = sorted(os.listdir(output_directory))
+        except OSError:
+            entries = []
+        for fn in entries:
+            if f"_{tag}." not in fn:
+                continue
+            if fn.endswith(".patch.sql"):
+                parts = patch_parts
+            elif fn.endswith(".revert.sql"):
+                parts = revert_parts
+            else:
+                continue
+            try:
+                with open(
+                    os.path.join(output_directory, fn),
+                    encoding="utf-8",
+                    errors="replace",
+                ) as fh:
+                    content = fh.read()
+            except OSError:
+                logger.warning("schemasync 脚本文件读取失败: %s", fn)
+                continue
+            parts.append(f"-- {fn}\n{content}")
+
+        result["data"]["patch_stdout"] = "\n".join(patch_parts)
+        result["data"]["revert_stdout"] = "\n".join(revert_parts)
         return JsonResponse(result)
 
 

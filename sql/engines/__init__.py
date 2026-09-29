@@ -204,6 +204,14 @@ class EngineBase:
         """获取数据库所有表格信息，用作数据字典导出接口"""
         return list()
 
+    def get_tables_schema(self, db_name, tables=None):
+        """表级结构对比用：批量获取表选项/列/索引元数据，返回 dict"""
+        return dict()
+
+    def get_object_names(self, db_name):
+        """表级结构对比用：视图/触发器/存储过程等对象名清单，返回 dict"""
+        return dict()
+
     def get_views_list(self, db_name, **kwargs):
         """获取视图列表, 返回 dict"""
         return dict()

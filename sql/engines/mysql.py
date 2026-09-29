@@ -584,6 +584,111 @@ class MysqlEngine(EngineBase):
             table_metas.append(_meta)
         return table_metas
 
+    def get_tables_schema(self, db_name, tables=None):
+        """表级结构对比用：批量获取表选项/列/索引元数据。
+
+        返回 {table_options, columns, indexes, error}；
+        tables 非空时按表名 IN 过滤，为 None 时取整库。
+        与 get_tables_metas_data 的区别：列清单固定为 diff 所需子集，
+        且支持选定表过滤（整库上万表时避免全量拉取）。
+        """
+        filters = "TABLE_SCHEMA=%(db_name)s"
+        params = {"db_name": db_name}
+        if tables:
+            filters += " AND TABLE_NAME IN %(tables)s"
+            params["tables"] = tuple(tables)
+
+        sql_tbs = f"""SELECT TABLE_NAME, ENGINE, TABLE_COLLATION, TABLE_COMMENT, AUTO_INCREMENT
+                        FROM information_schema.TABLES
+                        WHERE {filters};"""
+        sql_cols = f"""SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_TYPE, IS_NULLABLE,
+                              COLUMN_DEFAULT, COLUMN_KEY, EXTRA, COLUMN_COMMENT, CHARACTER_SET_NAME, COLLATION_NAME
+                         FROM information_schema.COLUMNS
+                         WHERE {filters}
+                         ORDER BY TABLE_NAME, ORDINAL_POSITION;"""
+        sql_idx = f"""SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE, INDEX_TYPE
+                        FROM information_schema.STATISTICS
+                        WHERE {filters}
+                        ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;"""
+
+        tbs = self.query(
+            db_name=db_name, sql=sql_tbs, cursorclass=MySQLdb.cursors.DictCursor,
+            close_conn=False, parameters=params,
+        )
+        if tbs.error:
+            self.close()
+            return {"error": tbs.error}
+        cols = self.query(
+            db_name=db_name, sql=sql_cols, cursorclass=MySQLdb.cursors.DictCursor,
+            close_conn=False, parameters=params,
+        )
+        if cols.error:
+            self.close()
+            return {"error": cols.error}
+        idx = self.query(
+            db_name=db_name, sql=sql_idx, cursorclass=MySQLdb.cursors.DictCursor,
+            parameters=params,
+        )
+        if idx.error:
+            return {"error": idx.error}
+
+        columns = {}
+        for col in cols.rows:
+            columns.setdefault(col["TABLE_NAME"], []).append(col)
+        indexes = {}
+        for row in idx.rows:
+            indexes.setdefault(row["TABLE_NAME"], {}).setdefault(row["INDEX_NAME"], []).append(row)
+        index_defs = {
+            tb: {
+                name: {
+                    "name": name,
+                    "unique": not any(r["NON_UNIQUE"] for r in parts),
+                    "type": parts[0]["INDEX_TYPE"],
+                    "columns": [r["COLUMN_NAME"] for r in parts],
+                }
+                for name, parts in idx_map.items()
+            }
+            for tb, idx_map in indexes.items()
+        }
+        return {
+            "table_options": {r["TABLE_NAME"]: r for r in tbs.rows},
+            "columns": columns,
+            "indexes": index_defs,
+        }
+
+    def get_object_names(self, db_name):
+        """表级结构对比用：视图/触发器/存储过程/函数的对象名清单（存在性对比）"""
+        views = self.query(
+            db_name=db_name,
+            sql="SELECT TABLE_NAME FROM information_schema.VIEWS WHERE TABLE_SCHEMA=%(db_name)s;",
+            parameters={"db_name": db_name},
+            close_conn=False,
+        )
+        if views.error:
+            self.close()
+            return {"error": views.error}
+        triggers = self.query(
+            db_name=db_name,
+            sql="SELECT TRIGGER_NAME FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA=%(db_name)s;",
+            parameters={"db_name": db_name},
+            close_conn=False,
+        )
+        if triggers.error:
+            self.close()
+            return {"error": triggers.error}
+        routines = self.query(
+            db_name=db_name,
+            sql="SELECT ROUTINE_NAME, ROUTINE_TYPE FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA=%(db_name)s;",
+            parameters={"db_name": db_name},
+        )
+        if routines.error:
+            return {"error": routines.error}
+        return {
+            "views": [row[0] for row in views.rows],
+            "triggers": [row[0] for row in triggers.rows],
+            "routines": [row[0] for row in routines.rows],
+        }
+
     def get_bind_users(self, db_name: str):
         sql_get_bind_users = f"""select group_concat(distinct(GRANTEE)),TABLE_SCHEMA
                 from information_schema.SCHEMA_PRIVILEGES
