@@ -81,6 +81,21 @@ def execute_callback(task):
     elif task.result.warning or task.result.error:
         execute_result = task.result
         workflow.status = "workflow_exception"
+        # 引擎可能只把错误写进 ReviewSet.error/warning 而没有生成结果行（例如 mongo
+        # 语句解析阶段抛异常），此时 execute_result 落库后前端结果表是空的，用户只能
+        # 看到「执行异常」却看不到任何错误原因，这里补一条兜底行保证错误可追溯。
+        if not execute_result.rows:
+            execute_result.rows = [
+                ReviewResult(
+                    stage="Execute failed",
+                    errlevel=2,
+                    stagestatus="异常终止",
+                    errormessage=str(
+                        execute_result.error or execute_result.warning or "未知错误"
+                    ),
+                    sql=workflow.sqlworkflowcontent.sql_content,
+                )
+            ]
     else:
         execute_result = task.result
         workflow.status = "workflow_finish"

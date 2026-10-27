@@ -784,6 +784,44 @@ class MongoEngine(EngineBase):
             )
             return False, str(traceback.format_exc()), 0
 
+    def _validate_statement(self, exec_sql):
+        """语句级别的预校验：括号/引号必须成对
+
+        解析器（dispose_pair）遇到括号不配对时只会抛 "near column N, The symbol
+        ( has no closed"，既没有语句序号也看不出是哪一条，这里提前给出可读的错误。
+        返回空字符串表示校验通过。
+        """
+        pairs = {")": "(", "]": "[", "}": "{"}
+        stack = []
+        in_string = False
+        quote = ""
+        escaped = False
+        for ch in exec_sql:
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == quote:
+                    in_string = False
+                continue
+            if ch in ('"', "'"):
+                in_string = True
+                quote = ch
+            elif ch in "([{":
+                stack.append(ch)
+            elif ch in ")]}":
+                if not stack or stack.pop() != pairs[ch]:
+                    return f"括号不匹配：多了一个 {ch}"
+        if in_string:
+            return "字符串引号没有闭合"
+        if stack:
+            return (
+                f"括号不配对：{len(stack)} 个 {''.join(stack)} 没有闭合"
+                "（常见原因：分号写在了 ) 前面，或者漏写了 ) ）"
+            )
+        return ""
+
     def execute(self, db_name=None, sql=""):
         """mongo命令执行语句"""
         self.get_master()
@@ -792,43 +830,64 @@ class MongoEngine(EngineBase):
         # 以；切分语句，逐句执行
         sp_sql = sql.split(";")
         line = 0
-        for exec_sql in sp_sql:
-            if not exec_sql == "":
-                exec_sql = exec_sql.strip()
-                try:
-                    start = time.perf_counter()
+        for raw_sql in sp_sql:
+            # 空片段（例如结尾的 ; 之后）不占语句序号
+            if not raw_sql.strip():
+                continue
+            line += 1
+            exec_sql = raw_sql.strip()
+            stmt_no = line
+            try:
+                invalid_reason = self._validate_statement(exec_sql)
+                if invalid_reason:
+                    raise Exception(invalid_reason)
+                start = time.perf_counter()
 
-                    success, r, actual_affected_rows = self._execute_shell_sql(
-                        exec_sql, db_name
+                success, r, actual_affected_rows = self._execute_shell_sql(
+                    exec_sql, db_name
+                )
+                end = time.perf_counter()
+                if not success:
+                    execute_result.error = r
+                    result = ReviewResult(
+                        id=stmt_no,
+                        stage="Execute failed",
+                        errlevel=2,
+                        stagestatus="异常终止",
+                        errormessage=f"mongo语句执行报错: {r}",
+                        sql=exec_sql,
                     )
-                    end = time.perf_counter()
-                    line += 1
-                    if not success:
-                        execute_result.error = r
-                        result = ReviewResult(
-                            id=line,
-                            stage="Execute failed",
-                            errlevel=2,
-                            stagestatus="异常终止",
-                            errormessage=f"mongo语句执行报错: {r}",
-                            sql=exec_sql,
-                        )
-                    else:
-                        result = ReviewResult(
-                            id=line,
-                            errlevel=0,
-                            stagestatus="执行结束",
-                            errormessage=r,
-                            execute_time=round(end - start, 6),
-                            affected_rows=actual_affected_rows,
-                            sql=exec_sql,
-                        )
-                    execute_result.rows += [result]
-                except Exception as e:
-                    logger.warning(
-                        f"mongo语句执行报错，语句：{exec_sql}，错误信息{traceback.format_exc()}"
+                else:
+                    result = ReviewResult(
+                        id=stmt_no,
+                        errlevel=0,
+                        stagestatus="执行结束",
+                        errormessage=r,
+                        execute_time=round(end - start, 6),
+                        affected_rows=actual_affected_rows,
+                        sql=exec_sql,
                     )
-                    execute_result.error = str(e)
+            except Exception as e:
+                # 打印长度与结尾字符，便于区分「用户输入本来就不完整」和
+                # 「切分/传输环节丢了字符」——两者报错信息完全相同，只有长度能分辨。
+                logger.warning(
+                    f"mongo语句执行报错，第 {stmt_no} 条语句，长度 {len(exec_sql)}，"
+                    f"结尾 {exec_sql[-12:]!r}（完整 SQL 长度 {len(sql)}），"
+                    f"语句：{exec_sql}，错误信息{traceback.format_exc()}"
+                )
+                # 解析阶段（dispose_pair/JsonDecoder/db[collection]）的异常不在
+                # _execute_shell_sql 的 try 内，只会落到这里。若只写 error 而不补
+                # 结果行，前端只有「执行异常」状态、结果表却没有任何错误信息。
+                execute_result.error = str(e)
+                result = ReviewResult(
+                    id=stmt_no,
+                    stage="Execute failed",
+                    errlevel=2,
+                    stagestatus="异常终止",
+                    errormessage=f"第 {stmt_no} 条语句执行失败: {e}",
+                    sql=exec_sql,
+                )
+            execute_result.rows += [result]
             # result_set.column_list = [i[0] for i in fields] if fields else []
         return execute_result
 
