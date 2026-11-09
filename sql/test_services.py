@@ -397,3 +397,63 @@ def test_execute_sql_query_success_and_querylog_created(monkeypatch):
     assert result["data"]["seconds_behind_master"] == 0
     assert created["instance_name"] == "ins"
     assert created["effect_row"] == 5
+
+
+@pytest.mark.django_db
+def test_execute_sql_query_masking_failure_fails_closed(monkeypatch):
+    """脱敏异常时绝不能把未脱敏的原始结果返回前端。"""
+    query_result = _fake_query_result(error=None, affected_rows=5)
+    fake_engine = SimpleNamespace(
+        query_check=lambda **kwargs: {
+            "bad_query": False,
+            "msg": "",
+            "filtered_sql": "select 1",
+            "has_star": False,
+        },
+        filter_sql=lambda **kwargs: "select 1 limit 10",
+        get_connection=lambda **kwargs: None,
+        query=lambda *args, **kwargs: query_result,
+        query_masking=lambda *args, **kwargs: SimpleNamespace(error="mask fail"),
+        thread_id=None,
+        seconds_behind_master=0,
+    )
+    monkeypatch.setattr(
+        sqlquery_service,
+        "user_instances",
+        lambda user: SimpleNamespace(
+            get=lambda **kwargs: SimpleNamespace(id=1, instance_name="ins")
+        ),
+    )
+    monkeypatch.setattr(
+        sqlquery_service,
+        "SysConfig",
+        lambda: _FakeConfig({"disable_star": False, "data_masking": True}),
+    )
+    monkeypatch.setattr(sqlquery_service, "get_engine", lambda instance: fake_engine)
+    monkeypatch.setattr(
+        sqlquery_service,
+        "query_priv_check",
+        lambda *args, **kwargs: {
+            "status": 0,
+            "msg": "ok",
+            "data": {"limit_num": 10, "priv_check": True},
+        },
+    )
+    monkeypatch.setattr(
+        sqlquery_service.QueryLog.objects,
+        "create",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(sqlquery_service.connection, "connection", None)
+
+    result = sqlquery_service.execute_sql_query(
+        user=SimpleNamespace(username="u", display="U"),
+        instance_name="ins",
+        db_name="db",
+        sql_content="select 1",
+        limit_num=10,
+    )
+
+    assert result["status"] == 1
+    assert "脱敏异常" in result["msg"]
+    assert result["data"] == {}

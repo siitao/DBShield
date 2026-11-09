@@ -67,6 +67,10 @@ def archive(archive_id):
     :return:
     """
     archive_info = ArchiveConfig.objects.get(id=archive_id)
+    # 最后一道防线：无论从定时调度还是“立即执行”进入，未启用/未审核通过的
+    # 归档都不得执行。调用方（add_archive_task/ArchiveOnceView）也各自校验。
+    if not archive_info.state or archive_info.status != WorkflowStatus.PASSED:
+        raise Exception("归档配置未启用或未审核通过，禁止执行")
     s_ins = archive_info.src_instance
     src_db_name = archive_info.src_db_name
     src_table_name = archive_info.src_table_name

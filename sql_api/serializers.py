@@ -19,7 +19,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from sql.engines import get_engine
 from sql.utils.workflow_audit import Audit, get_auditor
-from sql.utils.resource_group import user_instances
+from sql.utils.resource_group import user_groups, user_instances
 from common.utils.const import WorkflowType, WorkflowStatus
 from common.config import SysConfig
 import inspect
@@ -106,18 +106,12 @@ class TwoFASerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        auth_type = attrs.get("auth_type")
         engineer = attrs.get("engineer")
-        enable = attrs.get("enable")
 
         try:
             Users.objects.get(username=engineer)
         except Users.DoesNotExist:
             raise serializers.ValidationError({"errors": "不存在该用户"})
-
-        if auth_type == "sms" and enable == "true":
-            if not attrs.get("phone"):
-                raise serializers.ValidationError({"errors": "缺少 phone"})
 
         return attrs
 
@@ -169,24 +163,15 @@ class TwoFASaveSerializer(serializers.Serializer):
 
 class TwoFAVerifySerializer(serializers.Serializer):
     engineer = serializers.CharField(label="用户名")
-    otp = serializers.IntegerField(label="一次性密码/验证码")
-    key = serializers.CharField(required=False, label="密钥")
-    phone = serializers.CharField(required=False, label="手机号码")
-    auth_type = serializers.CharField(label="验证方式")
+    # 验证码按字符串接收，保留前导 0（TOTP/短信验证码都可能是 0 开头）
+    otp = serializers.CharField(label="一次性密码/验证码", min_length=6, max_length=8)
+    auth_type = serializers.ChoiceField(choices=["totp", "sms"], label="验证方式")
 
     def validate(self, attrs):
-        engineer = attrs.get("engineer")
-        auth_type = attrs.get("auth_type")
-
-        if auth_type == "sms":
-            if not attrs.get("phone"):
-                raise serializers.ValidationError({"errors": "缺少 phone"})
-
         try:
-            Users.objects.get(username=engineer)
+            Users.objects.get(username=attrs.get("engineer"))
         except Users.DoesNotExist:
             raise serializers.ValidationError({"errors": "不存在该用户"})
-
         return attrs
 
 
@@ -214,7 +199,12 @@ class TunnelSerializer(serializers.ModelSerializer):
     class Meta:
         model = Tunnel
         fields = "__all__"
-        write_only_fields = ["password", "pkey", "pkey_password"]
+        # DRF 不支持 write_only_fields，必须用 extra_kwargs；否则密码/私钥会回显
+        extra_kwargs = {
+            "password": {"write_only": True},
+            "pkey": {"write_only": True},
+            "pkey_password": {"write_only": True},
+        }
 
 
 class CloudAccessKeySerializer(serializers.ModelSerializer):
@@ -384,7 +374,9 @@ class SqlQueryExecuteSerializer(serializers.Serializer):
 
 
 class SqlQueryLogsQuerySerializer(serializers.Serializer):
-    limit = serializers.IntegerField(required=False, default=0, min_value=0)
+    limit = serializers.IntegerField(
+        required=False, default=20, min_value=1, max_value=500
+    )
     offset = serializers.IntegerField(required=False, default=0, min_value=0)
     search = serializers.CharField(required=False, allow_blank=True, default="")
     star = serializers.CharField(required=False, allow_blank=True, default="")
@@ -494,6 +486,15 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
         else:
             user = self.context["request"].user
 
+        # 资源组归属校验：非超管只能选择自己所在的资源组；实例必须属于
+        # 所选资源组，避免把工单挂到别的组导致审批流错配。
+        if not self.context["request"].user.is_superuser:
+            user_group_ids = {g.group_id for g in user_groups(user)}
+            if group.group_id not in user_group_ids:
+                raise serializers.ValidationError({"errors": "你不在所选资源组内！"})
+        if not instance.resource_group.filter(group_id=group.group_id).exists():
+            raise serializers.ValidationError({"errors": "所选实例不属于该资源组！"})
+
         # 验证提交用户的组权限（用户是否在该组、该组是否有指定实例）
         tag_codes = (
             ["can_read"] if workflow_data["is_offline_export"] else ["can_write"]
@@ -518,9 +519,10 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
                     "db_name": workflow_data["db_name"],
                     "sql": sql_content,
                 }
-                if "run_ai_review" in inspect.signature(
-                    check_engine.execute_check
-                ).parameters:
+                if (
+                    "run_ai_review"
+                    in inspect.signature(check_engine.execute_check).parameters
+                ):
                     check_kwargs["run_ai_review"] = False
                 check_result = check_engine.execute_check(**check_kwargs)
         except Exception as e:

@@ -89,6 +89,10 @@ def execute_sql_query(
             add_kill_conn_schedule(schedule_name, run_date, instance.id, thread_id)
         with FuncTimer() as timer:
             seconds_behind_master = query_engine.seconds_behind_master
+            query_kwargs = {}
+            if getattr(instance, "db_type", "") == "mysql":
+                # 在线查询使用只读事务，防止 query_check 正则被绕过后的写操作
+                query_kwargs["read_only"] = True
             query_result = query_engine.query(
                 db_name,
                 sql_content,
@@ -96,6 +100,7 @@ def execute_sql_query(
                 schema_name=schema_name,
                 tb_name=tb_name,
                 max_execution_time=max_execution_time * 1000,
+                **query_kwargs,
             )
         query_result.query_time = timer.cost
         if thread_id:
@@ -112,36 +117,25 @@ def execute_sql_query(
                     )
                 masking_result.mask_time = timer.cost
                 if masking_result.error:
-                    if config.get("query_check"):
-                        result["status"] = 1
-                        result["msg"] = f"数据脱敏异常：{masking_result.error}"
-                    else:
-                        logger.warning(
-                            "数据脱敏异常，按照配置放行，查询语句：%s，错误信息：%s",
-                            sql_content,
-                            masking_result.error,
-                        )
-                        query_result.error = None
-                        result["data"] = query_result.__dict__
+                    # 脱敏失败必须 fail-closed：不能把未脱敏的原始结果返回前端
+                    logger.warning(
+                        "数据脱敏异常，拒绝返回查询结果，查询语句：%s，错误信息：%s",
+                        sql_content,
+                        masking_result.error,
+                    )
+                    result["status"] = 1
+                    result["msg"] = f"数据脱敏异常：{masking_result.error}"
                 else:
                     result["data"] = masking_result.__dict__
             except Exception as msg:
                 logger.error(traceback.format_exc())
-                if config.get("query_check"):
-                    result["status"] = 1
-                    result["msg"] = f"数据脱敏异常，请联系管理员，错误信息：{msg}"
-                else:
-                    logger.warning(
-                        "数据脱敏异常，按照配置放行，查询语句：%s，错误信息：%s",
-                        sql_content,
-                        msg,
-                    )
-                    query_result.error = None
-                    result["data"] = query_result.__dict__
+                # 脱敏链路异常同样 fail-closed
+                result["status"] = 1
+                result["msg"] = f"数据脱敏异常，请联系管理员，错误信息：{msg}"
         else:
             result["data"] = query_result.__dict__
 
-        if not query_result.error:
+        if result["status"] == 0 and not query_result.error:
             result["data"]["seconds_behind_master"] = seconds_behind_master
             if int(limit_num) == 0:
                 effect_row = int(query_result.affected_rows)

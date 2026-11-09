@@ -12,6 +12,7 @@ mysql / pgsql / mongo 的 execute_check 通过 run_ai_review() 接入，行为�
 
 外发脱敏（H4）：待审核语句与 DDL 上下文均先做字面量脱敏再进 prompt。
 """
+
 import hashlib
 import logging
 
@@ -133,7 +134,10 @@ def _collect_mongo_context(engine, db_name, names):
                 key = ", ".join(f"{f}:{d}" for f, d in idx.get("key", {}).items())
                 unique = "，唯一" if idx.get("unique") else ""
                 specs.append(f"{idx.get('name')}（{key}{unique}）")
-            schema_parts.append(f"-- 集合 {name} 索引\n" + ("\n".join(specs) or "（无索引，仅默认 _id）"))
+            schema_parts.append(
+                f"-- 集合 {name} 索引\n"
+                + ("\n".join(specs) or "（无索引，仅默认 _id）")
+            )
         except Exception as e:
             logger.debug(f"AI 审核拉取集合 {name} 索引失败: {e}")
         try:
@@ -156,7 +160,10 @@ def _collect_context(engine, db_type, db_name, names):
         return _collect_pgsql_context(engine, db_name, names)
     if db_type == "mongo":
         return _collect_mongo_context(engine, db_name, names)
-    return "(该数据库类型暂不支持结构上下文收集，仅依据 SQL 文本给出建议)", "（无行数信息）"
+    return (
+        "(该数据库类型暂不支持结构上下文收集，仅依据 SQL 文本给出建议)",
+        "（无行数信息）",
+    )
 
 
 def _attach(row, result):
@@ -191,12 +198,14 @@ def _review_one(engine, client, db_type, db_name, masked_sql):
         db_type=db_type,
         db_name=db_name,
         sql_text=masked_sql,
-        table_schemas=mask_sql_literals(schema_ctx),
+        table_schemas=mask_sql_literals(schema_ctx, db_type),
         table_rows=rows_ctx,
     )
 
 
-def review_statements(engine, client, db_type, db_name, statements, instance_name="", user_name=""):
+def review_statements(
+    engine, client, db_type, db_name, statements, instance_name="", user_name=""
+):
     """批量评审一批语句，返回与 statements 等长的归一结果 list。
 
     每项为归一结果 dict；该项 AI 完全不可用时为 {"error": ...} 占位
@@ -204,7 +213,7 @@ def review_statements(engine, client, db_type, db_name, statements, instance_nam
     """
     from common.utils.ai_gateway import record_ai_usage
 
-    masked = [mask_sql_literals(s or "") for s in statements]
+    masked = [mask_sql_literals(s or "", db_type) for s in statements]
     model = str(client.default_chat_model)
     cache_key = batch_cache_key(model, db_name or "", masked)
 
@@ -223,7 +232,7 @@ def review_statements(engine, client, db_type, db_name, statements, instance_nam
                 db_type=db_type,
                 db_name=db_name,
                 statements=masked,
-                table_schemas=mask_sql_literals(schema_ctx),
+                table_schemas=mask_sql_literals(schema_ctx, db_type),
                 table_rows=rows_ctx,
             )
         if results is None:
@@ -318,7 +327,9 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
         logger.warning(f"AI 审核客户端初始化失败，整体跳过: {e}")
         return
 
-    instance_name = getattr(getattr(engine, "instance", None), "instance_name", "") or ""
+    instance_name = (
+        getattr(getattr(engine, "instance", None), "instance_name", "") or ""
+    )
     # 上限裁剪：超出 MAX_STATEMENTS 的行标 unknown 跳过
     eligible = []
     for idx, row in enumerate(check_result.rows):
@@ -330,12 +341,17 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
         eligible.append(row)
 
     for i in range(0, len(eligible), BATCH_SIZE):
-        batch_rows = eligible[i:i + BATCH_SIZE]
+        batch_rows = eligible[i : i + BATCH_SIZE]
         statements = [row.sql or "" for row in batch_rows]
         try:
             results = review_statements(
-                engine, client, db_type, db_name, statements,
-                instance_name=instance_name, user_name=user_name,
+                engine,
+                client,
+                db_type,
+                db_name,
+                statements,
+                instance_name=instance_name,
+                user_name=user_name,
             )
         except Exception:
             # 批级异常（上下文收集失败等）：整批挂 unknown，不中断检测

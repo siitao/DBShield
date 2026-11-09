@@ -5,7 +5,7 @@ from sql.utils.sql_utils import get_syntax_type
 from common.utils.timer import FuncTimer
 from common.config import SysConfig
 from . import EngineBase
-from pymysql import escape_string
+from pymysql.converters import escape_string
 import sqlparse
 import logging
 import re
@@ -281,6 +281,7 @@ class TDengineEngine(EngineBase):
             return ResultSet(full_sql="")
         all_kill_sql = "".join(f"kill query '{i}';" for i in valid_kill_ids)
         return self.execute(sql=all_kill_sql)
+
     kill_connection = kill_query
 
     def execute(self, db_name=None, sql="", close_conn=True, parameters=None):

@@ -1,4 +1,5 @@
 # -*- coding: UTF-8 -*-
+import json
 import logging
 import traceback
 
@@ -110,7 +111,20 @@ def execute_callback(task):
             finish_time=task.stopped,
             status="workflow_exception",
         )
-        workflow.sqlworkflowcontent.execute_result = {f"{e}"}
+        workflow.sqlworkflowcontent.execute_result = json.dumps(
+            [
+                {
+                    "stage": "Execute failed",
+                    "errlevel": 2,
+                    "stagestatus": "异常终止",
+                    "errormessage": str(e),
+                    "sql": workflow.sqlworkflowcontent.sql_content,
+                    "affected_rows": 0,
+                    "execute_time": 0,
+                }
+            ],
+            ensure_ascii=False,
+        )
         workflow.sqlworkflowcontent.save()
     # 增加工单日志
     audit_id = Audit.detail_by_workflow_id(

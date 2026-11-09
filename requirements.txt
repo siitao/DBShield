@@ -1,17 +1,17 @@
-Django>=4.2
+Django>=4.2,<5.3
 sqlparse>=0.5.0             # SQL 解析核心依赖，勿仅靠传递引入
 mysqlclient==2.*
-requests==2.31.0
+requests>=2.32.4,<3.0
 simplejson==3.17.2
 mybatis_mapper2sql==0.1.9
-django-auth-ldap==4.1.0
+django-auth-ldap>=4.1.0,<6.0
 python-dateutil>=2.8.2
 pymongo==4.6.3
 psycopg2-binary==2.*
 pglast==6.*                 # PostgreSQL 原生 SQL 语法树解析，用于 PgSQL 工单审核
-pymysql==0.9.3
+pymysql>=1.1.1,<2.0
 django-q2==1.9.0
-django-redis>=5.4.0
+django-redis>=5.4.0,<8.0
 redis>=5.0.0,<6.0.0
 pyodbc==5.*
 gunicorn==22.0.0
@@ -30,9 +30,9 @@ pyodps==0.*
 numpy==2.*
 pandas==3.*
 clickhouse-driver==0.*
-djangorestframework>=3.14.0
+djangorestframework>=3.14.0,<4.0
 djangorestframework-simplejwt==5.5.1
-django-filter>=22.1
+django-filter>=22.1,<26.0
 drf-spectacular==0.29.0
 pyotp==2.6.0
 pillow>=12.2.0
@@ -46,7 +46,7 @@ django-cas-ng==4.3.0
 ldap3==2.9.1  # 纯 Python LDAP 客户端，用于「认证配置」页 LDAP 连通性测试（生产登录认证仍走 python-ldap）
 cassandra-driver
 httpx
-OpenAI
+openai>=1.0,<3.0
 elasticsearch==8.14.0
 opensearch_py==2.6.0
 django_storages==1.14.6

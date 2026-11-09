@@ -5,7 +5,6 @@ import tempfile
 import csv
 import hashlib
 import re
-import shutil
 import datetime
 import xml.etree.ElementTree as ET
 import zipfile
@@ -89,6 +88,7 @@ class OffLineDownLoad(EngineBase):
             check_engine = get_engine(instance=instance)
 
             start_time = time.time()
+            storage = None
 
             try:
                 # 执行 SQL 查询
@@ -100,10 +100,11 @@ class OffLineDownLoad(EngineBase):
                 )
                 if results.error:
                     raise Exception(results.error)
-                if results:
-                    columns = results.column_list
-                    result = results.rows
-                    actual_rows = results.affected_rows
+                if not results:
+                    raise Exception("查询未返回结果集")
+                columns = results.column_list
+                result = results.rows
+                actual_rows = results.affected_rows
 
                 # 保存查询结果为 CSV or JSON or XML or XLSX or SQL 文件
                 get_format_type = workflow.export_format
@@ -150,10 +151,11 @@ class OffLineDownLoad(EngineBase):
                 execute_result.error = e
                 return execute_result
             finally:
-                # 关闭存储连接（主要是sftp情况save后需要关闭连接）
-                storage.close()
-                # 清理本地文件和临时目录
-                shutil.rmtree(temp_dir)
+                # 关闭存储连接（主要是 sftp 情况 save 后需要关闭连接）；
+                # storage 构造失败时不能再次抛 UnboundLocalError。
+                if storage is not None:
+                    storage.close()
+                # 临时目录由 TemporaryDirectory 上下文负责清理
 
     def pre_count_check(self, workflow):
         """
@@ -555,9 +557,7 @@ def offline_file_download(request):
                 file = storage.open(file_name, "rb")
                 file_size = storage.size(file_name)
                 response = StorageFileResponse(file, storage=storage)
-                response["Content-Disposition"] = (
-                    f'attachment; filename="{file_name}"'
-                )
+                response["Content-Disposition"] = f'attachment; filename="{file_name}"'
                 response["Content-Length"] = str(file_size)
                 response["Content-Encoding"] = "identity"
                 return response

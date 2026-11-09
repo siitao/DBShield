@@ -1084,20 +1084,30 @@ class AuditEntry(models.Model):
 class MySQLSlowQuerySummary(models.Model):
     """MySQL 慢查询统计表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
     sql_hash = models.CharField(max_length=64, verbose_name="SQL指纹哈希")
     fingerprint = models.TextField(verbose_name="SQL指纹")
     sample_sql = models.TextField(blank=True, null=True, verbose_name="示例SQL")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
     total_execution_counts = models.IntegerField(default=0, verbose_name="总执行次数")
     total_execution_times = models.FloatField(default=0, verbose_name="总执行时间(秒)")
     query_time_avg = models.FloatField(default=0, verbose_name="平均执行时间(秒)")
     query_time_p95 = models.FloatField(default=0, verbose_name="95%执行时间(秒)")
-    parse_total_row_counts = models.BigIntegerField(default=0, verbose_name="总扫描行数")
-    return_total_row_counts = models.BigIntegerField(default=0, verbose_name="总返回行数")
+    parse_total_row_counts = models.BigIntegerField(
+        default=0, verbose_name="总扫描行数"
+    )
+    return_total_row_counts = models.BigIntegerField(
+        default=0, verbose_name="总返回行数"
+    )
     parse_row_avg = models.FloatField(default=0, verbose_name="平均扫描行数")
     return_row_avg = models.FloatField(default=0, verbose_name="平均返回行数")
-    first_seen = models.DateTimeField(blank=True, null=True, verbose_name="首次出现时间")
+    first_seen = models.DateTimeField(
+        blank=True, null=True, verbose_name="首次出现时间"
+    )
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name="最后出现时间")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1107,9 +1117,17 @@ class MySQLSlowQuerySummary(models.Model):
         db_table = "mysql_slow_query_summary"
         unique_together = ("instance", "sql_hash")
         indexes = [
-            models.Index(fields=["instance", "last_seen"], name="idx_mysql_sum_inst_lastseen"),
-            models.Index(fields=["instance", "db_name", "last_seen"], name="idx_mysql_sum_inst_db_lastseen"),
-            models.Index(fields=["instance", "total_execution_times"], name="idx_mysql_sum_inst_exectime"),
+            models.Index(
+                fields=["instance", "last_seen"], name="idx_mysql_sum_inst_lastseen"
+            ),
+            models.Index(
+                fields=["instance", "db_name", "last_seen"],
+                name="idx_mysql_sum_inst_db_lastseen",
+            ),
+            models.Index(
+                fields=["instance", "total_execution_times"],
+                name="idx_mysql_sum_inst_exectime",
+            ),
         ]
         verbose_name = "MySQL慢查询统计"
         verbose_name_plural = verbose_name
@@ -1118,12 +1136,22 @@ class MySQLSlowQuerySummary(models.Model):
 class MySQLSlowQueryDetail(models.Model):
     """MySQL 慢查询明细表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
-    sql_hash = models.CharField(max_length=64, blank=True, null=True, verbose_name="SQL指纹哈希")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
+    sql_hash = models.CharField(
+        max_length=64, blank=True, null=True, verbose_name="SQL指纹哈希"
+    )
     execution_start_time = models.DateTimeField(verbose_name="执行开始时间")
-    host_address = models.CharField(max_length=100, blank=True, null=True, verbose_name="客户端地址")
-    user_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="用户名")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
+    host_address = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="客户端地址"
+    )
+    user_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="用户名"
+    )
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
     sql_text = models.TextField(verbose_name="SQL文本")
     query_time = models.FloatField(verbose_name="执行耗时(秒)")
     lock_time = models.FloatField(default=0, verbose_name="锁等待时间(秒)")
@@ -1135,9 +1163,15 @@ class MySQLSlowQueryDetail(models.Model):
         managed = False
         db_table = "mysql_slow_query_detail"
         indexes = [
-            models.Index(fields=["instance", "execution_start_time"], name="idx_mysql_dtl_inst_exectime"),
+            models.Index(
+                fields=["instance", "execution_start_time"],
+                name="idx_mysql_dtl_inst_exectime",
+            ),
             models.Index(fields=["sql_hash"], name="idx_mysql_dtl_sqlhash"),
-            models.Index(fields=["instance", "sql_hash", "execution_start_time"], name="idx_mysql_dtl_inst_hash_time"),
+            models.Index(
+                fields=["instance", "sql_hash", "execution_start_time"],
+                name="idx_mysql_dtl_inst_hash_time",
+            ),
         ]
         verbose_name = "MySQL慢查询明细"
         verbose_name_plural = verbose_name
@@ -1146,12 +1180,18 @@ class MySQLSlowQueryDetail(models.Model):
 class PgSQLSlowQuerySummary(models.Model):
     """PgSQL 慢查询统计表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
     sql_hash = models.CharField(max_length=64, verbose_name="SQL指纹哈希(queryid)")
     fingerprint = models.TextField(verbose_name="SQL指纹")
     sample_sql = models.TextField(blank=True, null=True, verbose_name="示例SQL")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
-    user_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="用户名")
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
+    user_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="用户名"
+    )
     total_execution_counts = models.IntegerField(default=0, verbose_name="总执行次数")
     total_execution_times = models.FloatField(default=0, verbose_name="总执行时间(秒)")
     query_time_avg = models.FloatField(default=0, verbose_name="平均执行时间(秒)")
@@ -1160,7 +1200,9 @@ class PgSQLSlowQuerySummary(models.Model):
     rows_avg = models.FloatField(default=0, verbose_name="平均返回行数")
     shared_blks_hit = models.BigIntegerField(default=0, verbose_name="缓存命中块数")
     shared_blks_read = models.BigIntegerField(default=0, verbose_name="磁盘读取块数")
-    first_seen = models.DateTimeField(blank=True, null=True, verbose_name="首次出现时间")
+    first_seen = models.DateTimeField(
+        blank=True, null=True, verbose_name="首次出现时间"
+    )
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name="最后出现时间")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1170,9 +1212,17 @@ class PgSQLSlowQuerySummary(models.Model):
         db_table = "pgsql_slow_query_summary"
         unique_together = ("instance", "sql_hash")
         indexes = [
-            models.Index(fields=["instance", "last_seen"], name="idx_pgsql_sum_inst_lastseen"),
-            models.Index(fields=["instance", "db_name", "last_seen"], name="idx_pgsql_sum_inst_db_lastseen"),
-            models.Index(fields=["instance", "total_execution_times"], name="idx_pgsql_sum_inst_exectime"),
+            models.Index(
+                fields=["instance", "last_seen"], name="idx_pgsql_sum_inst_lastseen"
+            ),
+            models.Index(
+                fields=["instance", "db_name", "last_seen"],
+                name="idx_pgsql_sum_inst_db_lastseen",
+            ),
+            models.Index(
+                fields=["instance", "total_execution_times"],
+                name="idx_pgsql_sum_inst_exectime",
+            ),
         ]
         verbose_name = "PgSQL慢查询统计"
         verbose_name_plural = verbose_name
@@ -1181,12 +1231,22 @@ class PgSQLSlowQuerySummary(models.Model):
 class PgSQLSlowQueryDetail(models.Model):
     """PgSQL 慢查询明细表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
-    sql_hash = models.CharField(max_length=64, blank=True, null=True, verbose_name="SQL指纹哈希")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
+    sql_hash = models.CharField(
+        max_length=64, blank=True, null=True, verbose_name="SQL指纹哈希"
+    )
     execution_start_time = models.DateTimeField(verbose_name="执行开始时间")
-    host_address = models.CharField(max_length=100, blank=True, null=True, verbose_name="客户端地址")
-    user_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="用户名")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
+    host_address = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="客户端地址"
+    )
+    user_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="用户名"
+    )
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
     sql_text = models.TextField(verbose_name="SQL文本")
     query_time = models.FloatField(verbose_name="执行耗时(秒)")
     rows_sent = models.IntegerField(default=0, verbose_name="返回行数")
@@ -1198,9 +1258,15 @@ class PgSQLSlowQueryDetail(models.Model):
         managed = False
         db_table = "pgsql_slow_query_detail"
         indexes = [
-            models.Index(fields=["instance", "execution_start_time"], name="idx_pgsql_dtl_inst_exectime"),
+            models.Index(
+                fields=["instance", "execution_start_time"],
+                name="idx_pgsql_dtl_inst_exectime",
+            ),
             models.Index(fields=["sql_hash"], name="idx_pgsql_dtl_sqlhash"),
-            models.Index(fields=["instance", "sql_hash", "execution_start_time"], name="idx_pgsql_dtl_inst_hash_time"),
+            models.Index(
+                fields=["instance", "sql_hash", "execution_start_time"],
+                name="idx_pgsql_dtl_inst_hash_time",
+            ),
         ]
         verbose_name = "PgSQL慢查询明细"
         verbose_name_plural = verbose_name
@@ -1209,21 +1275,33 @@ class PgSQLSlowQueryDetail(models.Model):
 class MongoSlowQuerySummary(models.Model):
     """MongoDB 慢查询统计表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
     sql_hash = models.CharField(max_length=64, verbose_name="命令指纹哈希")
     fingerprint = models.TextField(verbose_name="命令指纹")
     sample_sql = models.TextField(blank=True, null=True, verbose_name="示例命令")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
-    collection_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="集合名")
-    operation_type = models.CharField(max_length=20, blank=True, null=True, verbose_name="操作类型")
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
+    collection_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="集合名"
+    )
+    operation_type = models.CharField(
+        max_length=20, blank=True, null=True, verbose_name="操作类型"
+    )
     total_execution_counts = models.IntegerField(default=0, verbose_name="总执行次数")
-    total_execution_times = models.FloatField(default=0, verbose_name="总执行时间(毫秒)")
+    total_execution_times = models.FloatField(
+        default=0, verbose_name="总执行时间(毫秒)"
+    )
     query_time_avg = models.FloatField(default=0, verbose_name="平均执行时间(毫秒)")
     query_time_p95 = models.FloatField(default=0, verbose_name="95%执行时间(毫秒)")
     docs_examined_avg = models.FloatField(default=0, verbose_name="平均扫描文档数")
     docs_returned_avg = models.FloatField(default=0, verbose_name="平均返回文档数")
     has_sort = models.BooleanField(default=False, verbose_name="是否包含排序")
-    first_seen = models.DateTimeField(blank=True, null=True, verbose_name="首次出现时间")
+    first_seen = models.DateTimeField(
+        blank=True, null=True, verbose_name="首次出现时间"
+    )
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name="最后出现时间")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1233,9 +1311,17 @@ class MongoSlowQuerySummary(models.Model):
         db_table = "mongo_slow_query_summary"
         unique_together = ("instance", "sql_hash")
         indexes = [
-            models.Index(fields=["instance", "last_seen"], name="idx_mongo_sum_inst_lastseen"),
-            models.Index(fields=["instance", "db_name", "last_seen"], name="idx_mongo_sum_inst_db_lastseen"),
-            models.Index(fields=["instance", "total_execution_times"], name="idx_mongo_sum_inst_exectime"),
+            models.Index(
+                fields=["instance", "last_seen"], name="idx_mongo_sum_inst_lastseen"
+            ),
+            models.Index(
+                fields=["instance", "db_name", "last_seen"],
+                name="idx_mongo_sum_inst_db_lastseen",
+            ),
+            models.Index(
+                fields=["instance", "total_execution_times"],
+                name="idx_mongo_sum_inst_exectime",
+            ),
         ]
         verbose_name = "MongoDB慢查询统计"
         verbose_name_plural = verbose_name
@@ -1244,14 +1330,28 @@ class MongoSlowQuerySummary(models.Model):
 class MongoSlowQueryDetail(models.Model):
     """MongoDB 慢查询明细表"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
-    sql_hash = models.CharField(max_length=64, blank=True, null=True, verbose_name="命令指纹哈希")
-    operation_type = models.CharField(max_length=20, blank=True, null=True, verbose_name="操作类型")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
+    sql_hash = models.CharField(
+        max_length=64, blank=True, null=True, verbose_name="命令指纹哈希"
+    )
+    operation_type = models.CharField(
+        max_length=20, blank=True, null=True, verbose_name="操作类型"
+    )
     execution_start_time = models.DateTimeField(verbose_name="执行开始时间")
-    host_address = models.CharField(max_length=100, blank=True, null=True, verbose_name="客户端地址")
-    user_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="用户名")
-    db_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="数据库名")
-    collection_name = models.CharField(max_length=100, blank=True, null=True, verbose_name="集合名")
+    host_address = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="客户端地址"
+    )
+    user_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="用户名"
+    )
+    db_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="数据库名"
+    )
+    collection_name = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="集合名"
+    )
     command_text = models.TextField(verbose_name="命令文本")
     duration = models.FloatField(verbose_name="执行耗时(毫秒)")
     docs_examined = models.IntegerField(default=0, verbose_name="扫描文档数")
@@ -1265,9 +1365,15 @@ class MongoSlowQueryDetail(models.Model):
         managed = False
         db_table = "mongo_slow_query_detail"
         indexes = [
-            models.Index(fields=["instance", "execution_start_time"], name="idx_mongo_dtl_inst_exectime"),
+            models.Index(
+                fields=["instance", "execution_start_time"],
+                name="idx_mongo_dtl_inst_exectime",
+            ),
             models.Index(fields=["sql_hash"], name="idx_mongo_dtl_sqlhash"),
-            models.Index(fields=["instance", "sql_hash", "execution_start_time"], name="idx_mongo_dtl_inst_hash_time"),
+            models.Index(
+                fields=["instance", "sql_hash", "execution_start_time"],
+                name="idx_mongo_dtl_inst_hash_time",
+            ),
         ]
         verbose_name = "MongoDB慢查询明细"
         verbose_name_plural = verbose_name
@@ -1276,15 +1382,21 @@ class MongoSlowQueryDetail(models.Model):
 class RedisSlowQuerySummary(models.Model):
     """Redis 慢查询统计表（新版）"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
     sql_hash = models.CharField(max_length=64, verbose_name="命令指纹哈希")
     fingerprint = models.TextField(verbose_name="命令指纹")
     sample_sql = models.TextField(blank=True, null=True, verbose_name="示例命令")
     total_execution_counts = models.IntegerField(default=0, verbose_name="总执行次数")
-    total_execution_times = models.FloatField(default=0, verbose_name="总执行时间(微秒)")
+    total_execution_times = models.FloatField(
+        default=0, verbose_name="总执行时间(微秒)"
+    )
     query_time_avg = models.FloatField(default=0, verbose_name="平均执行时间(微秒)")
     query_time_p95 = models.FloatField(default=0, verbose_name="95%执行时间(微秒)")
-    first_seen = models.DateTimeField(blank=True, null=True, verbose_name="首次出现时间")
+    first_seen = models.DateTimeField(
+        blank=True, null=True, verbose_name="首次出现时间"
+    )
     last_seen = models.DateTimeField(blank=True, null=True, verbose_name="最后出现时间")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1294,8 +1406,13 @@ class RedisSlowQuerySummary(models.Model):
         db_table = "redis_slow_query_summary"
         unique_together = ("instance", "sql_hash")
         indexes = [
-            models.Index(fields=["instance", "last_seen"], name="idx_redis_sum_inst_lastseen"),
-            models.Index(fields=["instance", "total_execution_times"], name="idx_redis_sum_inst_exectime"),
+            models.Index(
+                fields=["instance", "last_seen"], name="idx_redis_sum_inst_lastseen"
+            ),
+            models.Index(
+                fields=["instance", "total_execution_times"],
+                name="idx_redis_sum_inst_exectime",
+            ),
         ]
         verbose_name = "Redis慢查询统计"
         verbose_name_plural = verbose_name
@@ -1304,10 +1421,16 @@ class RedisSlowQuerySummary(models.Model):
 class RedisSlowQueryDetail(models.Model):
     """Redis 慢查询明细表（新版）"""
 
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
-    sql_hash = models.CharField(max_length=64, blank=True, null=True, verbose_name="命令指纹哈希")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
+    sql_hash = models.CharField(
+        max_length=64, blank=True, null=True, verbose_name="命令指纹哈希"
+    )
     execution_start_time = models.DateTimeField(verbose_name="执行开始时间")
-    host_address = models.CharField(max_length=100, blank=True, null=True, verbose_name="客户端地址")
+    host_address = models.CharField(
+        max_length=100, blank=True, null=True, verbose_name="客户端地址"
+    )
     command_text = models.TextField(verbose_name="命令文本")
     duration = models.FloatField(verbose_name="执行耗时(微秒)")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -1316,9 +1439,15 @@ class RedisSlowQueryDetail(models.Model):
         managed = False
         db_table = "redis_slow_query_detail"
         indexes = [
-            models.Index(fields=["instance", "execution_start_time"], name="idx_redis_dtl_inst_exectime"),
+            models.Index(
+                fields=["instance", "execution_start_time"],
+                name="idx_redis_dtl_inst_exectime",
+            ),
             models.Index(fields=["sql_hash"], name="idx_redis_dtl_sqlhash"),
-            models.Index(fields=["instance", "sql_hash", "execution_start_time"], name="idx_redis_dtl_inst_hash_time"),
+            models.Index(
+                fields=["instance", "sql_hash", "execution_start_time"],
+                name="idx_redis_dtl_inst_hash_time",
+            ),
         ]
         verbose_name = "Redis慢查询明细"
         verbose_name_plural = verbose_name
@@ -1328,10 +1457,16 @@ class SlowQueryCursor(models.Model):
     """慢查询采集游标表"""
 
     id = models.AutoField(primary_key=True)
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, db_constraint=False)
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, db_constraint=False
+    )
     db_type = models.CharField(max_length=20, verbose_name="数据库类型")
-    last_cursor = models.DateTimeField(blank=True, null=True, verbose_name="上次采集时间戳")
-    last_cursor_id = models.BigIntegerField(blank=True, null=True, verbose_name="上次采集ID")
+    last_cursor = models.DateTimeField(
+        blank=True, null=True, verbose_name="上次采集时间戳"
+    )
+    last_cursor_id = models.BigIntegerField(
+        blank=True, null=True, verbose_name="上次采集ID"
+    )
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -1349,22 +1484,39 @@ class AIDiagnosisTask(models.Model):
     """AI 慢查诊断任务"""
 
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
         verbose_name="发起用户",
     )
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, verbose_name="实例")
-    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
-    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="SQL指纹哈希")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, verbose_name="实例"
+    )
+    db_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="数据库名"
+    )
+    sql_hash = models.CharField(
+        max_length=128, db_index=True, verbose_name="SQL指纹哈希"
+    )
     status = models.CharField(
-        max_length=16, default="pending", verbose_name="任务状态",
+        max_length=16,
+        default="pending",
+        verbose_name="任务状态",
     )  # pending / running / success / failed
     progress = models.CharField(
-        max_length=32, blank=True, default="", verbose_name="阶段进度",
+        max_length=32,
+        blank=True,
+        default="",
+        verbose_name="阶段进度",
     )  # "" / collecting / collecting_trend / collecting_ddl / collecting_explain / analyzing / saving
-    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    model = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="AI模型"
+    )
     prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
-    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
+    completion_tokens = models.IntegerField(
+        default=0, verbose_name="completion token数"
+    )
     error = models.TextField(blank=True, default="", verbose_name="错误信息")
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
 
@@ -1372,7 +1524,10 @@ class AIDiagnosisTask(models.Model):
         managed = True
         db_table = "ai_diagnosis_task"
         indexes = [
-            models.Index(fields=["instance", "db_name", "sql_hash"], name="idx_aidiag_inst_db_hash"),
+            models.Index(
+                fields=["instance", "db_name", "sql_hash"],
+                name="idx_aidiag_inst_db_hash",
+            ),
         ]
         verbose_name = "AI慢查诊断任务"
         verbose_name_plural = verbose_name
@@ -1382,21 +1537,34 @@ class AIDiagnosisReport(models.Model):
     """AI 慢查诊断报告"""
 
     task = models.OneToOneField(
-        AIDiagnosisTask, related_name="report", on_delete=models.CASCADE,
+        AIDiagnosisTask,
+        related_name="report",
+        on_delete=models.CASCADE,
         verbose_name="诊断任务",
     )
-    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="SQL指纹哈希")
-    root_cause = models.CharField(max_length=200, blank=True, default="", verbose_name="根因")
+    sql_hash = models.CharField(
+        max_length=128, db_index=True, verbose_name="SQL指纹哈希"
+    )
+    root_cause = models.CharField(
+        max_length=200, blank=True, default="", verbose_name="根因"
+    )
     severity = models.CharField(
-        max_length=16, default="unknown", verbose_name="严重度",
+        max_length=16,
+        default="unknown",
+        verbose_name="严重度",
     )  # low / medium / high / unknown
     bottleneck_type = models.CharField(
-        max_length=32, blank=True, default="other", verbose_name="瓶颈类型",
+        max_length=32,
+        blank=True,
+        default="other",
+        verbose_name="瓶颈类型",
     )  # full_scan / missing_index / lock_wait / filesort / tmp_table / type_cast / other
     evidence = models.JSONField(default=list, blank=True, verbose_name="证据列表")
     suggestions = models.JSONField(default=list, blank=True, verbose_name="优化建议")
     confidence = models.FloatField(default=0.0, verbose_name="置信度")
-    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    model = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="AI模型"
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
 
     class Meta:
@@ -1410,13 +1578,19 @@ class AIDiagnosisFeedback(models.Model):
     """AI 慢查诊断反馈"""
 
     report = models.ForeignKey(
-        AIDiagnosisReport, on_delete=models.CASCADE, verbose_name="诊断报告",
+        AIDiagnosisReport,
+        on_delete=models.CASCADE,
+        verbose_name="诊断报告",
     )
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name="用户",
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name="用户",
     )
     helpful = models.BooleanField(default=True, verbose_name="是否有帮助")
-    reason = models.CharField(max_length=255, blank=True, default="", verbose_name="反馈原因")
+    reason = models.CharField(
+        max_length=255, blank=True, default="", verbose_name="反馈原因"
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
 
     class Meta:
@@ -1449,22 +1623,42 @@ class AIUsageLog(models.Model):
     )
 
     capability = models.CharField(
-        max_length=32, choices=CAPABILITY_CHOICES, verbose_name="AI能力",
+        max_length=32,
+        choices=CAPABILITY_CHOICES,
+        verbose_name="AI能力",
     )
-    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
-    db_type = models.CharField(max_length=32, blank=True, default="", verbose_name="数据库类型")
-    instance_name = models.CharField(max_length=128, blank=True, default="", verbose_name="实例名")
-    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
-    user_name = models.CharField(max_length=128, blank=True, default="", verbose_name="触发用户")
+    model = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="AI模型"
+    )
+    db_type = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="数据库类型"
+    )
+    instance_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="实例名"
+    )
+    db_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="数据库名"
+    )
+    user_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="触发用户"
+    )
     prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
-    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
+    completion_tokens = models.IntegerField(
+        default=0, verbose_name="completion token数"
+    )
     latency_ms = models.IntegerField(default=0, verbose_name="耗时(毫秒)")
     cache_hit = models.BooleanField(default=False, verbose_name="是否命中缓存")
     status = models.CharField(
-        max_length=16, default="success", verbose_name="调用状态",
+        max_length=16,
+        default="success",
+        verbose_name="调用状态",
     )  # success / failed
-    error = models.CharField(max_length=500, blank=True, default="", verbose_name="错误信息")
-    created_at = models.DateTimeField(auto_now_add=True, db_index=True, verbose_name="创建时间")
+    error = models.CharField(
+        max_length=500, blank=True, default="", verbose_name="错误信息"
+    )
+    created_at = models.DateTimeField(
+        auto_now_add=True, db_index=True, verbose_name="创建时间"
+    )
 
     class Meta:
         managed = True
@@ -1485,24 +1679,44 @@ class AIOptimizeTask(models.Model):
     """
 
     user = models.ForeignKey(
-        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
         verbose_name="发起用户",
     )
-    instance = models.ForeignKey(Instance, on_delete=models.CASCADE, verbose_name="实例")
-    db_name = models.CharField(max_length=128, blank=True, default="", verbose_name="数据库名")
-    db_type = models.CharField(max_length=32, blank=True, default="", verbose_name="数据库类型")
-    sql_hash = models.CharField(max_length=128, db_index=True, verbose_name="脱敏SQL指纹")
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, verbose_name="实例"
+    )
+    db_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="数据库名"
+    )
+    db_type = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="数据库类型"
+    )
+    sql_hash = models.CharField(
+        max_length=128, db_index=True, verbose_name="脱敏SQL指纹"
+    )
     sql_text = models.TextField(blank=True, default="", verbose_name="脱敏后SQL")
-    table_names = models.JSONField(default=list, blank=True, verbose_name="解析出的表/集合名")
+    table_names = models.JSONField(
+        default=list, blank=True, verbose_name="解析出的表/集合名"
+    )
     status = models.CharField(
-        max_length=16, default="pending", verbose_name="任务状态",
+        max_length=16,
+        default="pending",
+        verbose_name="任务状态",
     )  # pending / running / success / failed
-    model = models.CharField(max_length=64, blank=True, default="", verbose_name="AI模型")
+    model = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="AI模型"
+    )
     report_markdown = models.TextField(blank=True, default="", verbose_name="优化报告")
     steps = models.JSONField(default=list, blank=True, verbose_name="Agent取证轨迹")
     prompt_tokens = models.IntegerField(default=0, verbose_name="prompt token数")
-    completion_tokens = models.IntegerField(default=0, verbose_name="completion token数")
-    error = models.CharField(max_length=500, blank=True, default="", verbose_name="错误信息")
+    completion_tokens = models.IntegerField(
+        default=0, verbose_name="completion token数"
+    )
+    error = models.CharField(
+        max_length=500, blank=True, default="", verbose_name="错误信息"
+    )
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name="开始时间")
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name="完成时间")
 
@@ -1510,7 +1724,10 @@ class AIOptimizeTask(models.Model):
         managed = True
         db_table = "ai_optimize_task"
         indexes = [
-            models.Index(fields=["instance", "db_name", "sql_hash"], name="idx_aiopt_inst_db_hash"),
+            models.Index(
+                fields=["instance", "db_name", "sql_hash"],
+                name="idx_aiopt_inst_db_hash",
+            ),
         ]
         verbose_name = "AI优化任务"
         verbose_name_plural = "AI优化任务"

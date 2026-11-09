@@ -354,6 +354,26 @@ class ChartTest(TestCase):
         expected_rows = (("g2", 3), ("g1", 2))
         self.assertEqual(result["rows"], expected_rows)
 
+    def testWorkflowByGroupFiltered(self):
+        """按资源组过滤：只能看到指定组的数据"""
+        dao = ChartDao()
+        today = (datetime.date.today() - relativedelta(days=-1)).strftime("%Y-%m-%d")
+        one_week_before = (datetime.date.today() - relativedelta(days=+6)).strftime(
+            "%Y-%m-%d"
+        )
+        result = dao.workflow_by_group(one_week_before, today, group_ids=[1])
+        self.assertEqual(result["rows"], (("g1", 2),))
+
+    def testWorkflowByGroupEmptyScope(self):
+        """用户无资源组时返回空集，而不是全量数据"""
+        dao = ChartDao()
+        today = (datetime.date.today() - relativedelta(days=-1)).strftime("%Y-%m-%d")
+        one_week_before = (datetime.date.today() - relativedelta(days=+6)).strftime(
+            "%Y-%m-%d"
+        )
+        result = dao.workflow_by_group(one_week_before, today, group_ids=[])
+        self.assertEqual(result["rows"], ())
+
     def testWorkflowByUser(self):
         """按用户统计测试"""
         dao = ChartDao()

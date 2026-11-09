@@ -14,7 +14,7 @@ from rest_framework import views, permissions
 from rest_framework.response import Response
 
 from common.utils.const import WorkflowAction, WorkflowStatus, WorkflowType
-from sql.models import QueryPrivilegesApply
+from sql.models import QueryPrivilegesApply, WorkflowAudit
 from sql.notify import notify_for_audit
 from sql_api.api_misc import _query_apply_audit_call_back
 from sql.utils.resource_group import user_groups, get_current_reviewers
@@ -95,7 +95,11 @@ class QueryPrivApplyDetail(views.APIView):
             "group_name": workflow_detail.group_name,
             "user_display": workflow_detail.user_display,
             "user_name": workflow_detail.user_name,
-            "instance_name": workflow_detail.instance.instance_name if workflow_detail.instance else "",
+            "instance_name": (
+                workflow_detail.instance.instance_name
+                if workflow_detail.instance
+                else ""
+            ),
             "priv_type": workflow_detail.priv_type,
             "db_list": workflow_detail.db_list,
             "table_list": workflow_detail.table_list,
@@ -152,9 +156,13 @@ class QueryPrivAudit(views.APIView):
             result["msg"] = "你无权审核该工单"
             return Response(result)
 
-        auditor = get_auditor(workflow=apply)
         try:
             with transaction.atomic():
+                # 锁定审批行，避免并发审核把审批链推进两次
+                workflow_audit = WorkflowAudit.objects.select_for_update().get(
+                    workflow_id=apply_id, workflow_type=WorkflowType.QUERY
+                )
+                auditor = get_auditor(audit=workflow_audit)
                 workflow_audit_detail = auditor.operate(
                     audit_status, request.user, audit_remark
                 )
@@ -162,6 +170,10 @@ class QueryPrivAudit(views.APIView):
                 _query_apply_audit_call_back(
                     auditor.audit.workflow_id, auditor.audit.current_status
                 )
+        except WorkflowAudit.DoesNotExist:
+            result["status"] = 1
+            result["msg"] = "工单不存在"
+            return Response(result)
         except AuditException as e:
             result["status"] = 1
             result["msg"] = f"审核失败: {e}"

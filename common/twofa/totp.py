@@ -18,16 +18,19 @@ class TOTP(TwoFactorAuthBase):
         super(TOTP, self).__init__(user=user)
         self.user = user
 
-    def verify(self, otp, key=None):
-        """校验一次性验证码"""
+    def verify(self, otp):
+        """校验一次性验证码（密钥只从服务端绑定配置读取）"""
         result = {"status": 0, "msg": "ok"}
-        if key:
-            secret_key = key
-        else:
-            secret_key = TwoFactorAuthConfig.objects.get(
+        try:
+            config = TwoFactorAuthConfig.objects.get(
                 username=self.user.username, auth_type=self.auth_type
-            ).secret_key
-        t = pyotp.TOTP(secret_key)
+            )
+        except TwoFactorAuthConfig.DoesNotExist:
+            return {"status": 1, "msg": "用户未配置Google身份验证器"}
+        if not config.secret_key:
+            return {"status": 1, "msg": "Google身份验证器密钥为空，请重新绑定"}
+
+        t = pyotp.TOTP(config.secret_key)
         status = t.verify(otp)
         result["status"] = 0 if status else 1
         result["msg"] = "ok" if status else "验证码不正确！"

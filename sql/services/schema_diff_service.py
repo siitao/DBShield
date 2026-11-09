@@ -22,8 +22,19 @@ OBJECT_KIND_LABELS = {
 }
 
 _NUMERIC_TYPES = (
-    "tinyint", "smallint", "mediumint", "int", "integer", "bigint",
-    "decimal", "numeric", "float", "double", "real", "year", "bit",
+    "tinyint",
+    "smallint",
+    "mediumint",
+    "int",
+    "integer",
+    "bigint",
+    "decimal",
+    "numeric",
+    "float",
+    "double",
+    "real",
+    "year",
+    "bit",
 )
 
 
@@ -39,7 +50,9 @@ def _escape_ident(name):
 
 
 def _escape_string(value):
-    return "'{}'".format(str(value).replace("'", "''"))
+    # MySQL 默认开启反斜杠转义：先转义 \ 再转义 '，否则注释/默认值末尾的
+    # 反斜杠会吞掉闭合引号，导致生成的 ALTER 语法错误甚至二次注入。
+    return "'{}'".format(str(value).replace("\\", "\\\\").replace("'", "''"))
 
 
 def _on_update_text(col):
@@ -48,7 +61,7 @@ def _on_update_text(col):
     lower = extra.lower()
     if "on update" not in lower:
         return ""
-    return extra[lower.index("on update") + len("on update"):].strip().upper()
+    return extra[lower.index("on update") + len("on update") :].strip().upper()
 
 
 def _normalized_default(col):
@@ -65,7 +78,9 @@ def _normalized_default(col):
         return None
     col_type = (col.get("COLUMN_TYPE") or "").lower()
     if col_type.startswith(("timestamp", "datetime")) and text.upper() in (
-        "CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP()", "NOW()",
+        "CURRENT_TIMESTAMP",
+        "CURRENT_TIMESTAMP()",
+        "NOW()",
     ):
         return "CURRENT_TIMESTAMP"
     return text
@@ -144,9 +159,46 @@ def _position_clause(order, name, other_names, pending):
     return ""
 
 
+def _index_parts(idx):
+    """索引列明细；兼容旧调用方只提供 columns 的结构。"""
+    parts = idx.get("parts")
+    if parts:
+        return parts
+    return [{"column": c} for c in idx.get("columns", [])]
+
+
+def _index_part_sql(part):
+    """单个索引列：函数索引表达式 / 前缀长度 / 降序。"""
+    expression = part.get("expression")
+    if expression:
+        return str(expression)
+    column = _escape_ident(part.get("column"))
+    sub_part = part.get("sub_part")
+    if sub_part:
+        column += f"({sub_part})"
+    if (part.get("collation") or "").upper() == "D":
+        column += " DESC"
+    return column
+
+
+def _index_columns_label(idx):
+    labels = []
+    for part in _index_parts(idx):
+        if part.get("expression"):
+            labels.append(str(part["expression"]))
+            continue
+        label = str(part.get("column"))
+        if part.get("sub_part"):
+            label += f"({part['sub_part']})"
+        if (part.get("collation") or "").upper() == "D":
+            label += " DESC"
+        labels.append(label)
+    return ", ".join(labels)
+
+
 def _index_definition(idx):
-    """ADD INDEX 子句（含类型）"""
-    cols = ", ".join(_escape_ident(c) for c in idx["columns"])
+    """ADD INDEX 子句（含类型、前缀/降序/函数索引、注释、可见性）"""
+    cols = ", ".join(_index_part_sql(p) for p in _index_parts(idx))
     idx_type = (idx.get("type") or "BTREE").upper()
     if idx["name"] == "PRIMARY":
         return f"ADD PRIMARY KEY ({cols})"
@@ -160,7 +212,13 @@ def _index_definition(idx):
     clause = f"ADD {kind} {_escape_ident(idx['name'])}"
     if idx_type not in ("BTREE", "FULLTEXT", "SPATIAL"):
         clause += f" USING {idx_type}"
-    return f"{clause} ({cols})"
+    clause = f"{clause} ({cols})"
+    # COMMENT / INVISIBLE 必须位于列清单之后
+    if idx.get("comment"):
+        clause += f" COMMENT {_escape_string(idx['comment'])}"
+    if idx.get("visible") is False:
+        clause += " INVISIBLE"
+    return clause
 
 
 def _index_drop_clause(idx):
@@ -175,10 +233,15 @@ def _table_option_diffs(src_opt, dst_opt, sync_auto_inc=False, sync_comments=Fal
     src_engine = (src_opt.get("ENGINE") or "").strip()
     dst_engine = (dst_opt.get("ENGINE") or "").strip()
     if src_engine.upper() != dst_engine.upper():
-        diffs.append((
-            "ENGINE", src_engine or "-", dst_engine or "-",
-            f"ENGINE={src_engine}", f"ENGINE={dst_engine}",
-        ))
+        diffs.append(
+            (
+                "ENGINE",
+                src_engine or "-",
+                dst_engine or "-",
+                f"ENGINE={src_engine}",
+                f"ENGINE={dst_engine}",
+            )
+        )
 
     src_coll = normalize_collation(src_opt.get("TABLE_COLLATION"))
     dst_coll = normalize_collation(dst_opt.get("TABLE_COLLATION"))
@@ -193,25 +256,50 @@ def _table_option_diffs(src_opt, dst_opt, sync_auto_inc=False, sync_comments=Fal
         src_comment = src_opt.get("TABLE_COMMENT") or ""
         dst_comment = dst_opt.get("TABLE_COMMENT") or ""
         if src_comment != dst_comment:
-            diffs.append((
-                "表注释", src_comment or "-", dst_comment or "-",
-                f"COMMENT={_escape_string(src_comment)}",
-                f"COMMENT={_escape_string(dst_comment)}",
-            ))
+            diffs.append(
+                (
+                    "表注释",
+                    src_comment or "-",
+                    dst_comment or "-",
+                    f"COMMENT={_escape_string(src_comment)}",
+                    f"COMMENT={_escape_string(dst_comment)}",
+                )
+            )
 
     if sync_auto_inc:
         src_auto = src_opt.get("AUTO_INCREMENT")
         dst_auto = dst_opt.get("AUTO_INCREMENT")
         if src_auto != dst_auto and src_auto:
-            diffs.append((
-                "AUTO_INCREMENT", str(src_auto), str(dst_auto),
-                f"AUTO_INCREMENT={src_auto}", f"AUTO_INCREMENT={dst_auto}",
-            ))
+            diffs.append(
+                (
+                    "AUTO_INCREMENT",
+                    str(src_auto),
+                    str(dst_auto),
+                    f"AUTO_INCREMENT={src_auto}",
+                    f"AUTO_INCREMENT={dst_auto}" if dst_auto is not None else "",
+                )
+            )
     return diffs
 
 
 def _index_signature(idx):
-    return (idx["unique"], (idx.get("type") or "").upper(), list(idx["columns"]))
+    """索引特征：列顺序、前缀长度、升降序、函数表达式、注释、可见性。"""
+    parts = tuple(
+        (
+            p.get("column"),
+            p.get("sub_part"),
+            (p.get("collation") or "").upper(),
+            p.get("expression"),
+        )
+        for p in _index_parts(idx)
+    )
+    return (
+        idx["unique"],
+        (idx.get("type") or "").upper(),
+        parts,
+        bool(idx.get("visible", True)),
+        idx.get("comment") or "",
+    )
 
 
 def diff_table(src_table, dst_table, sync_auto_inc=False, sync_comments=False):
@@ -236,7 +324,8 @@ def diff_table(src_table, dst_table, sync_auto_inc=False, sync_comments=False):
         rm_sig = _column_signature(dst_cols[rm], dst_coll)[:6]
         match = next(
             (
-                ad for ad in added
+                ad
+                for ad in added
                 if _column_signature(src_cols[ad], src_coll)[:6] == rm_sig
             ),
             None,
@@ -245,32 +334,50 @@ def diff_table(src_table, dst_table, sync_auto_inc=False, sync_comments=False):
             continue
         removed.remove(rm)
         added.remove(match)
-        items.append({
-            "kind": "column", "action": "rename", "object": rm,
-            "source": match, "target": rm, "danger": False,
-            "patch": f"CHANGE {_escape_ident(rm)} {_column_definition(src_cols[match], src_coll)}",
-            "revert": f"CHANGE {_escape_ident(match)} {_column_definition(dst_cols[rm], dst_coll)}",
-        })
+        items.append(
+            {
+                "kind": "column",
+                "action": "rename",
+                "object": rm,
+                "source": match,
+                "target": rm,
+                "danger": False,
+                "patch": f"CHANGE {_escape_ident(rm)} {_column_definition(src_cols[match], src_coll)}",
+                "revert": f"CHANGE {_escape_ident(match)} {_column_definition(dst_cols[rm], dst_coll)}",
+            }
+        )
 
     for name in added:
         col = src_cols[name]
         position = _position_clause(src_order, name, set(dst_cols), set(added))
-        items.append({
-            "kind": "column", "action": "add", "object": name,
-            "source": col.get("COLUMN_TYPE"), "target": None, "danger": False,
-            "patch": f"ADD COLUMN {_column_definition(col, src_coll)}{position}",
-            "revert": f"DROP COLUMN {_escape_ident(name)}",
-        })
+        items.append(
+            {
+                "kind": "column",
+                "action": "add",
+                "object": name,
+                "source": col.get("COLUMN_TYPE"),
+                "target": None,
+                "danger": False,
+                "patch": f"ADD COLUMN {_column_definition(col, src_coll)}{position}",
+                "revert": f"DROP COLUMN {_escape_ident(name)}",
+            }
+        )
 
     for name in removed:
         col = dst_cols[name]
         position = _position_clause(dst_order, name, set(src_cols), set(removed))
-        items.append({
-            "kind": "column", "action": "drop", "object": name,
-            "source": None, "target": col.get("COLUMN_TYPE"), "danger": True,
-            "patch": f"DROP COLUMN {_escape_ident(name)}",
-            "revert": f"ADD COLUMN {_column_definition(col, dst_coll)}{position}",
-        })
+        items.append(
+            {
+                "kind": "column",
+                "action": "drop",
+                "object": name,
+                "source": None,
+                "target": col.get("COLUMN_TYPE"),
+                "danger": True,
+                "patch": f"DROP COLUMN {_escape_ident(name)}",
+                "revert": f"ADD COLUMN {_column_definition(col, dst_coll)}{position}",
+            }
+        )
 
     for name in src_order:
         if name not in dst_cols:
@@ -282,58 +389,89 @@ def diff_table(src_table, dst_table, sync_auto_inc=False, sync_comments=False):
             continue
         patch_position = _position_clause(src_order, name, set(dst_cols), set())
         revert_position = _position_clause(dst_order, name, set(src_cols), set())
-        items.append({
-            "kind": "column", "action": "modify", "object": name,
-            "source": src_col.get("COLUMN_TYPE"), "target": dst_col.get("COLUMN_TYPE"),
-            "danger": False,
-            "patch": f"MODIFY COLUMN {_column_definition(src_col, src_coll)}{patch_position}",
-            "revert": f"MODIFY COLUMN {_column_definition(dst_col, dst_coll)}{revert_position}",
-        })
+        items.append(
+            {
+                "kind": "column",
+                "action": "modify",
+                "object": name,
+                "source": src_col.get("COLUMN_TYPE"),
+                "target": dst_col.get("COLUMN_TYPE"),
+                "danger": False,
+                "patch": f"MODIFY COLUMN {_column_definition(src_col, src_coll)}{patch_position}",
+                "revert": f"MODIFY COLUMN {_column_definition(dst_col, dst_coll)}{revert_position}",
+            }
+        )
 
     src_indexes = src_table["indexes"]
     dst_indexes = dst_table["indexes"]
     for name, idx in sorted(src_indexes.items()):
         if name not in dst_indexes:
-            items.append({
-                "kind": "index", "action": "add", "object": name,
-                "source": ", ".join(idx["columns"]), "target": None, "danger": False,
-                "patch": _index_definition(idx),
-                "revert": _index_drop_clause(idx),
-            })
+            items.append(
+                {
+                    "kind": "index",
+                    "action": "add",
+                    "object": name,
+                    "source": _index_columns_label(idx),
+                    "target": None,
+                    "danger": False,
+                    "patch": _index_definition(idx),
+                    "revert": _index_drop_clause(idx),
+                }
+            )
     for name, idx in sorted(dst_indexes.items()):
         if name not in src_indexes:
-            items.append({
-                "kind": "index", "action": "drop", "object": name,
-                "source": None, "target": ", ".join(idx["columns"]),
-                "danger": name == "PRIMARY",
-                "patch": _index_drop_clause(idx),
-                "revert": _index_definition(idx),
-            })
+            items.append(
+                {
+                    "kind": "index",
+                    "action": "drop",
+                    "object": name,
+                    "source": None,
+                    "target": _index_columns_label(idx),
+                    "danger": name == "PRIMARY",
+                    "patch": _index_drop_clause(idx),
+                    "revert": _index_definition(idx),
+                }
+            )
     for name in sorted(set(src_indexes) & set(dst_indexes)):
         if _index_signature(src_indexes[name]) == _index_signature(dst_indexes[name]):
             continue
-        items.append({
-            "kind": "index", "action": "modify", "object": name,
-            "source": ", ".join(src_indexes[name]["columns"]),
-            "target": ", ".join(dst_indexes[name]["columns"]),
-            "danger": name == "PRIMARY",
-            "patch": "{}，{}".format(
-                _index_drop_clause(dst_indexes[name]), _index_definition(src_indexes[name])
-            ),
-            "revert": "{}，{}".format(
-                _index_drop_clause(src_indexes[name]), _index_definition(dst_indexes[name])
-            ),
-        })
+        items.append(
+            {
+                "kind": "index",
+                "action": "modify",
+                "object": name,
+                "source": _index_columns_label(src_indexes[name]),
+                "target": _index_columns_label(dst_indexes[name]),
+                "danger": name == "PRIMARY",
+                "patch": "{}，{}".format(
+                    _index_drop_clause(dst_indexes[name]),
+                    _index_definition(src_indexes[name]),
+                ),
+                "revert": "{}，{}".format(
+                    _index_drop_clause(src_indexes[name]),
+                    _index_definition(dst_indexes[name]),
+                ),
+            }
+        )
 
     for object_name, source, target, patch, revert in _table_option_diffs(
-        src_table["options"], dst_table["options"],
-        sync_auto_inc=sync_auto_inc, sync_comments=sync_comments,
+        src_table["options"],
+        dst_table["options"],
+        sync_auto_inc=sync_auto_inc,
+        sync_comments=sync_comments,
     ):
-        items.append({
-            "kind": "table_option", "action": "modify", "object": object_name,
-            "source": source, "target": target, "danger": False,
-            "patch": patch, "revert": revert,
-        })
+        items.append(
+            {
+                "kind": "table_option",
+                "action": "modify",
+                "object": object_name,
+                "source": source,
+                "target": target,
+                "danger": False,
+                "patch": patch,
+                "revert": revert,
+            }
+        )
     return items
 
 
@@ -345,7 +483,9 @@ def build_alter(table, items, side):
     return "ALTER TABLE {} {}".format(_escape_ident(table), ",\n  ".join(frags)) + ";"
 
 
-def diff_schemas(src, dst, src_objects, dst_objects, sync_auto_inc=False, sync_comments=False):
+def diff_schemas(
+    src, dst, src_objects, dst_objects, sync_auto_inc=False, sync_comments=False
+):
     """对比双侧 schema（引擎 get_tables_schema/get_object_names 的返回值），产出完整结果"""
     summary = {"total": 0, "diff": 0, "same": 0, "missing": 0, "objects": 0}
     tables = []
@@ -358,17 +498,26 @@ def diff_schemas(src, dst, src_objects, dst_objects, sync_auto_inc=False, sync_c
         in_dst = table in dst["table_options"]
         if not in_src or not in_dst:
             summary["missing"] += 1
-            tables.append({
-                "table": table,
-                "status": "only_in_source" if in_src else "only_in_target",
-                "items": [{
-                    "kind": "table", "action": "missing", "object": table,
-                    "source": "存在" if in_src else "不存在",
-                    "target": "存在" if in_dst else "不存在",
-                    "danger": False, "patch": "", "revert": "",
-                }],
-                "patch_sql": "", "revert_sql": "",
-            })
+            tables.append(
+                {
+                    "table": table,
+                    "status": "only_in_source" if in_src else "only_in_target",
+                    "items": [
+                        {
+                            "kind": "table",
+                            "action": "missing",
+                            "object": table,
+                            "source": "存在" if in_src else "不存在",
+                            "target": "存在" if in_dst else "不存在",
+                            "danger": False,
+                            "patch": "",
+                            "revert": "",
+                        }
+                    ],
+                    "patch_sql": "",
+                    "revert_sql": "",
+                }
+            )
             continue
 
         src_table = {
@@ -382,8 +531,10 @@ def diff_schemas(src, dst, src_objects, dst_objects, sync_auto_inc=False, sync_c
             "options": dst["table_options"][table],
         }
         items = diff_table(
-            src_table, dst_table,
-            sync_auto_inc=sync_auto_inc, sync_comments=sync_comments,
+            src_table,
+            dst_table,
+            sync_auto_inc=sync_auto_inc,
+            sync_comments=sync_comments,
         )
         patch_sql = build_alter(table, items, "patch")
         revert_sql = build_alter(table, items, "revert")
@@ -393,10 +544,15 @@ def diff_schemas(src, dst, src_objects, dst_objects, sync_auto_inc=False, sync_c
             revert_parts.append(revert_sql)
         else:
             summary["same"] += 1
-        tables.append({
-            "table": table, "status": "diff" if items else "same",
-            "items": items, "patch_sql": patch_sql, "revert_sql": revert_sql,
-        })
+        tables.append(
+            {
+                "table": table,
+                "status": "diff" if items else "same",
+                "items": items,
+                "patch_sql": patch_sql,
+                "revert_sql": revert_sql,
+            }
+        )
 
     objects = []
     for key, label in OBJECT_KIND_LABELS.items():
@@ -472,12 +628,20 @@ def table_diff(
             }
 
     data = diff_schemas(
-        src, dst, src_objects, dst_objects,
-        sync_auto_inc=sync_auto_inc, sync_comments=sync_comments,
+        src,
+        dst,
+        src_objects,
+        dst_objects,
+        sync_auto_inc=sync_auto_inc,
+        sync_comments=sync_comments,
     )
     logger.info(
         "表级结构对比完成 源=%s/%s 目标=%s/%s 表数=%s 差异=%s",
-        instance_name, db_name, target_instance_name, target_db_name,
-        data["summary"]["total"], data["summary"]["diff"],
+        instance_name,
+        db_name,
+        target_instance_name,
+        target_db_name,
+        data["summary"]["total"],
+        data["summary"]["diff"],
     )
     return {"status": 0, "msg": "ok", "data": data}

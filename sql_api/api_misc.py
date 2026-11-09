@@ -34,6 +34,7 @@ binlog / My2SQL / 查询 / 审计 / 回滚 / 导出 DRF APIView 集 · 收尾所
   POST /api/v1/sqlexport/pre_check/       — 数据导出预检
   GET  /api/v1/downloadfile/              — 下载导出文件
 """
+
 import datetime as _dt
 import json as _json
 import logging
@@ -56,12 +57,18 @@ from common.utils.extend_json_encoder import encode_json as _encode
 from common.utils.timer import FuncTimer
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.views import APIView
+from .permissions import IsSqlQueryPageUser
 from sql.engines import get_engine
 from sql.models import (
-    ArchiveConfig, ArchiveLog,
-    AuditEntry, Instance, QueryLog,
-    QueryPrivileges, QueryPrivilegesApply,
-    ResourceGroup, SqlWorkflow,
+    ArchiveConfig,
+    ArchiveLog,
+    AuditEntry,
+    Instance,
+    QueryLog,
+    QueryPrivileges,
+    QueryPrivilegesApply,
+    ResourceGroup,
+    SqlWorkflow,
 )
 from sql.notify import notify_for_audit
 from sql.plugins.my2sql import (
@@ -73,7 +80,7 @@ from sql.plugins.my2sql import (
 from sql.plugins.soar import Soar
 from sql.services.instance_service import resolve_instance
 from sql.utils.resource_group import user_groups, user_instances
-from sql.utils.sql_review import can_execute, can_view
+from sql.utils.sql_review import can_view
 from sql.utils.sql_utils import extract_tables, generate_sql
 from sql.utils.tasks import task_info
 from sql.utils.workflow_audit import Audit, AuditException, get_auditor
@@ -95,46 +102,75 @@ def _safe_int(value, default=0):
 class AuditUserPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.audit_user"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.audit_user"))
+        )
 
 
 class QueryApplyListPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_queryapplylist"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_queryapplylist"))
+        )
 
 
 class QueryApplyPrivPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.query_applypriv"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.query_applypriv"))
+        )
 
 
 class QueryMgtPrivPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.query_mgtpriv"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.query_mgtpriv"))
+        )
 
 
 class SqlWorkflowPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_sqlworkflow"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_sqlworkflow"))
+        )
 
 
 class SchemasyncPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_schemasync"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_schemasync"))
+        )
 
 
 class My2sqlPermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_my2sql"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_my2sql"))
+        )
 
 
 # ========== 审计 ==========
+
 
 class AuditLogView(APIView):
     permission_classes = [IsAuthenticated, AuditUserPermission]
@@ -151,7 +187,9 @@ class AuditLogView(APIView):
 
         filter_dict = {}
         if start_date and end_date:
-            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(days=1)
+            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(
+                days=1
+            )
             filter_dict["action_time__range"] = (start_date, end_date)
         if action:
             filter_dict["action"] = action
@@ -165,14 +203,23 @@ class AuditLogView(APIView):
             )
 
         count = qs.count()
-        rows = [row for row in qs.order_by("-action_time")[offset:limit].values(
-            "user_id", "user_name", "user_display", "action", "extra_info", "action_time"
-        )]
+        rows = [
+            row
+            for row in qs.order_by("-action_time")[offset:limit].values(
+                "user_id",
+                "user_name",
+                "user_display",
+                "action",
+                "extra_info",
+                "action_time",
+            )
+        ]
         return JsonResponse(_encode({"total": count, "rows": rows}), safe=False)
 
 
 class AuditSqlWorkflowView(APIView):
     """SQL 上线工单审计列表（复用旧 sqlworkflow_list_audit 逻辑）。"""
+
     permission_classes = [IsAuthenticated, AuditUserPermission]
 
     def post(self, request):
@@ -199,12 +246,16 @@ class AuditSqlWorkflowView(APIView):
         if group_id:
             filter_dict["group_id"] = group_id
         if start_date and end_date:
-            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(days=1)
+            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(
+                days=1
+            )
             filter_dict["create_time__range"] = (start_date, end_date)
 
         if user.is_superuser or user.has_perm("sql.audit_user"):
             pass
-        elif user.has_perm("sql.sql_review") or user.has_perm("sql.sql_execute_for_resource_group"):
+        elif user.has_perm("sql.sql_review") or user.has_perm(
+            "sql.sql_execute_for_resource_group"
+        ):
             group_list = user_groups(user)
             group_ids = [g.group_id for g in group_list]
             filter_dict["group_id__in"] = group_ids
@@ -214,20 +265,33 @@ class AuditSqlWorkflowView(APIView):
         workflow = SqlWorkflow.objects.filter(**filter_dict)
         if search:
             workflow = workflow.filter(
-                Q(engineer_display__icontains=search) | Q(workflow_name__icontains=search)
+                Q(engineer_display__icontains=search)
+                | Q(workflow_name__icontains=search)
             )
 
         count = workflow.count()
-        rows = [r for r in workflow.order_by("-create_time")[offset:limit].values(
-            "id", "workflow_name", "engineer_display", "status", "is_backup",
-            "create_time", "instance__instance_name", "db_name", "group_name",
-            "syntax_type", "export_format",
-        )]
+        rows = [
+            r
+            for r in workflow.order_by("-create_time")[offset:limit].values(
+                "id",
+                "workflow_name",
+                "engineer_display",
+                "status",
+                "is_backup",
+                "create_time",
+                "instance__instance_name",
+                "db_name",
+                "group_name",
+                "syntax_type",
+                "export_format",
+            )
+        ]
         return JsonResponse(_encode({"total": count, "rows": rows}), safe=False)
 
 
 class AuditQueryLogView(APIView):
     """查询日志审计列表。"""
+
     permission_classes = [IsAuthenticated, AuditUserPermission]
 
     def post(self, request):
@@ -243,30 +307,48 @@ class AuditQueryLogView(APIView):
         if not (request.user.is_superuser or request.user.has_perm("sql.audit_user")):
             filter_dict["username"] = request.user.username
         if start_date and end_date:
-            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(days=1)
+            end_date = _dt.datetime.strptime(end_date, "%Y-%m-%d") + _dt.timedelta(
+                days=1
+            )
             filter_dict["create_time__range"] = (start_date, end_date)
 
-        qs = QueryLog.objects.filter(**filter_dict).filter(
-            Q(sqllog__icontains=search) if search else Q()
-        ).annotate(
-            target_instance=F("instance_name"),
-            search_db=F("db_name"),
-            execute_time=F("cost_time"),
-            sqllog=V("") if not search else F("sqllog"),
-        ) if search else QueryLog.objects.filter(**filter_dict).annotate(
-            target_instance=F("instance_name"),
-            search_db=F("db_name"),
-            execute_time=F("cost_time"),
+        qs = (
+            QueryLog.objects.filter(**filter_dict)
+            .filter(Q(sqllog__icontains=search) if search else Q())
+            .annotate(
+                target_instance=F("instance_name"),
+                search_db=F("db_name"),
+                execute_time=F("cost_time"),
+                sqllog=V("") if not search else F("sqllog"),
+            )
+            if search
+            else QueryLog.objects.filter(**filter_dict).annotate(
+                target_instance=F("instance_name"),
+                search_db=F("db_name"),
+                execute_time=F("cost_time"),
+            )
         )
         count = qs.count()
-        rows = [r for r in qs.order_by("-create_time")[offset:limit].values(
-            "id", "username", "user_display", "target_instance", "search_db",
-            "sqllog", "effect_row", "cost_time", "execute_time", "create_time",
-        )]
+        rows = [
+            r
+            for r in qs.order_by("-create_time")[offset:limit].values(
+                "id",
+                "username",
+                "user_display",
+                "target_instance",
+                "search_db",
+                "sqllog",
+                "effect_row",
+                "cost_time",
+                "execute_time",
+                "create_time",
+            )
+        ]
         return JsonResponse(_encode({"total": count, "rows": rows}), safe=False)
 
 
 # ========== binlog ==========
+
 
 class BinlogListView(APIView):
     permission_classes = [IsAuthenticated]
@@ -276,7 +358,9 @@ class BinlogListView(APIView):
         try:
             instance = resolve_instance(request.user, instance_name=instance_name)
         except Exception:
-            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
+            return JsonResponse(
+                {"status": 1, "msg": "实例不存在或你所在组未关联", "data": []}
+            )
 
         query_engine = get_engine(instance=instance)
         query_result = query_engine.query("information_schema", "show binary logs;")
@@ -396,7 +480,13 @@ class My2sqlView(APIView):
         # 直接退出，所以终止位置必须显式给出
         if end_file and end_pos is None:
             raise ValueError("请填写终止解析位置（与起始文件相同时可填该文件大小）")
-        if start_file and end_file and start_pos and end_pos and (start_file, start_pos) >= (end_file, end_pos):
+        if (
+            start_file
+            and end_file
+            and start_pos
+            and end_pos
+            and (start_file, start_pos) >= (end_file, end_pos)
+        ):
             raise ValueError("起始位置必须早于终止位置")
         if start_time and stop_time and start_time >= stop_time:
             raise ValueError("起始时间必须早于终止时间")
@@ -446,7 +536,9 @@ class My2sqlView(APIView):
         try:
             instance = resolve_instance(request.user, instance_name=instance_name)
         except Exception:
-            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
+            return JsonResponse(
+                {"status": 1, "msg": "实例不存在或你所在组未关联", "data": []}
+            )
 
         try:
             options = self._parse_options(request)
@@ -520,9 +612,7 @@ class My2sqlView(APIView):
             )
         args_check = my2sql.check_args(args)
         if args_check["status"] == 1:
-            return JsonResponse(
-                {"status": 1, "msg": args_check["msg"], "data": []}
-            )
+            return JsonResponse({"status": 1, "msg": args_check["msg"], "data": []})
         cmd_args = my2sql.generate_args2cmd(args)
         try:
             stdout, stderr, returncode, timed_out = my2sql.run(
@@ -531,7 +621,13 @@ class My2sqlView(APIView):
         except Exception:
             logger.error("my2sql 执行失败: %s", traceback.format_exc())
             # 通用错误文案，避免泄漏引擎/连接细节（H3）
-            return JsonResponse({"status": 1, "msg": "my2sql 解析失败，请检查实例连接与参数配置", "data": []})
+            return JsonResponse(
+                {
+                    "status": 1,
+                    "msg": "my2sql 解析失败，请检查实例连接与参数配置",
+                    "data": [],
+                }
+            )
 
         if timed_out:
             my2sql.remove_sql_files(output_dir)
@@ -554,7 +650,11 @@ class My2sqlView(APIView):
             )
             my2sql.remove_sql_files(output_dir)
             return JsonResponse(
-                {"status": 1, "msg": describe_my2sql_failure(stdout, stderr, returncode), "data": []}
+                {
+                    "status": 1,
+                    "msg": describe_my2sql_failure(stdout, stderr, returncode),
+                    "data": [],
+                }
             )
 
         rows = my2sql.collect_sql_rows(output_dir, limit=options["num"])
@@ -598,7 +698,9 @@ class My2sqlTaskView(APIView):
             )
         # 只认本接口提交的任务，避免用别人的 task_id 读到其它队列任务的结果
         if not (task.name or "").startswith("my2sql-"):
-            return JsonResponse({"status": 1, "msg": "任务不存在或已被清理", "data": {}})
+            return JsonResponse(
+                {"status": 1, "msg": "任务不存在或已被清理", "data": {}}
+            )
         submitter = (task.kwargs or {}).get("user")
         if not request.user.is_superuser and submitter != request.user.username:
             return JsonResponse({"status": 1, "msg": "无权查看该任务", "data": {}})
@@ -645,16 +747,21 @@ class My2sqlDownloadView(APIView):
         root = os.path.realpath(MY2SQL_OUTPUT_ROOT)
         real_dir = os.path.realpath(output_dir) if output_dir else ""
         if not real_dir.startswith(root + os.sep) or not os.path.isdir(real_dir):
-            return JsonResponse({"status": 1, "msg": "没有可下载的解析结果", "data": []})
+            return JsonResponse(
+                {"status": 1, "msg": "没有可下载的解析结果", "data": []}
+            )
 
         sql_files = [
             os.path.join(real_dir, fn)
             for fn in sorted(os.listdir(real_dir))
-            if fn.endswith(".sql") and not fn.startswith(".")
+            if fn.endswith(".sql")
+            and not fn.startswith(".")
             and os.path.isfile(os.path.join(real_dir, fn))
         ]
         if not sql_files:
-            return JsonResponse({"status": 1, "msg": "没有可下载的解析结果", "data": []})
+            return JsonResponse(
+                {"status": 1, "msg": "没有可下载的解析结果", "data": []}
+            )
         if len(sql_files) == 1:
             file_path = sql_files[0]
             return FileResponse(
@@ -693,7 +800,7 @@ class GenerateSqlView(APIView):
     table_schema 喂给 OpenAI，提高生成准确度。
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSqlQueryPageUser]
 
     def post(self, request):
         query_desc = (request.data.get("query_desc") or "").strip()
@@ -704,9 +811,7 @@ class GenerateSqlView(APIView):
         schema_name = (request.data.get("schema_name") or "").strip()
 
         if not query_desc:
-            return JsonResponse(
-                {"status": 1, "msg": "请输入查询描述", "data": ""}
-            )
+            return JsonResponse({"status": 1, "msg": "请输入查询描述", "data": ""})
 
         # 独立开关：AI 生成 SQL 可单独关闭（不影响其他 AI 能力），默认开启
         if not SysConfig().get("ai_nl2sql_enabled", True):
@@ -722,7 +827,11 @@ class GenerateSqlView(APIView):
             # 拒绝反引号/引号等逃逸字符（2026-08-20 审查）
             if not re.fullmatch(r"[\w$.]{1,128}", tb_name):
                 return JsonResponse(
-                    {"status": 1, "msg": "表名仅允许字母、数字、下划线、点号", "data": ""}
+                    {
+                        "status": 1,
+                        "msg": "表名仅允许字母、数字、下划线、点号",
+                        "data": "",
+                    }
                 )
             # pgsql 默认 schema 为 public（避免 WHERE schema = NULL 永远匹配不到）
             if db_type == "pgsql" and not schema_name:
@@ -731,6 +840,32 @@ class GenerateSqlView(APIView):
                 instance = resolve_instance(
                     request.user, instance_name=instance_name, db_type=db_type or None
                 )
+            except Instance.DoesNotExist:
+                return JsonResponse(
+                    {"status": 1, "msg": "实例不存在或你所在组未关联", "data": ""}
+                )
+
+            # 与在线查询同口径做库/表权限校验：NL2SQL 会读取 DDL 和 5 行样本，
+            # 不能只凭资源组归属就读取任意表。校验异常按拒绝处理（fail-closed）。
+            try:
+                from sql.query_privileges import query_priv_check
+
+                if instance.db_type in ("mongo", "redis"):
+                    check_sql = "SELECT 1"
+                elif instance.db_type == "pgsql":
+                    check_sql = f'SELECT * FROM "{tb_name}" LIMIT 5'
+                else:
+                    check_sql = f"SELECT * FROM `{tb_name}` LIMIT 5"
+                priv = query_priv_check(request.user, instance, db_name, check_sql, 5)
+            except Exception as e:
+                logger.warning("generate_sql 查询权限校验失败: %s", e)
+                return JsonResponse(
+                    {"status": 1, "msg": "无法校验查询权限，请联系管理员", "data": ""}
+                )
+            if priv["status"] != 0:
+                return JsonResponse({"status": 1, "msg": priv["msg"], "data": ""})
+
+            try:
                 engine = get_engine(instance=instance)
                 rs = engine.describe_table(
                     db_name, tb_name, schema_name=schema_name or None
@@ -745,10 +880,6 @@ class GenerateSqlView(APIView):
                         table_schema = "\n".join(
                             " | ".join(str(c) for c in row) for row in rows
                         )
-            except Instance.DoesNotExist:
-                return JsonResponse(
-                    {"status": 1, "msg": "实例不存在或你所在组未关联", "data": ""}
-                )
             except Exception as e:
                 logger.warning("generate_sql 取表结构失败: %s", e)
                 table_schema = tb_name
@@ -756,10 +887,15 @@ class GenerateSqlView(APIView):
             # 取样本数据（LIMIT 5，不排序不聚合，大表也无压力）
             if table_schema:
                 try:
-                    sample_sql = f"SELECT * FROM \"{tb_name}\" LIMIT 5" if db_type == "pgsql" else f"SELECT * FROM `{tb_name}` LIMIT 5"
+                    sample_sql = (
+                        f'SELECT * FROM "{tb_name}" LIMIT 5'
+                        if db_type == "pgsql"
+                        else f"SELECT * FROM `{tb_name}` LIMIT 5"
+                    )
                     sample_rs = engine.query(
-                        db_name=db_name, sql=sample_sql,
-                        **({"schema_name": schema_name} if schema_name else {})
+                        db_name=db_name,
+                        sql=sample_sql,
+                        **({"schema_name": schema_name} if schema_name else {}),
                     )
                     # 与正规查询链路同口径：开启数据脱敏时对样本结果先脱敏再喂给外部 AI
                     if sample_rs.rows and SysConfig().get("data_masking"):
@@ -769,6 +905,12 @@ class GenerateSqlView(APIView):
                             )
                         except Exception as mask_e:
                             logger.warning("generate_sql 样本脱敏失败: %s", mask_e)
+                            sample_rs.rows = []
+                        # 脱敏失败（error 非空）时不能把原始样本发给 AI
+                        if getattr(sample_rs, "error", None):
+                            logger.warning(
+                                "generate_sql 样本脱敏异常: %s", sample_rs.error
+                            )
                             sample_rs.rows = []
                     sample_rows = getattr(sample_rs, "rows", None) or []
                     sample_cols = getattr(sample_rs, "column_list", None) or []
@@ -795,20 +937,29 @@ class GenerateSqlView(APIView):
         try:
             client = OpenaiClient(scenario="nl2sql")
             sql = client.generate_sql_by_openai(
-                db_type=db_type, table_schema=table_schema, user_input=query_desc, sample_data=sample_data
+                db_type=db_type,
+                table_schema=table_schema,
+                user_input=query_desc,
+                sample_data=sample_data,
             )
             record_ai_usage(client=client, **usage_ctx)
             return JsonResponse({"status": 0, "msg": "ok", "data": sql or ""})
         except ValueError as e:
             logger.warning("generate_sql 失败: %s", e)
             record_ai_usage(
-                client=client, status="failed", error=str(e)[:500], **usage_ctx,
+                client=client,
+                status="failed",
+                error=str(e)[:500],
+                **usage_ctx,
             )
             return JsonResponse({"status": 1, "msg": str(e), "data": ""})
         except Exception as e:
             logger.exception("generate_sql 异常")
             record_ai_usage(
-                client=client, status="failed", error=str(e)[:500], **usage_ctx,
+                client=client,
+                status="failed",
+                error=str(e)[:500],
+                **usage_ctx,
             )
             return JsonResponse({"status": 1, "msg": str(e), "data": ""})
 
@@ -834,18 +985,26 @@ class CheckOpenAIView(APIView):
 
 # ========== 查询权限申请 ==========
 
+
 def _db_priv(user, instance, db_name):
     return QueryPrivileges.objects.filter(
-        user_name=user.username, instance=instance,
-        db_name=db_name, priv_type=1, is_deleted=0,
+        user_name=user.username,
+        instance=instance,
+        db_name=db_name,
+        priv_type=1,
+        is_deleted=0,
         valid_date__gte=_dt.datetime.now(),
     ).exists()
 
 
 def _tb_priv(user, instance, db_name, tb_name):
     return QueryPrivileges.objects.filter(
-        user_name=user.username, instance=instance,
-        db_name=db_name, table_name=tb_name, priv_type=2, is_deleted=0,
+        user_name=user.username,
+        instance=instance,
+        db_name=db_name,
+        table_name=tb_name,
+        priv_type=2,
+        is_deleted=0,
         valid_date__gte=_dt.datetime.now(),
     ).exists()
 
@@ -869,7 +1028,9 @@ class QueryApplyListView(APIView):
 
         qs = QueryPrivilegesApply.objects.all()
         if search:
-            qs = qs.filter(Q(title__icontains=search) | Q(user_display__icontains=search))
+            qs = qs.filter(
+                Q(title__icontains=search) | Q(user_display__icontains=search)
+            )
         if not user.is_superuser:
             if user.has_perm("sql.query_review"):
                 group_ids = [g.group_id for g in user_groups(user)]
@@ -878,11 +1039,23 @@ class QueryApplyListView(APIView):
                 qs = qs.filter(user_name=user.username)
 
         count = qs.count()
-        rows = [r for r in qs.order_by("-apply_id")[offset:limit].values(
-            "apply_id", "title", "instance__instance_name", "db_list",
-            "priv_type", "table_list", "limit_num", "valid_date",
-            "user_display", "status", "create_time", "group_name",
-        )]
+        rows = [
+            r
+            for r in qs.order_by("-apply_id")[offset:limit].values(
+                "apply_id",
+                "title",
+                "instance__instance_name",
+                "db_list",
+                "priv_type",
+                "table_list",
+                "limit_num",
+                "valid_date",
+                "user_display",
+                "status",
+                "create_time",
+                "group_name",
+            )
+        ]
         return JsonResponse(_encode({"total": count, "rows": rows}), safe=False)
 
 
@@ -897,7 +1070,9 @@ class UserPrivilegesView(APIView):
         limit = offset + limit
         search = request.data.get("search", "")
 
-        qs = QueryPrivileges.objects.filter(is_deleted=0, valid_date__gte=_dt.datetime.now())
+        qs = QueryPrivileges.objects.filter(
+            is_deleted=0, valid_date__gte=_dt.datetime.now()
+        )
         if search:
             qs = qs.filter(
                 Q(user_display__icontains=search)
@@ -914,10 +1089,21 @@ class UserPrivilegesView(APIView):
                 qs = qs.filter(user_name=user.username)
 
         count = qs.distinct().count()
-        rows = [r for r in qs.distinct().order_by("-privilege_id")[offset:limit].values(
-            "privilege_id", "user_display", "instance__instance_name",
-            "db_name", "priv_type", "table_name", "limit_num", "valid_date",
-        )]
+        rows = [
+            r
+            for r in qs.distinct()
+            .order_by("-privilege_id")[offset:limit]
+            .values(
+                "privilege_id",
+                "user_display",
+                "instance__instance_name",
+                "db_name",
+                "priv_type",
+                "table_name",
+                "limit_num",
+                "valid_date",
+            )
+        ]
         return JsonResponse(_encode({"total": count, "rows": rows}), safe=False)
 
 
@@ -943,35 +1129,78 @@ class ApplyForPrivilegesView(APIView):
                 result["msg"] = "请填写完整"
                 return JsonResponse(result)
         elif int(priv_type) == 2:
-            if not (title and instance_name and db_name and valid_date and table_list and limit_num):
+            if not (
+                title
+                and instance_name
+                and db_name
+                and valid_date
+                and table_list
+                and limit_num
+            ):
                 result["status"] = 1
                 result["msg"] = "请填写完整"
                 return JsonResponse(result)
 
         try:
-            user_instances(request.user, tag_codes=["can_read"]).get(instance_name=instance_name)
+            user_instances(request.user, tag_codes=["can_read"]).get(
+                instance_name=instance_name
+            )
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
         ins = Instance.objects.get(instance_name=instance_name)
-        group_id = ResourceGroup.objects.get(group_name=group_name).group_id
+        try:
+            res_group = ResourceGroup.objects.get(group_name=group_name)
+        except ResourceGroup.DoesNotExist:
+            return JsonResponse({"status": 1, "msg": "资源组不存在！"})
+        # 资源组归属校验：非超管只能选择自己所在组；申请实例必须属于该组，
+        # 否则审批流会落到与该实例无关的资源组。
+        if not request.user.is_superuser:
+            user_group_ids = {g.group_id for g in user_groups(request.user)}
+            if res_group.group_id not in user_group_ids:
+                return JsonResponse({"status": 1, "msg": "你不在所选资源组内！"})
+        if not ins.resource_group.filter(group_id=res_group.group_id).exists():
+            return JsonResponse({"status": 1, "msg": "申请实例不属于该资源组！"})
+        group_id = res_group.group_id
 
         if int(priv_type) == 1:
             for db in db_list:
                 if _db_priv(user, ins, db):
-                    return JsonResponse({"status": 1, "msg": f"你已拥有{instance_name}实例{db}库权限，不能重复申请"})
+                    return JsonResponse(
+                        {
+                            "status": 1,
+                            "msg": f"你已拥有{instance_name}实例{db}库权限，不能重复申请",
+                        }
+                    )
         elif int(priv_type) == 2:
             if _db_priv(user, ins, db_name):
-                return JsonResponse({"status": 1, "msg": f"你已拥有{instance_name}实例{db_name}库的全部权限，不能重复申请"})
+                return JsonResponse(
+                    {
+                        "status": 1,
+                        "msg": f"你已拥有{instance_name}实例{db_name}库的全部权限，不能重复申请",
+                    }
+                )
             for tb in table_list:
                 if _tb_priv(user, ins, db_name, tb):
-                    return JsonResponse({"status": 1, "msg": f"你已拥有{instance_name}实例{db_name}.{tb}表的查询权限，不能重复申请"})
+                    return JsonResponse(
+                        {
+                            "status": 1,
+                            "msg": f"你已拥有{instance_name}实例{db_name}.{tb}表的查询权限，不能重复申请",
+                        }
+                    )
 
         apply_info = QueryPrivilegesApply(
-            title=title, group_id=group_id, group_name=group_name,
-            audit_auth_groups="", user_name=user.username, user_display=user.display,
-            instance=ins, priv_type=_safe_int(priv_type, -1), valid_date=valid_date,
-            status=WorkflowStatus.WAITING, limit_num=limit_num,
+            title=title,
+            group_id=group_id,
+            group_name=group_name,
+            audit_auth_groups="",
+            user_name=user.username,
+            user_display=user.display,
+            instance=ins,
+            priv_type=_safe_int(priv_type, -1),
+            valid_date=valid_date,
+            status=WorkflowStatus.WAITING,
+            limit_num=limit_num,
         )
         if int(priv_type) == 1:
             apply_info.db_list = ",".join(db_list)
@@ -988,9 +1217,13 @@ class ApplyForPrivilegesView(APIView):
             logger.error(f"新建审批流失败, {str(e)}")
             return JsonResponse({"status": 1, "msg": "新建审批流失败, 请联系管理员"})
 
-        _query_apply_audit_call_back(audit_handler.workflow.apply_id, audit_handler.audit.current_status)
+        _query_apply_audit_call_back(
+            audit_handler.workflow.apply_id, audit_handler.audit.current_status
+        )
         async_task(
-            notify_for_audit, workflow_audit=audit_handler.audit, timeout=60,
+            notify_for_audit,
+            workflow_audit=audit_handler.audit,
+            timeout=60,
             task_name=f"query-priv-apply-{audit_handler.workflow.apply_id}",
         )
         return JsonResponse(result)
@@ -1000,45 +1233,71 @@ class ModifyPrivilegesView(APIView):
     permission_classes = [IsAuthenticated, QueryMgtPrivPermission]
 
     def post(self, request):
-        privilege_id = request.data.get("privilege_id")
-        type_val = request.data.get("type")
         result = {"status": 0, "msg": "ok", "data": []}
-
         try:
-            priv = QueryPrivileges.objects.get(privilege_id=int(privilege_id))
-        except QueryPrivileges.DoesNotExist:
+            privilege_id = int(request.data.get("privilege_id"))
+            type_val = int(request.data.get("type"))
+        except (TypeError, ValueError):
+            return JsonResponse({"status": 1, "msg": "参数不合法"})
+
+        priv = QueryPrivileges.objects.filter(privilege_id=privilege_id).first()
+        if priv is None:
             return JsonResponse({"status": 1, "msg": "待操作权限不存在"})
 
-        if int(type_val) == 1:
+        # 资源组收口：组级权限管理员只能操作自己资源组实例上的权限，
+        # 防止按 privilege_id 跨组删除/延长他人权限。
+        if not request.user.is_superuser:
+            user_group_ids = {g.group_id for g in user_groups(request.user)}
+            if not priv.instance.resource_group.filter(
+                group_id__in=user_group_ids
+            ).exists():
+                return JsonResponse({"status": 1, "msg": "无权操作该查询权限"})
+
+        if type_val == 1:
             priv.is_deleted = 1
             priv.save(update_fields=["is_deleted"])
-        elif int(type_val) == 2:
+        elif type_val == 2:
             valid_date = request.data.get("valid_date")
-            limit_num = request.data.get("limit_num")
+            limit_num = _safe_int(request.data.get("limit_num"), -1)
+            try:
+                _dt.datetime.strptime(str(valid_date), "%Y-%m-%d")
+            except (TypeError, ValueError):
+                return JsonResponse({"status": 1, "msg": "有效期格式应为 YYYY-MM-DD"})
+            if limit_num < 0:
+                return JsonResponse({"status": 1, "msg": "行数限制必须为非负整数"})
             priv.valid_date = valid_date
             priv.limit_num = limit_num
             priv.save(update_fields=["valid_date", "limit_num"])
+        else:
+            return JsonResponse({"status": 1, "msg": "不支持的操作类型"})
         return JsonResponse(result)
 
 
 # ========== SQL 上线辅助 ==========
 
+
 class BackupSqlView(APIView):
     permission_classes = [IsAuthenticated, SqlWorkflowPermission]
 
     def get(self, request):
-        workflow_id = request.GET.get("workflow_id")
         try:
-            workflow = SqlWorkflow.objects.get(id=workflow_id)
-        except SqlWorkflow.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "工单不存在"})
+            workflow_id = int(request.GET.get("workflow_id"))
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {"status": 1, "msg": "workflow_id 参数不合法"}, status=400
+            )
+        workflow = SqlWorkflow.objects.filter(id=workflow_id).first()
+        if workflow is None:
+            return JsonResponse({"status": 1, "msg": "工单不存在"}, status=404)
 
         # 回滚 SQL 含变更前数据镜像，与工单详情同口径做归属校验
         try:
             if not can_view(request.user, workflow_id):
-                return JsonResponse({"status": 1, "msg": "你无权查看该工单的备份信息"})
+                return JsonResponse(
+                    {"status": 1, "msg": "你无权查看该工单的备份信息"}, status=403
+                )
         except SqlWorkflow.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "工单不存在"})
+            return JsonResponse({"status": 1, "msg": "工单不存在"}, status=404)
 
         query_engine = get_engine(instance=workflow.instance)
         sql_list = query_engine.get_rollback(workflow=workflow)
@@ -1068,12 +1327,15 @@ class OscControlView(APIView):
         except SqlWorkflow.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "工单不存在"})
 
-        # OSC pause/resume/kill 属执行控制，与执行工单同口径校验
-        try:
-            if not can_execute(request.user, workflow_id):
-                return JsonResponse({"status": 1, "msg": "你无权控制该工单的 OSC 进度"})
-        except SqlWorkflow.DoesNotExist:
-            return JsonResponse({"status": 1, "msg": "工单不存在"})
+        # OSC pause/resume/kill 属执行控制。执行期工单状态为 workflow_executing，
+        # can_execute 只判断“待执行”状态会永远拒绝；改为校验执行权限 + 工单可见性。
+        has_execute_perm = (
+            request.user.is_superuser
+            or request.user.has_perm("sql.sql_execute")
+            or request.user.has_perm("sql.sql_execute_for_resource_group")
+        )
+        if not has_execute_perm or not can_view(request.user, workflow_id):
+            return JsonResponse({"status": 1, "msg": "你无权控制该工单的 OSC 进度"})
 
         engine = get_engine(instance=workflow.instance)
         if command == "get":
@@ -1089,10 +1351,18 @@ class OscControlView(APIView):
 
         if osc_result.error:
             return JsonResponse({"status": 1, "msg": osc_result.error})
-        return JsonResponse({"status": 0, "msg": "", "rows": osc_result.to_dict(), "total": len(osc_result.to_dict())})
+        return JsonResponse(
+            {
+                "status": 0,
+                "msg": "",
+                "rows": osc_result.to_dict(),
+                "total": len(osc_result.to_dict()),
+            }
+        )
 
 
 # ========== SchemaSync ==========
+
 
 class SchemaSyncView(APIView):
     permission_classes = [IsAuthenticated, SchemasyncPermission]
@@ -1105,7 +1375,11 @@ class SchemaSyncView(APIView):
         sync_auto_inc = request.data.get("sync_auto_inc") == "true"
         sync_comments = request.data.get("sync_comments") == "true"
 
-        result = {"status": 0, "msg": "ok", "data": {"diff_stdout": "", "patch_stdout": "", "revert_stdout": ""}}
+        result = {
+            "status": 0,
+            "msg": "ok",
+            "data": {"diff_stdout": "", "patch_stdout": "", "revert_stdout": ""},
+        }
 
         if db_name == "all" or target_db_name == "all":
             db_name = "*"
@@ -1120,9 +1394,12 @@ class SchemaSyncView(APIView):
                 request.user, instance_name=target_instance_name
             )
         except Exception:
-            return JsonResponse({"status": 1, "msg": "实例不存在或你所在组未关联", "data": []})
+            return JsonResponse(
+                {"status": 1, "msg": "实例不存在或你所在组未关联", "data": []}
+            )
 
         from sql.plugins.schemasync import SchemaSync
+
         schema_sync = SchemaSync()
         tag = int(time.time())
         output_directory = os.path.join(settings.BASE_DIR, "downloads/schemasync/")
@@ -1192,6 +1469,7 @@ class SchemaSyncView(APIView):
 # ========== 回滚 / 导出（文件流 + 预检） ==========
 # 替代 sql/views.py:rollback_download、sqlexport_pre_check、sql/offlinedownload.py:offline_file_download
 
+
 class RollbackDownloadView(APIView):
     """下载工单回滚 SQL 文件（GET /api/v1/rollback/）。
 
@@ -1204,16 +1482,23 @@ class RollbackDownloadView(APIView):
     def get(self, request):
         from sql.utils.sql_review import can_rollback
         from sql.models import SqlWorkflow
-        from django.shortcuts import get_object_or_404
         from django.core.exceptions import PermissionDenied
 
-        workflow_id = request.GET.get("workflow_id")
-        if not can_rollback(request.user, workflow_id):
-            raise PermissionDenied
-        if not workflow_id:
-            return JsonResponse({"status": 1, "msg": "workflow_id参数为空."}, status=400)
+        try:
+            workflow_id = int(request.GET.get("workflow_id"))
+        except (TypeError, ValueError):
+            return JsonResponse(
+                {"status": 1, "msg": "workflow_id参数为空或不合法."}, status=400
+            )
+        try:
+            if not can_rollback(request.user, workflow_id):
+                raise PermissionDenied
+        except SqlWorkflow.DoesNotExist:
+            return JsonResponse({"status": 1, "msg": "工单不存在"}, status=404)
 
-        workflow = get_object_or_404(SqlWorkflow, id=int(workflow_id))
+        workflow = SqlWorkflow.objects.filter(id=workflow_id).first()
+        if workflow is None:
+            return JsonResponse({"status": 1, "msg": "工单不存在"}, status=404)
         try:
             query_engine = get_engine(instance=workflow.instance)
             list_backup_sql = query_engine.get_rollback(workflow=workflow)
@@ -1247,10 +1532,10 @@ class SqlexportPreCheckView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not (request.user.is_superuser or request.user.has_perm("sql.sqlexport_submit")):
-            return JsonResponse(
-                {"status": 1, "msg": "无数据导出权限"}, status=403
-            )
+        if not (
+            request.user.is_superuser or request.user.has_perm("sql.sqlexport_submit")
+        ):
+            return JsonResponse({"status": 1, "msg": "无数据导出权限"}, status=403)
 
         from sql.offlinedownload import OffLineDownLoad
 

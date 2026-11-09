@@ -9,6 +9,8 @@ import environ
 import requests
 import logging
 
+from django.core.exceptions import ImproperlyConfigured
+
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
@@ -43,6 +45,8 @@ env = environ.Env(
         {"username": "preferred_username", "display": "name", "email": "email"},
     ),
     Q_CLUSTER_SYNC=(bool, False),  # qcluster 同步模式, debug 时可以调整为 True
+    # AI 优化/诊断任务后端：true=django-q 持久队列；false=web 进程线程池（本地无 qcluster 时用）
+    AI_TASK_QUEUE=(bool, True),
     # CSRF_TRUSTED_ORIGINS=subdomain.example.com,subdomain.example2.com subdomain.example.com
     CSRF_TRUSTED_ORIGINS=(list, []),
     ENABLED_ENGINES=(
@@ -88,23 +92,49 @@ env = environ.Env(
 SECRET_KEY = env("SECRET_KEY")
 
 # 生产环境必须显式配置 SECRET_KEY：为空时 JWT SIGNING_KEY 为空串，
-# 存在会话/令牌伪造隐患，启动即告警而不是静默上线
+# 任何人都可以用空密钥伪造 JWT / Django 签名 Cookie。此项不可降级为 warning。
 if not SECRET_KEY:
+    raise ImproperlyConfigured(
+        "SECRET_KEY 未配置：请在 .env 中设置随机密钥。"
+        '生成方式：python -c "import secrets; print(secrets.token_urlsafe(50))"'
+    )
+if len(SECRET_KEY) < 32:
     logger.warning(
-        "SECRET_KEY 未配置（.env 未设置）：JWT 签名密钥将为空串，"
-        "生产环境务必配置随机密钥！"
+        "SECRET_KEY 长度不足 32 字符，建议使用 secrets.token_urlsafe(50) 重新生成。"
     )
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env("DEBUG")
 
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
+if "*" in ALLOWED_HOSTS:
+    logger.warning(
+        "ALLOWED_HOSTS 包含 *：生产环境请改为实际域名/IP，防止 Host 头攻击。"
+    )
 
 # https://docs.djangoproject.com/en/4.0/ref/settings/#csrf-trusted-origins
 CSRF_TRUSTED_ORIGINS = env("CSRF_TRUSTED_ORIGINS")
 
 # 解决nginx部署跳转404
 USE_X_FORWARDED_HOST = True
+
+# 反向代理与 Cookie 安全基线：
+# - nginx 会覆盖 X-Forwarded-Proto；只有可信代理后才可信任该头
+# - Secure Cookie 由环境变量控制，HTTPS 部署必须置 true
+if env.bool("TRUST_X_FORWARDED_PROTO", default=True):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+SESSION_COOKIE_SECURE = env.bool("SESSION_COOKIE_SECURE", default=False)
+CSRF_COOKIE_SECURE = env.bool("CSRF_COOKIE_SECURE", default=False)
+SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
+# HSTS 默认关闭；确认全站 HTTPS 且包含子域后再在 .env 中开启
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=0)
+SECURE_HSTS_INCLUDE_SUBDOMAINS = False
+SECURE_HSTS_PRELOAD = False
 
 # 请求限制
 DATA_UPLOAD_MAX_MEMORY_SIZE = 15728640
@@ -276,6 +306,9 @@ Q_CLUSTER = {
     "sync": env("Q_CLUSTER_SYNC"),  # 本地调试可以修改为True，使用同步模式
 }
 
+# AI 任务后端：生产默认走 django-q；本地无 qcluster 时可在 .env 设为 false
+AI_TASK_QUEUE = env("AI_TASK_QUEUE")
+
 # 缓存配置
 # 说明：显式配置连接池参数 + 失败降级，避免 Redis 抖动（如 10054 连接被对端重置）
 # 导致整个请求 500。health_check_interval 会自动剔除僵尸连接并重建，
@@ -308,7 +341,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": ("sql_api.renderers.BigIntSafeJSONRenderer",),
     # 鉴权
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "sql_api.token_auth.TwoFactorAwareJWTAuthentication",
         "rest_framework.authentication.SessionAuthentication",
     ),
     # 权限
@@ -369,7 +402,9 @@ if ENABLE_OIDC:
             response = requests.get(OIDC_RP_WELLKNOWN_URL, timeout=5)
             response.raise_for_status()
             _oidc_wellknown = response.json()
-            OIDC_OP_AUTHORIZATION_ENDPOINT = _oidc_wellknown.get("authorization_endpoint")
+            OIDC_OP_AUTHORIZATION_ENDPOINT = _oidc_wellknown.get(
+                "authorization_endpoint"
+            )
             OIDC_OP_TOKEN_ENDPOINT = _oidc_wellknown.get("token_endpoint")
             OIDC_OP_USER_ENDPOINT = _oidc_wellknown.get("userinfo_endpoint")
             OIDC_OP_JWKS_ENDPOINT = _oidc_wellknown.get("jwks_uri")
@@ -438,7 +473,9 @@ if ENABLE_LDAP:
             AUTH_LDAP_BIND_DN = env(
                 "AUTH_LDAP_BIND_DN", default="cn=xxx,ou=xxx,dc=xxx,dc=xxx"
             )
-            AUTH_LDAP_BIND_PASSWORD = env("AUTH_LDAP_BIND_PASSWORD", default="***********")
+            AUTH_LDAP_BIND_PASSWORD = env(
+                "AUTH_LDAP_BIND_PASSWORD", default="***********"
+            )
             AUTH_LDAP_USER_SEARCH_BASE = env(
                 "AUTH_LDAP_USER_SEARCH_BASE", default="ou=xxx,dc=xxx,dc=xxx"
             )
@@ -446,7 +483,9 @@ if ENABLE_LDAP:
                 "AUTH_LDAP_USER_SEARCH_FILTER", default="(cn=%(user)s)"
             )
             AUTH_LDAP_USER_SEARCH = LDAPSearch(
-                AUTH_LDAP_USER_SEARCH_BASE, ldap.SCOPE_SUBTREE, AUTH_LDAP_USER_SEARCH_FILTER
+                AUTH_LDAP_USER_SEARCH_BASE,
+                ldap.SCOPE_SUBTREE,
+                AUTH_LDAP_USER_SEARCH_FILTER,
             )
         AUTH_LDAP_ALWAYS_UPDATE_USER = env(
             "AUTH_LDAP_ALWAYS_UPDATE_USER", default=True

@@ -99,7 +99,7 @@ const routes: RouteRecordRaw[] = [
         path: "user",
         name: "user",
         component: () => import("@/views/user/Index.vue"),
-        meta: { title: "用户管理" },
+        meta: { title: "用户管理", requireSuperuser: true },
       },
       {
         path: "openapi",
@@ -111,7 +111,7 @@ const routes: RouteRecordRaw[] = [
         path: "config",
         name: "config",
         component: () => import("@/views/config/Index.vue"),
-        meta: { title: "配置项管理" },
+        meta: { title: "配置项管理", requireSuperuser: true },
       },
       {
         path: "authconfig",
@@ -165,13 +165,13 @@ const routes: RouteRecordRaw[] = [
         path: "resourcegroup",
         name: "resourcegroup",
         component: () => import("@/views/resourcegroup/Index.vue"),
-        meta: { title: "资源组管理" },
+        meta: { title: "资源组管理", requireSuperuser: true },
       },
       {
         path: "resourcegroup/:id",
         name: "resourcegroup-relations",
         component: () => import("@/views/resourcegroup/Relations.vue"),
-        meta: { title: "关联管理" },
+        meta: { title: "关联管理", requireSuperuser: true },
       },
       {
         path: "sqlanalyze",

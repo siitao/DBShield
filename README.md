@@ -5,7 +5,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](./LICENSE)
 [![python](https://img.shields.io/pypi/pyversions/django)](https://www.python.org/)
-[![django](https://img.shields.io/badge/django-4.2-brightgreen.svg)](https://docs.djangoproject.com/zh-hans/4.2/)
+[![django](https://img.shields.io/badge/django-4.2%20%7C%205.2-brightgreen.svg)](https://docs.djangoproject.com/zh-hans/4.2/)
 [![vue](https://img.shields.io/badge/vue-3.5-42b883.svg)](https://vuejs.org/)
 [![code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
@@ -53,7 +53,7 @@
 └───────────────────────────┬──────────────────────────────┘
                             │  /api/v1/*  (DRF JSON)
 ┌───────────────────────────▼──────────────────────────────┐
-│  Django 4.2 后端                                          │
+│  Django 4.2/5.2 后端                                      │
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐  │
 │  │  sql_api/    │   │   sql/       │   │  common/     │  │
 │  │  DRF 接口层   │←─→│  核心业务+引擎 │←─→│  通用工具/认证 │  │
@@ -109,8 +109,19 @@ docker build -f src/docker/Dockerfile -t dbshield-vue3:v1 .
 
 ```bash
 cd src/docker-compose
-cp .env.example .env   # 按需修改数据库密码、NGINX_PORT、CSRF_TRUSTED_ORIGINS
+cp .env.example .env
+# 必填（留空 compose 会拒绝启动）：
+#   MYSQL_ROOT_PASSWORD / REDIS_PASSWORD / SECRET_KEY
+# 生成随机值：python -c "import secrets; print(secrets.token_urlsafe(32))"
+# 注意密码使用 URL 安全字符，因为会拼进 DATABASE_URL / CACHE_URL
+# 已有 MySQL 数据卷时，MYSQL_ROOT_PASSWORD 必须与卷内 root 密码一致，
+# 或先在 MySQL 内修改密码再更新 .env
 ```
+
+> MySQL（3306）与 goInception（4000）默认只绑定 `127.0.0.1`，避免同网段绕过
+> Archery 直接连库；确需远程访问请使用 SSH 隧道，不要改回 `0.0.0.0` 暴露。
+> HTTPS 部署请在 `.env` 中设置 `SESSION_COOKIE_SECURE=true` 和
+> `CSRF_COOKIE_SECURE=true`（HSTS 按需设置 `SECURE_HSTS_SECONDS`）。
 
 > ⚠️ `.env` 会被容器内「认证配置重载」写入真实 LDAP/OIDC/钉钉密钥，已被 `.gitignore` 排除，**切勿 `git add -f` 提交**。
 
@@ -146,6 +157,11 @@ docker compose up -d
           4. 清 URL resolver 缓存，使 /oidc/ 等路由按新配置 include
 ```
 
+> ⚠️ 「重载认证配置」只对处理该请求的 gunicorn worker 立即生效。Docker 默认
+> `gunicorn -w 4`，其他 worker 仍会使用旧认证配置，表现为 SSO 登录时好时坏。
+> **修改认证配置后请重启容器**（`docker compose restart dbshield`），让全部
+> worker 重新读取 `.env`；CAS 认证依赖 MIDDLEWARE，必须重启才能生效。
+
 因此 **docker-compose 不再挂载 `local_settings.py`**——它在 `settings.py` 末尾以 `from local_settings import *` 加载，优先级最高，会覆盖上述所有认证配置，导致后台修改 + 重载完全不生效（典型表现：LDAP/SSO 登录始终提示「用户名或密码不正确」）。
 
 如需自定义非认证相关的 settings，请改 `.env`（推荐）或直接进容器修改，不要重新挂载 `local_settings.py`。
@@ -167,9 +183,11 @@ pip install "setuptools<82" wheel
 pip install -r requirements-local.txt --no-build-isolation
 
 # 配置环境变量（复制 .env.list 为 .env 并按需修改）
+#   SECRET_KEY      必填，留空会拒绝启动（python -c "import secrets; print(secrets.token_urlsafe(50))"）
 #   DATABASE_URL    数据库连接（默认 MySQL）
 #   CACHE_URL       Redis 缓存连接
 #   ENABLED_ENGINES 启用的数据库引擎，逗号分隔，如 mysql,pgsql
+#   AI_TASK_QUEUE  本地未启动 qcluster 时设为 false（AI 优化/诊断走线程池）
 #   CSRF_TRUSTED_ORIGINS  信任的源（需包含前端 dev 地址，如 http://localhost:5175）
 
 # 初始化数据库
@@ -206,6 +224,17 @@ python manage.py dbshell < sql/fixtures/auth_group.sql                 # Default
 python manage.py createsuperuser                                       # 创建管理员账号
 ```
 
+## 安全注意事项
+
+- `SECRET_KEY` 为空的实例会拒绝启动；生成方式见「本地开发」的环境变量说明。
+- `ALLOWED_HOSTS` 不要使用 `*`：示例配置为 `127.0.0.1,localhost`，生产请改成实际域名/IP。
+- 启用 2FA 的账号不能使用 `/api/auth/token/` 获取 JWT（该入口不会完成第二因素），
+  请走 Web 登录；如确需 API Token，应另行实现 2FA challenge/verify 流程。
+- my2sql / schemasync 需要把实例密码作为命令行参数传给外部工具，密码会出现在
+  进程列表（`/proc/<pid>/cmdline`）中。请限制能登录数据库实例所在主机的用户，
+  并避免在共享主机上运行。
+- 多 worker 部署修改认证配置后需重启 dbshield，确保全部 worker 与 CAS 中间件生效。
+
 ## 运行测试
 
 ```bash
@@ -234,7 +263,7 @@ npm run type-check
 
 ### 后端框架
 
-- [Django](https://github.com/django/django) 4.2 · [Django REST Framework](https://github.com/encode/django-rest-framework)
+- [Django](https://github.com/django/django) 4.2 / 5.2 · [Django REST Framework](https://github.com/encode/django-rest-framework)
 - [drf-spectacular](https://github.com/tfranzel/drf-spectacular)（OpenAPI）· [django-filter](https://github.com/carltongibson/django-filter)
 - 队列任务 [django-q2](https://github.com/GDay/django-q2) · 配置 [django-environ](https://github.com/joke2k/django-environ)
 - 数据加密 [django-mirage-field](https://github.com/luojilab/django-mirage-field) · 对象存储 [django-storages](https://github.com/jschneier/django-storages)

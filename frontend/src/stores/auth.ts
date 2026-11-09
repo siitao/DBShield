@@ -9,6 +9,7 @@ import {
 } from "@/api/user";
 import { withAuthSuppressed } from "@/utils/request";
 import { useAiOptimizeStore } from "@/stores/aiOptimize";
+import { useBinlogHandoffStore } from "@/stores/binlogHandoff";
 
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<CurrentUser | null>(null);
@@ -59,9 +60,10 @@ export const useAuthStore = defineStore("auth", () => {
   function clear(): void {
     user.value = null;
     permissions.value = [];
-    // 登出是 SPA 路由跳转不整页刷新，跨用户的内存态（AI 优化报告等）
-    // 必须显式清理，防止同标签页换账号登录后残留展示
+    // 登出是 SPA 路由跳转不整页刷新，跨用户的内存态（AI 优化报告、
+    // My2SQL 待提交 SQL 等）必须显式清理，防止同标签页换账号登录后残留展示
     useAiOptimizeStore().reset();
+    useBinlogHandoffStore().reset();
   }
 
   return {

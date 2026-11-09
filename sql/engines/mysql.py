@@ -4,7 +4,7 @@ import traceback
 import MySQLdb
 import MySQLdb.cursors
 import MySQLdb.converters
-import pymysql
+from pymysql.converters import escape_string
 import re
 from enum import Enum
 
@@ -112,7 +112,7 @@ class MysqlEngine(EngineBase):
         """字符串参数转义"""
         if value is None:
             return ""
-        return pymysql.escape_string(value)
+        return escape_string(value)
 
     @property
     def auto_backup(self):
@@ -606,27 +606,49 @@ class MysqlEngine(EngineBase):
                          FROM information_schema.COLUMNS
                          WHERE {filters}
                          ORDER BY TABLE_NAME, ORDINAL_POSITION;"""
-        sql_idx = f"""SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE, INDEX_TYPE
+        # MySQL 8.0 才有的索引元数据按版本/分支追加，避免 5.7 / MariaDB 查询报错
+        extra_idx_fields = ""
+        try:
+            is_mariadb = self.server_fork_type == MysqlForkType.MARIADB
+            server_version = self.server_version
+        except Exception:
+            # 版本探测失败时退回 5.7 兼容字段集，后续查询会返回实际错误
+            is_mariadb = False
+            server_version = (0, 0, 0)
+        if not is_mariadb and server_version >= (8, 0, 13):
+            extra_idx_fields += ", EXPRESSION"
+        if not is_mariadb and server_version >= (8, 0, 0):
+            extra_idx_fields += ", IS_VISIBLE"
+        sql_idx = f"""SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, NON_UNIQUE,
+                              INDEX_TYPE, SUB_PART, COLLATION, INDEX_COMMENT{extra_idx_fields}
                         FROM information_schema.STATISTICS
                         WHERE {filters}
                         ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX;"""
 
         tbs = self.query(
-            db_name=db_name, sql=sql_tbs, cursorclass=MySQLdb.cursors.DictCursor,
-            close_conn=False, parameters=params,
+            db_name=db_name,
+            sql=sql_tbs,
+            cursorclass=MySQLdb.cursors.DictCursor,
+            close_conn=False,
+            parameters=params,
         )
         if tbs.error:
             self.close()
             return {"error": tbs.error}
         cols = self.query(
-            db_name=db_name, sql=sql_cols, cursorclass=MySQLdb.cursors.DictCursor,
-            close_conn=False, parameters=params,
+            db_name=db_name,
+            sql=sql_cols,
+            cursorclass=MySQLdb.cursors.DictCursor,
+            close_conn=False,
+            parameters=params,
         )
         if cols.error:
             self.close()
             return {"error": cols.error}
         idx = self.query(
-            db_name=db_name, sql=sql_idx, cursorclass=MySQLdb.cursors.DictCursor,
+            db_name=db_name,
+            sql=sql_idx,
+            cursorclass=MySQLdb.cursors.DictCursor,
             parameters=params,
         )
         if idx.error:
@@ -637,7 +659,9 @@ class MysqlEngine(EngineBase):
             columns.setdefault(col["TABLE_NAME"], []).append(col)
         indexes = {}
         for row in idx.rows:
-            indexes.setdefault(row["TABLE_NAME"], {}).setdefault(row["INDEX_NAME"], []).append(row)
+            indexes.setdefault(row["TABLE_NAME"], {}).setdefault(
+                row["INDEX_NAME"], []
+            ).append(row)
         index_defs = {
             tb: {
                 name: {
@@ -645,6 +669,17 @@ class MysqlEngine(EngineBase):
                     "unique": not any(r["NON_UNIQUE"] for r in parts),
                     "type": parts[0]["INDEX_TYPE"],
                     "columns": [r["COLUMN_NAME"] for r in parts],
+                    "parts": [
+                        {
+                            "column": r.get("COLUMN_NAME"),
+                            "sub_part": r.get("SUB_PART"),
+                            "collation": r.get("COLLATION"),
+                            "expression": r.get("EXPRESSION"),
+                        }
+                        for r in parts
+                    ],
+                    "comment": parts[0].get("INDEX_COMMENT") or "",
+                    "visible": parts[0].get("IS_VISIBLE", "YES") != "NO",
                 }
                 for name, parts in idx_map.items()
             }
@@ -881,6 +916,16 @@ class MysqlEngine(EngineBase):
             conn = self.get_connection(db_name=db_name)
             conn.autocommit(True)
             cursor = conn.cursor(cursorclass)
+            # 在线查询走只读事务：即使 query_check 的正则被绕过，DML/DDL 也会
+            # 被 MySQL 拒绝。内部调用（explain/show create/参数读取等）不传该参数。
+            if kwargs.get("read_only"):
+                try:
+                    cursor.execute("SET SESSION TRANSACTION READ ONLY;")
+                except MySQLdb.Error:
+                    logger.warning(
+                        "设置只读事务失败，仅依赖 query_check 拦截: %s",
+                        traceback.format_exc(),
+                    )
             try:
                 if self.server_fork_type == MysqlForkType.MARIADB:
                     cursor.execute(
@@ -931,11 +976,22 @@ class MysqlEngine(EngineBase):
         if re.match(r"^select|^show|^explain", sql, re.I) is None:
             result["bad_query"] = True
             result["msg"] = "不支持的查询语法类型!"
+        # 在线查询禁止写文件/加锁读取：SELECT ... INTO OUTFILE/DUMPFILE 会在
+        # 数据库主机落盘，FOR UPDATE / LOCK IN SHARE MODE 会持锁影响线上事务。
+        if re.search(r"\binto\s+(outfile|dumpfile)\b", sql, re.I):
+            result["bad_query"] = True
+            result["msg"] = "在线查询不允许使用 INTO OUTFILE/DUMPFILE！"
+        if re.search(r"\bfor\s+update\b|\block\s+in\s+share\s+mode\b", sql, re.I):
+            result["bad_query"] = True
+            result["msg"] = (
+                "在线查询不允许使用加锁读取（FOR UPDATE / LOCK IN SHARE MODE）！"
+            )
         if "*" in sql:
             result["has_star"] = True
             result["msg"] = "SQL语句中含有 * "
-        # select语句先使用Explain判断语法是否正确
-        if re.match(r"^select", sql, re.I):
+        # select语句先使用Explain判断语法是否正确（已命中禁止规则时不再外呼，
+        # 避免连接错误覆盖更有价值的拦截原因）
+        if re.match(r"^select", sql, re.I) and not result["bad_query"]:
             explain_result = self.query(db_name=db_name, sql=f"explain {sql}")
             if explain_result.error:
                 result["bad_query"] = True
@@ -1051,7 +1107,9 @@ class MysqlEngine(EngineBase):
         实现（批量评审/上下文收集/缓存/记账）收敛在 sql/utils/ai_review.py，
         mysql/pgsql/mongo 三个引擎共用同一套口径。
         """
-        ai_review.run_ai_review(self, check_result, "mysql", db_name, user_name=user_name)
+        ai_review.run_ai_review(
+            self, check_result, "mysql", db_name, user_name=user_name
+        )
 
     def execute_workflow(self, workflow):
         """执行上线单，返回Review set"""

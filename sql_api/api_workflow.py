@@ -77,9 +77,7 @@ class ExecuteCheck(views.APIView):
         # 归属校验：仅可对自己所在组拥有写权限的实例发起检测，
         # 防止借 goInception 检测探测任意实例（2026-08-20 审查 N4）
         try:
-            user_instances(request.user, tag_codes=["can_write"]).get(
-                id=instance.id
-            )
+            user_instances(request.user, tag_codes=["can_write"]).get(id=instance.id)
         except Instance.DoesNotExist:
             raise serializers.ValidationError({"errors": "你所在组未关联该实例！"})
         # 交给engine进行检测
@@ -93,9 +91,10 @@ class ExecuteCheck(views.APIView):
             }
             # AI 审核记账归属：仅 mysql 引擎的 execute_check 支持 ai_user_name，
             # 按签名动态传入（与 serializers 提交路径的 run_ai_review 同模式）
-            if "ai_user_name" in inspect.signature(
-                check_engine.execute_check
-            ).parameters:
+            if (
+                "ai_user_name"
+                in inspect.signature(check_engine.execute_check).parameters
+            ):
                 check_kwargs["ai_user_name"] = request.user.username
             check_result = check_engine.execute_check(**check_kwargs)
         except Exception as e:
@@ -263,77 +262,86 @@ class AuditWorkflow(views.APIView):
         serializer = AuditWorkflowSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        # 此处已经通过校验, 肯定存在, 就不 try 了
-        workflow_audit = WorkflowAudit.objects.get(
-            workflow_id=serializer.data["workflow_id"],
-            workflow_type=serializer.data["workflow_type"],
-        )
-        sys_config = SysConfig()
-        auditor = get_auditor(audit=workflow_audit)
-        # 操作主体必须以 request.user 为准，engineer 仅超管可指定（H1：防冒名审核/撤回）
-        user = request.user
-        engineer = serializer.data.get("engineer")
-        if engineer and engineer != user.username and not user.is_superuser:
-            raise serializers.ValidationError({"errors": "无权以他人身份审核工单"})
-        if engineer and engineer != user.username:
-            user = Users.objects.get(username=engineer)
-        if serializer.data["audit_type"] == "pass":
-            action = WorkflowAction.PASS
-            notify_config_key = "Pass"
-            success_message = "passed"
-        elif serializer.data["audit_type"] == "cancel":
-            notify_config_key = "Cancel"
-            success_message = "canceled"
-            if auditor.workflow.engineer == user.username:
-                # 提交人终止自己的工单
-                action = WorkflowAction.ABORT
-            elif Audit.can_review(
-                user,
-                serializer.data["workflow_id"],
-                serializer.data["workflow_type"],
-            ):
-                # 审核人驳回
-                action = WorkflowAction.REJECT
-            else:
-                raise serializers.ValidationError({"errors": "用户无权操作此工单"})
-        else:
-            raise serializers.ValidationError(
-                {"errors": "audit_type 只能是 pass 或 cancel"}
-            )
-
+        # 审批状态流转必须串行：select_for_update 锁住审批行，避免两个审核人
+        # 同时通过导致审批链被推进两次、或状态被部分更新。
         try:
-            workflow_audit_detail = auditor.operate(
-                action, user, serializer.data["audit_remark"]
-            )
-        except AuditException as e:
-            raise serializers.ValidationError({"errors": f"操作失败, {str(e)}"})
+            with transaction.atomic():
+                workflow_audit = WorkflowAudit.objects.select_for_update().get(
+                    workflow_id=serializer.data["workflow_id"],
+                    workflow_type=serializer.data["workflow_type"],
+                )
+                sys_config = SysConfig()
+                auditor = get_auditor(audit=workflow_audit)
+                # 操作主体必须以 request.user 为准，engineer 仅超管可指定（H1：防冒名审核/撤回）
+                user = request.user
+                engineer = serializer.data.get("engineer")
+                if engineer and engineer != user.username and not user.is_superuser:
+                    raise serializers.ValidationError(
+                        {"errors": "无权以他人身份审核工单"}
+                    )
+                if engineer and engineer != user.username:
+                    user = Users.objects.get(username=engineer)
+                if serializer.data["audit_type"] == "pass":
+                    action = WorkflowAction.PASS
+                    notify_config_key = "Pass"
+                    success_message = "passed"
+                elif serializer.data["audit_type"] == "cancel":
+                    notify_config_key = "Cancel"
+                    success_message = "canceled"
+                    if auditor.workflow.engineer == user.username:
+                        # 提交人终止自己的工单
+                        action = WorkflowAction.ABORT
+                    elif Audit.can_review(
+                        user,
+                        serializer.data["workflow_id"],
+                        serializer.data["workflow_type"],
+                    ):
+                        # 审核人驳回
+                        action = WorkflowAction.REJECT
+                    else:
+                        raise serializers.ValidationError(
+                            {"errors": "用户无权操作此工单"}
+                        )
+                else:
+                    raise serializers.ValidationError(
+                        {"errors": "audit_type 只能是 pass 或 cancel"}
+                    )
 
-        # 最后处置一下原本工单的状态
-        if auditor.workflow_type == WorkflowType.QUERY:
-            _query_apply_audit_call_back(
-                auditor.audit.workflow_id,
-                auditor.audit.current_status,
-            )
-        elif auditor.workflow_type == WorkflowType.SQL_REVIEW:
-            if auditor.audit.current_status == WorkflowStatus.PASSED:
-                auditor.workflow.status = "workflow_review_pass"
-                auditor.workflow.save(update_fields=["status"])
-            elif auditor.audit.current_status in [
-                WorkflowStatus.ABORTED,
-                WorkflowStatus.REJECTED,
-            ]:
-                if auditor.workflow.status == "workflow_timingtask":
-                    del_schedule(f"sqlreview-timing-{auditor.workflow.id}")
-                    # 将流程状态修改为人工终止流程
-                auditor.workflow.status = "workflow_abort"
-                auditor.workflow.save(update_fields=["status"])
-        elif auditor.workflow_type == WorkflowType.ARCHIVE:
-            auditor.workflow.status = auditor.audit.current_status
-            if auditor.audit.current_status == WorkflowStatus.PASSED:
-                auditor.workflow.state = True
-            else:
-                auditor.workflow.state = False
-            auditor.workflow.save(update_fields=["status", "state"])
+                try:
+                    workflow_audit_detail = auditor.operate(
+                        action, user, serializer.data["audit_remark"]
+                    )
+                except AuditException as e:
+                    raise serializers.ValidationError({"errors": f"操作失败, {str(e)}"})
+
+                # 最后处置一下原本工单的状态
+                if auditor.workflow_type == WorkflowType.QUERY:
+                    _query_apply_audit_call_back(
+                        auditor.audit.workflow_id,
+                        auditor.audit.current_status,
+                    )
+                elif auditor.workflow_type == WorkflowType.SQL_REVIEW:
+                    if auditor.audit.current_status == WorkflowStatus.PASSED:
+                        auditor.workflow.status = "workflow_review_pass"
+                        auditor.workflow.save(update_fields=["status"])
+                    elif auditor.audit.current_status in [
+                        WorkflowStatus.ABORTED,
+                        WorkflowStatus.REJECTED,
+                    ]:
+                        if auditor.workflow.status == "workflow_timingtask":
+                            del_schedule(f"sqlreview-timing-{auditor.workflow.id}")
+                            # 将流程状态修改为人工终止流程
+                        auditor.workflow.status = "workflow_abort"
+                        auditor.workflow.save(update_fields=["status"])
+                elif auditor.workflow_type == WorkflowType.ARCHIVE:
+                    auditor.workflow.status = auditor.audit.current_status
+                    if auditor.audit.current_status == WorkflowStatus.PASSED:
+                        auditor.workflow.state = True
+                    else:
+                        auditor.workflow.state = False
+                    auditor.workflow.save(update_fields=["status", "state"])
+        except WorkflowAudit.DoesNotExist:
+            return Response({"errors": "工单不存在"}, status=status.HTTP_404_NOT_FOUND)
 
         # 发消息
         is_notified = (
@@ -409,10 +417,15 @@ class ExecuteWorkflow(views.APIView):
 
             # 交由系统执行
             if mode == "auto":
-                # 修改工单状态为排队中
-                SqlWorkflow(id=workflow_id, status="workflow_queuing").save(
-                    update_fields=["status"]
-                )
+                # 条件更新：并发双击时只有一个请求能把工单推进到排队中
+                updated = SqlWorkflow.objects.filter(
+                    id=workflow_id,
+                    status__in=["workflow_review_pass", "workflow_timingtask"],
+                ).update(status="workflow_queuing")
+                if not updated:
+                    raise serializers.ValidationError(
+                        {"errors": "工单状态已变化，请刷新后重试"}
+                    )
                 # 删除定时执行任务
                 schedule_name = f"sqlreview-timing-{workflow_id}"
                 del_schedule(schedule_name)
@@ -437,12 +450,18 @@ class ExecuteWorkflow(views.APIView):
 
             # 线下手工执行
             elif mode == "manual":
-                # 将流程状态修改为执行结束
-                SqlWorkflow(
+                # 条件更新：仅待执行状态可确认手工结束
+                updated = SqlWorkflow.objects.filter(
                     id=workflow_id,
+                    status__in=["workflow_review_pass", "workflow_timingtask"],
+                ).update(
                     status="workflow_finish",
                     finish_time=datetime.datetime.now(),
-                ).save(update_fields=["status", "finish_time"])
+                )
+                if not updated:
+                    raise serializers.ValidationError(
+                        {"errors": "工单状态已变化，请刷新后重试"}
+                    )
                 # 增加工单日志
                 Audit.add_log(
                     audit_id=audit_id,
@@ -468,10 +487,11 @@ class ExecuteWorkflow(views.APIView):
             # 归档是删除/搬迁源表数据的破坏性操作，权限与正规触发口
             # ArchiveOnceView（ArchiveMgtPermission）对齐，且仅允许执行已审核通过的工单
             if not (
-                request.user.is_superuser
-                or request.user.has_perm("sql.archive_mgt")
+                request.user.is_superuser or request.user.has_perm("sql.archive_mgt")
             ):
-                raise serializers.ValidationError({"errors": "你无权执行当前归档工单！"})
+                raise serializers.ValidationError(
+                    {"errors": "你无权执行当前归档工单！"}
+                )
             try:
                 archive_workflow = ArchiveConfig.objects.get(id=workflow_id)
             except ArchiveConfig.DoesNotExist:
@@ -525,7 +545,9 @@ class WorkflowLogList(generics.ListAPIView):
                 apply_obj = QueryPrivilegesApply.objects.get(apply_id=workflow_id)
             except QueryPrivilegesApply.DoesNotExist:
                 return False
-            return apply_obj.user_name == user.username or apply_obj.group_id in group_ids
+            return (
+                apply_obj.user_name == user.username or apply_obj.group_id in group_ids
+            )
         return False
 
     @extend_schema(
@@ -740,7 +762,12 @@ class TimingTask(views.APIView):
         if can_timingtask(request.user, workflow_id) is False:
             raise serializers.ValidationError({"errors": "你无权操作当前工单！"})
 
-        run_date_dt = datetime.datetime.strptime(run_date, "%Y-%m-%d %H:%M")
+        try:
+            run_date_dt = datetime.datetime.strptime(run_date, "%Y-%m-%d %H:%M")
+        except (TypeError, ValueError):
+            raise serializers.ValidationError(
+                {"errors": "执行时间格式应为 YYYY-MM-DD HH:MM"}
+            )
         if on_correct_time_period(workflow_id, run_date_dt) is False:
             raise serializers.ValidationError(
                 {"errors": "不在可执行时间范围内，如果需要修改执行时间请重新提交工单!"}
@@ -748,8 +775,14 @@ class TimingTask(views.APIView):
         schedule_name = f"sqlreview-timing-{workflow_id}"
         try:
             with transaction.atomic():
-                workflow_detail.status = "workflow_timingtask"
-                workflow_detail.save()
+                updated = SqlWorkflow.objects.filter(
+                    id=workflow_id,
+                    status__in=["workflow_review_pass", "workflow_timingtask"],
+                ).update(status="workflow_timingtask")
+                if not updated:
+                    raise serializers.ValidationError(
+                        {"errors": "工单状态已变化，请刷新后重试"}
+                    )
                 add_sql_schedule(schedule_name, run_date_dt, workflow_id)
                 audit_id = Audit.detail_by_workflow_id(
                     workflow_id=workflow_id,
@@ -782,14 +815,21 @@ class AlterRunDate(views.APIView):
         run_date_end = request.data.get("run_date_end") or None
         if not workflow_id:
             raise serializers.ValidationError({"errors": "workflow_id 不能为空"})
+        try:
+            workflow_id = int(workflow_id)
+        except (TypeError, ValueError):
+            raise serializers.ValidationError({"errors": "workflow_id 不合法"})
         if Audit.can_review(request.user, workflow_id, 2) is False:
             raise serializers.ValidationError({"errors": "你无权操作当前工单！"})
         try:
-            SqlWorkflow(
-                id=workflow_id,
+            updated = SqlWorkflow.objects.filter(id=workflow_id).update(
                 run_date_start=run_date_start,
                 run_date_end=run_date_end,
-            ).save(update_fields=["run_date_start", "run_date_end"])
+            )
+            if not updated:
+                raise serializers.ValidationError({"errors": "工单不存在"})
+        except serializers.ValidationError:
+            raise
         except Exception as msg:
             raise serializers.ValidationError({"errors": str(msg)})
         return Response({"msg": "可执行时间已更新"})

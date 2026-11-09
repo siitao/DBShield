@@ -4,6 +4,7 @@ import traceback
 
 from django.contrib.auth import authenticate
 from django.contrib.auth.models import Group
+from django.db.models import F
 
 from common.config import SysConfig
 from sql.models import Users, ResourceGroup
@@ -38,10 +39,53 @@ def init_user(user):
         ]
 
 
+def check_login_locked(user, sys_config=None):
+    """检查账号是否处于登录锁定期。
+
+    返回 (locked, message)。锁定超时后会自动清零失败计数。
+    计数与阈值语义与旧 DBShieldAuth 保持一致，供 Web 登录和 API Token 共用。
+    """
+    sys_config = sys_config or SysConfig()
+    try:
+        lock_count = int(sys_config.get("lock_cnt_threshold", 5) or 5)
+        lock_time = int(sys_config.get("lock_time_threshold", 60 * 5) or 60 * 5)
+    except (TypeError, ValueError):
+        lock_count, lock_time = 5, 60 * 5
+
+    if user.failed_login_count and user.last_login_failed_at:
+        if user.failed_login_count >= lock_count:
+            now = datetime.datetime.now()
+            if user.last_login_failed_at + datetime.timedelta(seconds=lock_time) > now:
+                return True, (
+                    f"登录失败超过限制，该账号已被锁定！" f"请等候大约{lock_time}秒再试"
+                )
+            # 锁定已超时，重置失败次数
+            reset_login_failure(user)
+    return False, ""
+
+
+def record_login_failure(user):
+    """原子累加登录失败次数，避免并发爆破少计。"""
+    Users.objects.filter(pk=user.pk).update(
+        failed_login_count=F("failed_login_count") + 1,
+        last_login_failed_at=datetime.datetime.now(),
+    )
+    user.refresh_from_db(fields=["failed_login_count", "last_login_failed_at"])
+
+
+def reset_login_failure(user):
+    """登录成功后清零失败计数。"""
+    if user.failed_login_count:
+        Users.objects.filter(pk=user.pk).update(failed_login_count=0)
+        user.failed_login_count = 0
+
+
 class DBShieldAuth(object):
-    def __init__(self, request):
+    def __init__(self, request, post_data=None):
         self.request = request
         self.sys_config = SysConfig()
+        # form-encoded 请求由 request.POST 提供；JSON 请求由调用方传 post_data
+        self.post_data = post_data if post_data is not None else request.POST
 
     @staticmethod
     def challenge(username=None, password=None):
@@ -50,13 +94,12 @@ class DBShieldAuth(object):
         # 登录成功
         if user:
             # 如果登录成功, 登录失败次数重置为0
-            user.failed_login_count = 0
-            user.save()
+            reset_login_failure(user)
             return user
 
     def authenticate(self):
-        username = self.request.POST.get("username")
-        password = self.request.POST.get("password")
+        username = self.post_data.get("username")
+        password = self.post_data.get("password")
         # 确认用户是否已经存在
         try:
             user = Users.objects.get(username=username)
@@ -72,37 +115,18 @@ class DBShieldAuth(object):
                     "msg": "用户名或密码错误，请重新输入！",
                     "data": "",
                 }
-        except:
+        except Exception:
             logger.error("验证用户密码时报错")
             logger.error(traceback.format_exc())
             return {"status": 1, "msg": f"服务异常，请联系管理员处理", "data": ""}
         # 已存在用户, 验证是否在锁期间
-        # 读取配置文件
-        lock_count = int(self.sys_config.get("lock_cnt_threshold", 5))
-        lock_time = int(self.sys_config.get("lock_time_threshold", 60 * 5))
-        # 验证是否在锁, 分了几个if 防止代码太长
-        if user.failed_login_count and user.last_login_failed_at:
-            if user.failed_login_count >= lock_count:
-                now = datetime.datetime.now()
-                if (
-                    user.last_login_failed_at + datetime.timedelta(seconds=lock_time)
-                    > now
-                ):
-                    return {
-                        "status": 3,
-                        "msg": f"登录失败超过限制，该账号已被锁定！请等候大约{lock_time}秒再试",
-                        "data": "",
-                    }
-                else:
-                    # 如果锁已超时, 重置失败次数
-                    user.failed_login_count = 0
-                    user.save()
+        locked, lock_message = check_login_locked(user, self.sys_config)
+        if locked:
+            return {"status": 3, "msg": lock_message, "data": ""}
         authenticated_user = self.challenge(username=username, password=password)
         if authenticated_user:
             if not authenticated_user.last_login:
                 init_user(authenticated_user)
             return {"status": 0, "msg": "ok", "data": authenticated_user}
-        user.failed_login_count += 1
-        user.last_login_failed_at = datetime.datetime.now()
-        user.save()
+        record_login_failure(user)
         return {"status": 1, "msg": "用户名或密码错误，请重新输入！", "data": ""}

@@ -39,12 +39,13 @@ export function setUnauthorizedHandler(fn: () => void): void {
   onUnauthorized = fn;
 }
 
-// 显式探测登录态（如 /me）时，抑制自动跳转，由调用方自行处理
-let suppressAuthRedirect = false;
+// 显式探测登录态（如 /me）时，抑制自动跳转，由调用方自行处理。
+// 用计数而非布尔值：并发探测时先完成的请求不能把后完成请求的抑制状态清掉。
+let suppressAuthRedirectCount = 0;
 export function withAuthSuppressed<T>(fn: () => Promise<T>): Promise<T> {
-  suppressAuthRedirect = true;
+  suppressAuthRedirectCount += 1;
   return fn().finally(() => {
-    suppressAuthRedirect = false;
+    suppressAuthRedirectCount = Math.max(0, suppressAuthRedirectCount - 1);
   });
 }
 
@@ -58,7 +59,7 @@ service.interceptors.response.use(
     const silent = error?.config?.silent === true;
 
     if (status === 401) {
-      if (!suppressAuthRedirect) onUnauthorized?.();
+      if (suppressAuthRedirectCount === 0) onUnauthorized?.();
       return Promise.reject(error);
     }
 

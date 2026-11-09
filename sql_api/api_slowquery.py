@@ -12,6 +12,7 @@ SQL 分析 / SQL 优化 DRF APIView 集
 
 注意：慢查询相关 API 已移至 api_slowquery_v2.py
 """
+
 import hashlib
 import logging
 import re
@@ -26,7 +27,9 @@ from common.config import SysConfig
 from common.utils.extend_json_encoder import encode_json as _encode
 from common.utils.ai_gateway import OpenaiClient, check_openai_config, record_ai_usage
 from django.core.cache import cache
+from django.conf import settings
 from django.http import JsonResponse
+from django_q.tasks import async_task
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.views import APIView
 from sql.engines import get_engine
@@ -85,13 +88,21 @@ def _split_cached_report(cached):
 class SqlAnalyzePermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.sql_analyze"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.sql_analyze"))
+        )
 
 
 class SqlOptimizePermission(BasePermission):
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_sqladvisor"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_sqladvisor"))
+        )
 
 
 # ---------- helpers ----------
@@ -145,9 +156,13 @@ class SqlAnalyzeAnalyzeView(APIView):
         soar_test_dsn = ""
         if instance_name and db_name:
             try:
-                instance = _get_and_check_instance(request.user, instance_name, db_type="mysql")
+                instance = _get_and_check_instance(
+                    request.user, instance_name, db_type="mysql"
+                )
             except Instance.DoesNotExist:
-                return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！", "data": []})
+                return JsonResponse(
+                    {"status": 1, "msg": "你所在组未关联该实例！", "data": []}
+                )
             soar_test_dsn = SysConfig().get("soar_test_dsn") or ""
             user, password = instance.get_username_password()
             online_dsn = f"{user}:{password}@{instance.host}:{instance.port}/{db_name}"
@@ -164,7 +179,9 @@ class SqlAnalyzeAnalyzeView(APIView):
             try:
                 p = Path(row["sql"].strip())
                 if p.exists():
-                    return JsonResponse({"status": 1, "msg": "SQL 语句不合法", "data": []})
+                    return JsonResponse(
+                        {"status": 1, "msg": "SQL 语句不合法", "data": []}
+                    )
             except OSError:
                 pass
             args["query"] = row["sql"]
@@ -196,7 +213,9 @@ class OptimizeSqlAdvisorView(APIView):
 
         # 实例权限校验（限 mysql）
         try:
-            instance = _get_and_check_instance(request.user, instance_name, db_type="mysql")
+            instance = _get_and_check_instance(
+                request.user, instance_name, db_type="mysql"
+            )
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
@@ -243,7 +262,9 @@ class OptimizeSoarView(APIView):
 
         if instance_name and db_name:
             try:
-                instance = _get_and_check_instance(request.user, instance_name, db_type="mysql")
+                instance = _get_and_check_instance(
+                    request.user, instance_name, db_type="mysql"
+                )
             except Instance.DoesNotExist:
                 return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
             soar_test_dsn = SysConfig().get("soar_test_dsn") or ""
@@ -285,7 +306,9 @@ class OptimizeSqlTuningView(APIView):
 
         # 实例权限校验（限 mysql）
         try:
-            instance = _get_and_check_instance(request.user, instance_name, db_type="mysql")
+            instance = _get_and_check_instance(
+                request.user, instance_name, db_type="mysql"
+            )
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
@@ -315,7 +338,9 @@ class ExplainSqlView(APIView):
 
         # 实例权限校验
         try:
-            instance = _get_and_check_instance(request.user, instance_name, db_type="mysql")
+            instance = _get_and_check_instance(
+                request.user, instance_name, db_type="mysql"
+            )
         except Instance.DoesNotExist:
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
 
@@ -336,14 +361,18 @@ class ExplainSqlView(APIView):
             )
             column_list = result.column_list
             rows = result.rows
-            return JsonResponse({
-                "status": 0,
-                "msg": "success",
-                "data": {"column_list": column_list, "rows": rows}
-            })
+            return JsonResponse(
+                {
+                    "status": 0,
+                    "msg": "success",
+                    "data": {"column_list": column_list, "rows": rows},
+                }
+            )
         except Exception as e:
             logger.error(f"获取执行计划失败: {e}", exc_info=True)
-            return JsonResponse({"status": 1, "msg": "获取执行计划失败，请查看服务端日志"})
+            return JsonResponse(
+                {"status": 1, "msg": "获取执行计划失败，请查看服务端日志"}
+            )
 
 
 class OptimizeAIView(APIView):
@@ -375,7 +404,7 @@ class OptimizeAIView(APIView):
 
         # 缓存键取脱敏后的输入 + 模型名：报告由（脱敏 SQL × 模型）共同决定，
         # 切换 default_chat_model 后旧模型报告不应继续命中（与诊断缓存口径一致）
-        masked_sql = mask_sql_literals(sql_content)
+        masked_sql = mask_sql_literals(sql_content, db_type)
         model_name = SysConfig().get("default_chat_model", "gpt-3.5-turbo")
         cache_key = _ai_report_cache_key(
             "optimize", db_type, db_name or "", masked_sql, model_name
@@ -393,7 +422,9 @@ class OptimizeAIView(APIView):
                 user_name=request.user.username,
                 cache_hit=True,
             )
-            return JsonResponse({"status": 0, "msg": "success", "data": report, "steps": steps})
+            return JsonResponse(
+                {"status": 0, "msg": "success", "data": report, "steps": steps}
+            )
 
         started = time.monotonic()
         if instance and db_type in ("mysql", "mongo"):
@@ -404,7 +435,11 @@ class OptimizeAIView(APIView):
                 table_names = []
                 for table in extract_tables(sql_content):
                     tb_name = str(table.get("name", "")).strip("`").strip()
-                    if tb_name and tb_name not in table_names and re.fullmatch(r"[\w$.]+", tb_name):
+                    if (
+                        tb_name
+                        and tb_name not in table_names
+                        and re.fullmatch(r"[\w$.]+", tb_name)
+                    ):
                         table_names.append(tb_name)
             # client 由视图创建后传入：Agent 多轮的累计 token 用量记在 total_usage 上
             agent_client = OpenaiClient(scenario="sql_optimize_agent")
@@ -419,7 +454,9 @@ class OptimizeAIView(APIView):
                     client=agent_client,
                 )
                 elapsed = time.monotonic() - started
-                logger.info(f"AI 优化建议(Agent) 耗时 {elapsed:.1f}s，取证 {len(steps)} 次")
+                logger.info(
+                    f"AI 优化建议(Agent) 耗时 {elapsed:.1f}s，取证 {len(steps)} 次"
+                )
                 record_ai_usage(
                     capability="sql_optimize",
                     client=agent_client,
@@ -450,7 +487,9 @@ class OptimizeAIView(APIView):
                     status="failed",
                     error=str(e)[:500],
                 )
-                return JsonResponse({"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"})
+                return JsonResponse(
+                    {"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"}
+                )
 
         # 非 mysql：单轮模式（无 DDL 上下文，人设按实际类型）
         client = None
@@ -491,7 +530,9 @@ class OptimizeAIView(APIView):
                 status="failed",
                 error=str(e)[:500],
             )
-            return JsonResponse({"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"})
+            return JsonResponse(
+                {"status": 1, "msg": "AI 优化建议失败，请查看服务端日志"}
+            )
 
 
 # ---------- AI 优化异步任务（P2：Agent 取证后台执行，前端轮询取报告） ----------
@@ -500,13 +541,24 @@ class OptimizeAIView(APIView):
 # 300s 超时硬扛。异步模式复用慢查诊断的线程池骨架：提交即返回 task_id，
 # 前端轮询状态接口取报告。同步接口保留兼容（非 mysql 单轮模式仍同步）。
 
-_OPTIMIZE_MAX_WORKERS = 2    # 同时最多 2 个 Agent 取证执行
-_OPTIMIZE_MAX_PENDING = 4    # 允许排队数量（超过直接拒绝）
+_OPTIMIZE_MAX_WORKERS = 2  # 线程池回退模式：同时最多 2 个 Agent 取证执行
+_OPTIMIZE_MAX_PENDING = 4  # 线程池回退模式：允许排队数量（超过直接拒绝）
 _OPTIMIZE_EXECUTOR = None
 _OPTIMIZE_SLOTS = None
 _OPTIMIZE_EXECUTOR_LOCK = threading.Lock()
-# 任务 stale 判定（分钟）：Agent 预算 240s + 采集余量，10 分钟足够兜底
-_OPTIMIZE_STALE_MINUTES = 10
+# 任务 stale 判定（分钟）：pending 允许队列积压，running 覆盖 Agent 预算 + 余量
+_OPTIMIZE_STALE_PENDING_MINUTES = 30
+_OPTIMIZE_STALE_RUNNING_MINUTES = 15
+# django-q 任务级超时（秒），需大于 Agent 预算 240s + 采集
+_AI_OPTIMIZE_TASK_TIMEOUT = 600
+
+
+def _ai_task_queue_enabled():
+    """AI 任务是否走 django-q 持久队列（本地无 qcluster 时回退线程池）。"""
+    if not getattr(settings, "AI_TASK_QUEUE", True):
+        return False
+    # Q_CLUSTER_SYNC=true 时 async_task 会阻塞当前 web 请求，改用线程池
+    return not bool(settings.Q_CLUSTER.get("sync", False))
 
 
 def _get_optimize_executor():
@@ -528,35 +580,47 @@ def _mark_stale_optimize_task_failed(task):
     """将超时停留在 pending/running 的优化任务标记 failed。
 
     防止进程重启遗留的僵尸任务永久阻塞同指纹去重、前端无限轮询。
-    返回是否执行了标记。
+    pending 与 running 使用不同阈值：队列积压不应误杀，真正开始执行后才按
+    Agent 预算计时。返回是否执行了标记。
     """
-    if task.status in ("pending", "running") and task.created_at:
-        if _dt.datetime.now() - task.created_at > _dt.timedelta(
-            minutes=_OPTIMIZE_STALE_MINUTES
-        ):
-            task.status = "failed"
-            task.error = f"任务超时（{_OPTIMIZE_STALE_MINUTES} 分钟内未完成），已自动判失败"
-            task.finished_at = _dt.datetime.now()
-            task.save(update_fields=["status", "error", "finished_at"])
-            logger.warning(f"AI 优化任务 {task.id} stale，已标记 failed")
-            return True
-    return False
+    if task.status not in ("pending", "running"):
+        return False
+    now = _dt.datetime.now()
+    if task.status == "pending":
+        age_minutes = _OPTIMIZE_STALE_PENDING_MINUTES
+        since = task.created_at
+    else:
+        age_minutes = _OPTIMIZE_STALE_RUNNING_MINUTES
+        since = task.started_at or task.created_at
+    if not since or now - since <= _dt.timedelta(minutes=age_minutes):
+        return False
+    task.status = "failed"
+    task.error = f"任务超时（{age_minutes} 分钟内未完成），已自动判失败"
+    task.finished_at = now
+    task.save(update_fields=["status", "error", "finished_at"])
+    logger.warning(f"AI 优化任务 {task.id} stale，已标记 failed")
+    return True
 
 
 def run_optimize_task(task_id):
-    """执行 AI 优化任务（web 进程线程池中运行）。
+    """执行 AI 优化任务（django-q 或本地线程池中运行）。
 
     状态机: pending → running → success | failed；成功后回填 24h 报告缓存。
     """
+    from django.db import close_old_connections, connection
     from sql.models import AIOptimizeTask
 
+    # qcluster worker 长连接可能已被服务端断开；TestCase 事务中不要关闭连接
+    if not connection.in_atomic_block:
+        close_old_connections()
     try:
         task = AIOptimizeTask.objects.get(id=task_id)
     except AIOptimizeTask.DoesNotExist:
         logger.error(f"AI 优化任务 {task_id} 不存在")
         return
     task.status = "running"
-    task.save(update_fields=["status"])
+    task.started_at = _dt.datetime.now()
+    task.save(update_fields=["status", "started_at"])
     try:
         instance = task.instance
         engine = get_engine(instance=instance)
@@ -576,10 +640,17 @@ def run_optimize_task(task_id):
         task.model = client.default_chat_model
         task.status = "success"
         task.finished_at = _dt.datetime.now()
-        task.save(update_fields=[
-            "report_markdown", "steps", "prompt_tokens",
-            "completion_tokens", "model", "status", "finished_at",
-        ])
+        task.save(
+            update_fields=[
+                "report_markdown",
+                "steps",
+                "prompt_tokens",
+                "completion_tokens",
+                "model",
+                "status",
+                "finished_at",
+            ]
+        )
         # 回填 24h 报告缓存（与同步视图同键口径：脱敏SQL + 模型）
         _cache_set_quiet(
             _ai_report_cache_key(
@@ -630,16 +701,21 @@ class OptimizeAIAsyncSubmitView(APIView):
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例！"})
         db_type = instance.db_type
         if db_type not in ("mysql", "mongo"):
-            return JsonResponse({
-                "status": 1, "msg": f"{db_type} 暂不支持 AI Agent 优化，请使用同步接口",
-            })
+            return JsonResponse(
+                {
+                    "status": 1,
+                    "msg": f"{db_type} 暂不支持 AI Agent 优化，请使用同步接口",
+                }
+            )
 
-        masked_sql = mask_sql_literals(sql_content)
+        masked_sql = mask_sql_literals(sql_content, db_type)
         model_name = SysConfig().get("default_chat_model", "gpt-3.5-turbo")
 
         # 24h 报告缓存命中直接返回，不建任务
         cached = _cache_get_quiet(
-            _ai_report_cache_key("optimize", db_type, db_name or "", masked_sql, model_name)
+            _ai_report_cache_key(
+                "optimize", db_type, db_name or "", masked_sql, model_name
+            )
         )
         if cached is not None:
             report, steps = _split_cached_report(cached)
@@ -652,10 +728,13 @@ class OptimizeAIAsyncSubmitView(APIView):
                 user_name=request.user.username,
                 cache_hit=True,
             )
-            return JsonResponse({
-                "status": 0, "msg": "success",
-                "data": {"hit_cache": True, "report": report, "steps": steps},
-            })
+            return JsonResponse(
+                {
+                    "status": 0,
+                    "msg": "success",
+                    "data": {"hit_cache": True, "report": report, "steps": steps},
+                }
+            )
 
         # 表名/集合名解析在提交时做一次（脱敏不改结构，解析结果一致），任务线程直接使用
         if db_type == "mongo":
@@ -664,7 +743,11 @@ class OptimizeAIAsyncSubmitView(APIView):
             table_names = []
             for table in extract_tables(sql_content):
                 tb_name = str(table.get("name", "")).strip("`").strip()
-                if tb_name and tb_name not in table_names and re.fullmatch(r"[\w$.]+", tb_name):
+                if (
+                    tb_name
+                    and tb_name not in table_names
+                    and re.fullmatch(r"[\w$.]+", tb_name)
+                ):
                     table_names.append(tb_name)
         table_names = table_names[:AI_OPTIMIZE_MAX_TABLES]
 
@@ -676,19 +759,23 @@ class OptimizeAIAsyncSubmitView(APIView):
         from sql.models import AIOptimizeTask
 
         running_task = (
-            AIOptimizeTask.objects
-            .filter(
-                instance=instance, db_name=db_name or "", sql_hash=sql_hash,
+            AIOptimizeTask.objects.filter(
+                instance=instance,
+                db_name=db_name or "",
+                sql_hash=sql_hash,
                 status__in=["pending", "running"],
             )
             .order_by("-created_at")
             .first()
         )
         if running_task and not _mark_stale_optimize_task_failed(running_task):
-            return JsonResponse({
-                "status": 0, "msg": "已有进行中的任务",
-                "data": {"task_id": running_task.id, "reused": True},
-            })
+            return JsonResponse(
+                {
+                    "status": 0,
+                    "msg": "已有进行中的任务",
+                    "data": {"task_id": running_task.id, "reused": True},
+                }
+            )
 
         task = AIOptimizeTask.objects.create(
             user=request.user,
@@ -700,6 +787,27 @@ class OptimizeAIAsyncSubmitView(APIView):
             table_names=table_names,
             model=model_name,
         )
+
+        # 生产默认走 django-q 持久队列：web worker 重启/回收不丢任务，
+        # 前端轮询仍以 DB 状态为准。本地无 qcluster 时用线程池回退。
+        if _ai_task_queue_enabled():
+            try:
+                async_task(
+                    "sql_api.api_slowquery.run_optimize_task",
+                    task.id,
+                    timeout=_AI_OPTIMIZE_TASK_TIMEOUT,
+                    task_name=f"ai-optimize-{task.id}",
+                )
+            except Exception as e:
+                logger.error(f"提交 AI 优化任务失败: {e}", exc_info=True)
+                task.status = "failed"
+                task.error = f"提交任务失败: {e}"
+                task.finished_at = _dt.datetime.now()
+                task.save(update_fields=["status", "error", "finished_at"])
+                return JsonResponse({"status": 1, "msg": "提交 AI 优化任务失败"})
+            return JsonResponse(
+                {"status": 0, "msg": "任务已提交", "data": {"task_id": task.id}}
+            )
 
         executor, slots = _get_optimize_executor()
         if not slots.acquire(blocking=False):
@@ -719,6 +827,7 @@ class OptimizeAIAsyncSubmitView(APIView):
                 # 线程池线程不是 Django 请求线程，任务结束主动关闭 DB 连接防泄漏
                 try:
                     from django.db import connections
+
                     connections.close_all()
                 except Exception:
                     pass
@@ -733,7 +842,9 @@ class OptimizeAIAsyncSubmitView(APIView):
             task.save(update_fields=["status", "error"])
             return JsonResponse({"status": 1, "msg": "提交 AI 优化任务失败"})
 
-        return JsonResponse({"status": 0, "msg": "任务已提交", "data": {"task_id": task.id}})
+        return JsonResponse(
+            {"status": 0, "msg": "任务已提交", "data": {"task_id": task.id}}
+        )
 
 
 class OptimizeAIAsyncStatusView(APIView):
@@ -756,21 +867,23 @@ class OptimizeAIAsyncStatusView(APIView):
 
         _mark_stale_optimize_task_failed(task)
         return JsonResponse(
-            _encode({
-                "status": 0,
-                "msg": "success",
-                "data": {
-                    "task_id": task.id,
-                    "status": task.status,
-                    "error": task.error,
-                    "report": task.report_markdown,
-                    "steps": task.steps or [],
-                    "model": task.model,
-                    "prompt_tokens": task.prompt_tokens,
-                    "completion_tokens": task.completion_tokens,
-                    "created_at": task.created_at,
-                    "finished_at": task.finished_at,
-                },
-            }),
+            _encode(
+                {
+                    "status": 0,
+                    "msg": "success",
+                    "data": {
+                        "task_id": task.id,
+                        "status": task.status,
+                        "error": task.error,
+                        "report": task.report_markdown,
+                        "steps": task.steps or [],
+                        "model": task.model,
+                        "prompt_tokens": task.prompt_tokens,
+                        "completion_tokens": task.completion_tokens,
+                        "created_at": task.created_at,
+                        "finished_at": task.finished_at,
+                    },
+                }
+            ),
             safe=False,
         )

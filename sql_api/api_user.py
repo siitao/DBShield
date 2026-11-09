@@ -22,10 +22,10 @@ from django.contrib.auth import login
 from django.conf import settings
 from django.http import Http404
 from sql.models import Users, ResourceGroup, TwoFactorAuthConfig
-from common.twofa import TwoFactorAuthBase, get_authenticator
+from common.twofa import get_authenticator
 from common.config import SysConfig
 from common.utils.ding_api import get_ding_user_id
-import random
+import secrets
 import json
 import time
 
@@ -176,7 +176,9 @@ class PermissionList(views.APIView):
 
     permission_classes = [permissions.IsAuthenticated]
 
-    @extend_schema(summary="权限清单", description="返回全部权限，按 content_type 分组。")
+    @extend_schema(
+        summary="权限清单", description="返回全部权限，按 content_type 分组。"
+    )
     def get(self, request):
         perms = Permission.objects.select_related("content_type").all()
         grouped: dict = {}
@@ -228,7 +230,9 @@ class ResourceGroupList(generics.ListAPIView):
     def post(self, request):
         # 资源组属平台级配置，创建/变更仅超管（前端按钮守卫不构成安全边界）
         if not request.user.is_superuser:
-            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN
+            )
         serializer = ResourceGroupSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
@@ -270,7 +274,9 @@ class ResourceGroupDetail(views.APIView):
     )
     def put(self, request, pk):
         if not request.user.is_superuser:
-            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN
+            )
         group = self.get_object(pk)
         serializer = ResourceGroupSerializer(group, data=request.data)
         if serializer.is_valid():
@@ -281,7 +287,9 @@ class ResourceGroupDetail(views.APIView):
     @extend_schema(summary="删除资源组", description="软删除一个资源组（is_deleted=1）")
     def delete(self, request, pk):
         if not request.user.is_superuser:
-            return Response({"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN)
+            return Response(
+                {"errors": "仅超级管理员可管理资源组"}, status=status.HTTP_403_FORBIDDEN
+            )
         group = self.get_object(pk)
         # 软删除，对齐旧版语义，避免误删导致关联数据丢失
         group.is_deleted = 1
@@ -305,7 +313,8 @@ class TwoFAVerifyContext(views.APIView):
         username = request.session.get("user")
         if not username:
             return Response(
-                {"status": 1, "msg": "无 2FA 临时会话，请重新登录"}, status=status.HTTP_400_BAD_REQUEST
+                {"status": 1, "msg": "无 2FA 临时会话，请重新登录"},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         verify_mode = request.session.get("verify_mode", "verify_only")
         configs = TwoFactorAuthConfig.objects.filter(username=username)
@@ -321,7 +330,15 @@ class TwoFAVerifyContext(views.APIView):
             ).first()
             phone = sms_cfg.phone if sms_cfg else ""
         return Response(
-            {"status": 0, "msg": "ok", "data": {"verify_mode": verify_mode, "auth_types": auth_types, "phone": phone}}
+            {
+                "status": 0,
+                "msg": "ok",
+                "data": {
+                    "verify_mode": verify_mode,
+                    "auth_types": auth_types,
+                    "phone": phone,
+                },
+            }
         )
 
 
@@ -356,23 +373,47 @@ class TwoFA(views.APIView):
             return Response({"status": 1, "msg": "需先校验用户密码！"})
 
         authenticator = get_authenticator(user=user, auth_type=auth_type)
+        if authenticator is None:
+            return Response({"status": 1, "msg": "不支持的验证方式"})
         if enable == "true":
             if auth_type == "totp":
-                # 启用2fa - 先生成secret key
+                # 绑定新 TOTP 密钥必须基于已登录会话，临时 session 仅用于验证
+                if not request.user.is_authenticated:
+                    return Response(
+                        {"status": 1, "msg": "请先登录后再绑定 Google 身份验证器"}
+                    )
                 result = authenticator.generate_key()
-            elif auth_type == "sms":
-                # 启用2fa - 先发送短信验证码
-                phone = request.data["phone"]
-                otp = "{:06d}".format(random.randint(0, 999999))
+            else:
+                # SMS：已绑定时一律使用服务端保存的手机号，忽略客户端传入值，
+                # 防止仅凭密码把验证码发到攻击者手机（2FA 绕过/短信轰炸）。
+                stored = TwoFactorAuthConfig.objects.filter(
+                    user=user, auth_type="sms"
+                ).first()
+                if request.user.is_authenticated:
+                    phone = (
+                        request.data.get("phone")
+                        or (stored.phone if stored else "")
+                        or ""
+                    ).strip()
+                else:
+                    if not stored:
+                        return Response(
+                            {"status": 1, "msg": "请先登录后在用户页绑定手机号"}
+                        )
+                    phone = (stored.phone or "").strip()
+                if not phone:
+                    return Response({"status": 1, "msg": "请先绑定手机号"})
+                otp = "{:06d}".format(secrets.randbelow(1000000))
                 result = authenticator.get_captcha(phone=phone, otp=otp)
                 if result["status"] == 0:
                     r = get_redis_connection("default")
                     data = {"otp": otp, "update_time": int(time.time())}
                     r.set(f"captcha-{phone}", json.dumps(data), 300)
-            else:
-                # 启用2fa
-                result = authenticator.enable()
         else:
+            # 仅凭密码建立的临时 session 不能关闭 2FA，否则密码泄露即可解除
+            # 第二因素；关闭操作必须来自已登录（已完成 2FA）的会话。
+            if not request.user.is_authenticated:
+                return Response({"status": 1, "msg": "请先完成两步验证后再关闭2FA"})
             result = authenticator.disable(auth_type)
 
         return Response(result)
@@ -457,10 +498,9 @@ class TwoFAVerify(views.APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        engineer = request.data["engineer"]
-        otp = request.data["otp"]
-        key = request.data["key"] if "key" in request.data.keys() else None
-        phone = request.data["phone"] if "phone" in request.data.keys() else None
+        engineer = serializer.validated_data["engineer"]
+        otp = serializer.validated_data["otp"]
+        auth_type = serializer.validated_data["auth_type"]
         user = Users.objects.get(username=engineer)
         request_user = request.session.get("user")
 
@@ -474,27 +514,51 @@ class TwoFAVerify(views.APIView):
         else:
             return Response({"status": 1, "msg": "需先校验用户密码！"})
 
-        if not request.user.is_authenticated:
-            twofa_config = TwoFactorAuthConfig.objects.filter(user=user)
-            if not twofa_config:
-                if not key:
-                    return Response({"status": 1, "msg": "用户未配置2FA！"})
+        # 验证材料必须来自服务端已绑定的配置；绝不使用客户端传入的
+        # key/phone，否则攻击者可用自己的 TOTP 密钥或手机号通过校验。
+        config = TwoFactorAuthConfig.objects.filter(
+            user=user, auth_type=auth_type
+        ).first()
+        if not config:
+            return Response({"status": 1, "msg": f"用户未配置{auth_type}方式的2FA！"})
 
-        auth_type = request.data["auth_type"]
+        # 验证码尝试限流（按用户，避免轮换临时 session 绕过；Redis 不可用时降级）
+        redis_conn = None
+        attempt_key = f"2fa_verify_attempts:{user.username}"
+        try:
+            redis_conn = get_redis_connection("default")
+            attempts = redis_conn.incr(attempt_key)
+            if attempts == 1:
+                redis_conn.expire(attempt_key, 300)
+            if attempts > 10:
+                return Response({"status": 1, "msg": "验证码尝试次数过多，请稍后再试"})
+        except Exception:
+            redis_conn = None
+
         authenticator = get_authenticator(user=user, auth_type=auth_type)
-        if auth_type == "sms":
-            result = authenticator.verify(otp, phone)
-        else:
-            result = authenticator.verify(otp, key)
+        result = authenticator.verify(otp)
 
         # 校验通过后自动登录，刷新expire_date
-        if result["status"] == 0 and not request.user.is_authenticated:
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
-            request.session.set_expiry(settings.SESSION_COOKIE_AGE)
+        if result["status"] == 0:
+            if redis_conn is not None:
+                try:
+                    redis_conn.delete(attempt_key)
+                except Exception:
+                    pass
+            if not request.user.is_authenticated:
+                login(
+                    request,
+                    user,
+                    backend="django.contrib.auth.backends.ModelBackend",
+                )
+                request.session.set_expiry(settings.SESSION_COOKIE_AGE)
 
-            # 更新用户ding_user_id
-            if SysConfig().get("ding_to_person") is True and "admin" not in engineer:
-                get_ding_user_id(engineer)
+                # 更新用户ding_user_id
+                if (
+                    SysConfig().get("ding_to_person") is True
+                    and "admin" not in engineer
+                ):
+                    get_ding_user_id(engineer)
 
         return Response(result)
 

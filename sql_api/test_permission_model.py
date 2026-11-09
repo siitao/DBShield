@@ -1,4 +1,5 @@
 import pytest
+from django.contrib.auth.models import Permission
 from rest_framework.test import APIClient
 
 
@@ -23,6 +24,7 @@ def test_superuser_can_access_non_query_api(api_client, super_user):
 
 @pytest.mark.django_db
 def test_normal_user_can_access_query_api(api_client, normal_user, monkeypatch):
+    normal_user.user_permissions.add(Permission.objects.get(codename="menu_sqlquery"))
     expected = {"status": 0, "msg": "ok", "data": [{"id": 1, "instance_name": "ins"}]}
     monkeypatch.setattr(
         "sql_api.api_sqlquery.list_user_accessible_instances",

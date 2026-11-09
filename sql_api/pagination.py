@@ -16,7 +16,8 @@ class CustomizedPagination(PageNumberPagination):
     )
     page_query_param = "page"
     page_size_query_param = "size"
-    max_page_size = None
+    # 防止 size=1000000 之类请求拉爆数据库/内存；前端最大用到 200
+    max_page_size = 500
 
     def get_paginated_response(self, data):
         return Response(

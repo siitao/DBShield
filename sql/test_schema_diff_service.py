@@ -36,7 +36,14 @@ def idx(name, columns, unique=False, type="BTREE"):
     return {"name": name, "unique": unique, "type": type, "columns": columns}
 
 
-def table_def(columns, indexes=None, engine="InnoDB", collation="utf8mb4_general_ci", comment="", auto_inc=None):
+def table_def(
+    columns,
+    indexes=None,
+    engine="InnoDB",
+    collation="utf8mb4_general_ci",
+    comment="",
+    auto_inc=None,
+):
     return {
         "columns": columns,
         "indexes": {i["name"]: i for i in (indexes or [])},
@@ -70,16 +77,19 @@ def pick(items, kind=None, action=None):
     return [
         i
         for i in items
-        if (kind is None or i["kind"] == kind) and (action is None or i["action"] == action)
+        if (kind is None or i["kind"] == kind)
+        and (action is None or i["action"] == action)
     ]
 
 
 def test_column_added_generates_add_with_after():
-    src = table_def([
-        col("id", "int", position=1),
-        col("name", position=2),
-        col("memo", position=3),
-    ])
+    src = table_def(
+        [
+            col("id", "int", position=1),
+            col("name", position=2),
+            col("memo", position=3),
+        ]
+    )
     dst = table_def([col("id", "int", position=1), col("name", position=2)])
     tb = diff_one_table(src, dst)
     (item,) = pick(tb["items"], "column", "add")
@@ -89,7 +99,9 @@ def test_column_added_generates_add_with_after():
 
 
 def test_added_first_column_uses_first():
-    src = table_def([col("flag", "tinyint(1)", position=1), col("id", "int", position=2)])
+    src = table_def(
+        [col("flag", "tinyint(1)", position=1), col("id", "int", position=2)]
+    )
     dst = table_def([col("id", "int", position=1)])
     tb = diff_one_table(src, dst)
     (item,) = pick(tb["items"], "column", "add")
@@ -138,7 +150,16 @@ def test_default_clause_quoting():
 
 
 def test_on_update_extracted_from_extra():
-    src = table_def([col("updated_at", "datetime", nullable="YES", extra="on update CURRENT_TIMESTAMP")])
+    src = table_def(
+        [
+            col(
+                "updated_at",
+                "datetime",
+                nullable="YES",
+                extra="on update CURRENT_TIMESTAMP",
+            )
+        ]
+    )
     dst = table_def([col("updated_at", "datetime", nullable="YES")])
     tb = diff_one_table(src, dst)
     (item,) = pick(tb["items"], "column", "modify")
@@ -152,7 +173,10 @@ def test_index_add_drop_and_primary_danger():
     )
     dst = table_def(
         [col("id", "int"), col("name")],
-        indexes=[idx("PRIMARY", ["id"], unique=True), idx("uk_old", ["name"], unique=True)],
+        indexes=[
+            idx("PRIMARY", ["id"], unique=True),
+            idx("uk_old", ["name"], unique=True),
+        ],
     )
     tb = diff_one_table(src, dst)
     adds = pick(tb["items"], "index", "add")
@@ -161,7 +185,9 @@ def test_index_add_drop_and_primary_danger():
     assert drops[0]["patch"] == "DROP INDEX `uk_old`"
     assert drops[0]["revert"] == "ADD UNIQUE KEY `uk_old` (`name`)"
     assert drops[0]["danger"] is False
-    src_pk_only = table_def([col("id", "int")], indexes=[idx("PRIMARY", ["id"], unique=True)])
+    src_pk_only = table_def(
+        [col("id", "int")], indexes=[idx("PRIMARY", ["id"], unique=True)]
+    )
     dst_no_pk = table_def([col("id", "int")])
     tb2 = diff_one_table(src_pk_only, dst_no_pk)
     (add_pk,) = pick(tb2["items"], "index", "add")
@@ -174,11 +200,15 @@ def test_index_add_drop_and_primary_danger():
 
 
 def test_index_modified_generates_drop_then_add():
-    src = table_def([col("a", "int"), col("b", "int")], indexes=[idx("idx_ab", ["a", "b"])])
+    src = table_def(
+        [col("a", "int"), col("b", "int")], indexes=[idx("idx_ab", ["a", "b"])]
+    )
     dst = table_def([col("a", "int"), col("b", "int")], indexes=[idx("idx_ab", ["a"])])
     tb = diff_one_table(src, dst)
     (item,) = pick(tb["items"], "index", "modify")
-    assert item["patch"].startswith("DROP INDEX `idx_ab`，ADD INDEX `idx_ab` (`a`, `b`)")
+    assert item["patch"].startswith(
+        "DROP INDEX `idx_ab`，ADD INDEX `idx_ab` (`a`, `b`)"
+    )
     assert item["revert"].startswith("DROP INDEX `idx_ab`，ADD INDEX `idx_ab` (`a`)")
 
 
@@ -189,12 +219,21 @@ def test_engine_and_collation_option_diffs():
     options = {i["object"]: i for i in pick(tb["items"], "table_option")}
     assert options["ENGINE"]["patch"] == "ENGINE=InnoDB"
     assert options["ENGINE"]["revert"] == "ENGINE=MyISAM"
-    assert options["字符集"]["patch"] == "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
-    assert options["字符集"]["revert"] == "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    assert (
+        options["字符集"]["patch"]
+        == "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci"
+    )
+    assert (
+        options["字符集"]["revert"]
+        == "DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+    )
 
 
 def test_utf8mb3_alias_not_reported_as_diff():
-    src = table_def([col("name", collation="utf8_general_ci", charset="utf8")], collation="utf8_general_ci")
+    src = table_def(
+        [col("name", collation="utf8_general_ci", charset="utf8")],
+        collation="utf8_general_ci",
+    )
     dst = table_def(
         [col("name", collation="utf8mb3_general_ci", charset="utf8mb3")],
         collation="utf8mb3_general_ci",
@@ -234,7 +273,9 @@ def test_no_diff_is_same_with_empty_sql():
 
 
 def test_missing_table_reports_without_sql():
-    src = schema({"t1": table_def([col("id", "int")]), "t2": table_def([col("id", "int")])})
+    src = schema(
+        {"t1": table_def([col("id", "int")]), "t2": table_def([col("id", "int")])}
+    )
     dst = schema({"t1": table_def([col("id", "int")])})
     result = sds.diff_schemas(src, dst, {}, {})
     assert result["summary"]["missing"] == 1
@@ -259,18 +300,30 @@ def test_object_presence_diff():
 
 def test_merged_single_alter_per_table():
     src = table_def(
-        [col("id", "int", position=1), col("name", position=2), col("extra", position=3)],
+        [
+            col("id", "int", position=1),
+            col("name", position=2),
+            col("extra", position=3),
+        ],
         indexes=[idx("idx_extra", ["extra"])],
         comment="新注释",
     )
-    dst = table_def([col("id", "int", position=1), col("name", "varchar(32)", position=2)], comment="旧注释")
+    dst = table_def(
+        [col("id", "int", position=1), col("name", "varchar(32)", position=2)],
+        comment="旧注释",
+    )
     tb = diff_one_table(src, dst, sync_comments=True)
     assert tb["status"] == "diff"
     assert tb["patch_sql"].startswith("ALTER TABLE `t1` ")
     assert tb["patch_sql"].count("ALTER TABLE") == 1
     assert tb["patch_sql"].endswith(";")
     # 四类变更都在同一条语句里：加列 + 改列 + 加索引 + 表注释
-    for fragment in ("ADD COLUMN `extra`", "MODIFY COLUMN `name`", "ADD INDEX `idx_extra`", "COMMENT="):
+    for fragment in (
+        "ADD COLUMN `extra`",
+        "MODIFY COLUMN `name`",
+        "ADD INDEX `idx_extra`",
+        "COMMENT=",
+    ):
         assert fragment in tb["patch_sql"]
 
 
@@ -308,7 +361,10 @@ def test_table_diff_service_happy_path(monkeypatch):
     monkeypatch.setattr(
         sds,
         "resolve_instance_and_engine",
-        lambda user, instance_name=None, db_type=None: (SimpleNamespace(db_type="mysql"), FakeEngine()),
+        lambda user, instance_name=None, db_type=None: (
+            SimpleNamespace(db_type="mysql"),
+            FakeEngine(),
+        ),
     )
     result = sds.table_diff(
         user=SimpleNamespace(),
@@ -336,7 +392,10 @@ def test_table_diff_service_engine_error(monkeypatch):
     monkeypatch.setattr(
         sds,
         "resolve_instance_and_engine",
-        lambda user, instance_name=None, db_type=None: (SimpleNamespace(db_type="mysql"), FakeEngine()),
+        lambda user, instance_name=None, db_type=None: (
+            SimpleNamespace(db_type="mysql"),
+            FakeEngine(),
+        ),
     )
     result = sds.table_diff(
         user=SimpleNamespace(),
@@ -347,3 +406,83 @@ def test_table_diff_service_engine_error(monkeypatch):
     )
     assert result["status"] == 1
     assert "cannot connect" in result["msg"]
+
+
+def test_index_prefix_length_detected():
+    src_idx = {
+        "name": "idx_name",
+        "unique": False,
+        "type": "BTREE",
+        "columns": ["name"],
+        "parts": [
+            {"column": "name", "sub_part": 10, "collation": "A", "expression": None}
+        ],
+    }
+    dst_idx = {
+        "name": "idx_name",
+        "unique": False,
+        "type": "BTREE",
+        "columns": ["name"],
+        "parts": [
+            {"column": "name", "sub_part": None, "collation": "A", "expression": None}
+        ],
+    }
+    tb = diff_one_table(
+        table_def([col("name")], [src_idx]),
+        table_def([col("name")], [dst_idx]),
+    )
+    (item,) = pick(tb["items"], "index", "modify")
+    assert "`name`(10)" in item["patch"]
+    assert "`name`(10)" not in item["revert"]
+
+
+def test_index_descending_detected():
+    src_idx = {
+        "name": "idx_name",
+        "unique": False,
+        "type": "BTREE",
+        "columns": ["name"],
+        "parts": [
+            {"column": "name", "sub_part": None, "collation": "D", "expression": None}
+        ],
+    }
+    dst_idx = {
+        "name": "idx_name",
+        "unique": False,
+        "type": "BTREE",
+        "columns": ["name"],
+        "parts": [
+            {"column": "name", "sub_part": None, "collation": "A", "expression": None}
+        ],
+    }
+    tb = diff_one_table(
+        table_def([col("name")], [src_idx]),
+        table_def([col("name")], [dst_idx]),
+    )
+    (item,) = pick(tb["items"], "index", "modify")
+    assert "DESC" in item["patch"]
+
+
+def test_escape_string_escapes_backslash():
+    assert sds._escape_string("a\\b'c") == "'a\\\\b''c'"
+
+
+def test_index_comment_and_visibility_after_columns():
+    idx = {
+        "name": "idx_name",
+        "unique": False,
+        "type": "BTREE",
+        "columns": ["name"],
+        "comment": "索引注释",
+        "visible": False,
+    }
+    sql = sds._index_definition(idx)
+    assert "(`name`) COMMENT '索引注释' INVISIBLE" in sql
+
+
+def test_auto_increment_revert_empty_when_target_none():
+    src = table_def([col("id", "int")], auto_inc=100)
+    dst = table_def([col("id", "int")], auto_inc=None)
+    tb = diff_one_table(src, dst, sync_auto_inc=True)
+    (item,) = pick(tb["items"], "table_option", "modify")
+    assert item["revert"] == ""

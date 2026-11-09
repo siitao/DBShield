@@ -12,6 +12,7 @@ from sql.services.resource_service import (
 )
 from sql.services.sqlquery_service import execute_sql_query
 
+from .permissions import IsSqlQueryPageUser
 from .renderers import SimpleJSONRenderer
 from .serializers import (
     SqlQueryExecuteSerializer,
@@ -33,7 +34,7 @@ def _get_list_values(params, key):
 
 
 class SQLQueryInstancesView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsSqlQueryPageUser]
 
     @extend_schema(summary="SQLQuery 可访问实例列表")
     def get(self, request):
@@ -56,7 +57,7 @@ class SQLQueryInstancesView(views.APIView):
 
 
 class SQLQueryResourcesView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsSqlQueryPageUser]
 
     @extend_schema(summary="SQLQuery 实例资源列表")
     def get(self, request):
@@ -67,7 +68,7 @@ class SQLQueryResourcesView(views.APIView):
 
 
 class SQLQueryDescribeTableView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsSqlQueryPageUser]
 
     @extend_schema(summary="SQLQuery 表结构")
     def post(self, request):
@@ -78,7 +79,7 @@ class SQLQueryDescribeTableView(views.APIView):
 
 
 class SQLQueryExecuteView(views.APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [IsSqlQueryPageUser]
     renderer_classes = [SimpleJSONRenderer]
 
     @extend_schema(summary="SQLQuery 执行查询")

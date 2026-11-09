@@ -447,6 +447,35 @@ class TestMysql(SimpleTestCase):
             },
         )
 
+    def test_query_check_into_outfile(self):
+        new_engine = MysqlEngine(instance=self.ins1)
+        check_result = new_engine.query_check(
+            db_name="some_db", sql="select id from t into outfile '/tmp/x'"
+        )
+        self.assertTrue(check_result["bad_query"])
+        self.assertIn("OUTFILE", check_result["msg"])
+
+    def test_query_check_for_update(self):
+        new_engine = MysqlEngine(instance=self.ins1)
+        check_result = new_engine.query_check(
+            db_name="some_db", sql="select id from t for update"
+        )
+        self.assertTrue(check_result["bad_query"])
+        self.assertIn("加锁读取", check_result["msg"])
+
+    @patch("MySQLdb.connect")
+    def test_query_read_only_sets_transaction(self, connect):
+        cur = Mock()
+        connect.return_value.cursor = cur
+        cur.return_value.execute = Mock()
+        cur.return_value.description = (("k1", "some_other_des"),)
+        cur.return_value.fetchall.return_value = ((1,),)
+
+        new_engine = MysqlEngine(instance=self.ins1)
+        new_engine.query(sql="select 1", read_only=True)
+
+        cur.return_value.execute.assert_any_call("SET SESSION TRANSACTION READ ONLY;")
+
     def test_filter_sql_with_delimiter(self):
         new_engine = MysqlEngine(instance=self.ins1)
         sql_without_limit = "select user from usertable;"

@@ -16,6 +16,7 @@
 - 统一时间单位为毫秒（前端无需转换）
 - 统一错误处理格式
 """
+
 import datetime as _dt
 import json
 import logging
@@ -24,10 +25,12 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from common.utils.extend_json_encoder import encode_json as _encode
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Avg, Count, Max, QuerySet
 from django.db.models.functions import TruncDate
 from django.http import JsonResponse
+from django_q.tasks import async_task
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.views import APIView
 
@@ -55,10 +58,10 @@ logger = logging.getLogger("default")
 # 统一存储为毫秒，前端无需转换
 
 TIME_UNIT_MS = {
-    "mysql": 1000,      # MySQL 存储秒 -> 毫秒
-    "pgsql": 1000,      # PgSQL 存储秒 -> 毫秒
-    "mongo": 1,         # MongoDB 已经是毫秒
-    "redis": 0.001,     # Redis 存储微秒 -> 毫秒
+    "mysql": 1000,  # MySQL 存储秒 -> 毫秒
+    "pgsql": 1000,  # PgSQL 存储秒 -> 毫秒
+    "mongo": 1,  # MongoDB 已经是毫秒
+    "redis": 0.001,  # Redis 存储微秒 -> 毫秒
 }
 
 
@@ -71,7 +74,6 @@ from sql_api.response import (  # noqa: F401
     success_response,
 )
 
-
 # ---------- permissions ----------
 
 
@@ -80,7 +82,11 @@ class SlowQueryV2Permission:
 
     def has_permission(self, request, view):
         u = request.user
-        return u and u.is_authenticated and (u.is_superuser or u.has_perm("sql.menu_slowquery"))
+        return (
+            u
+            and u.is_authenticated
+            and (u.is_superuser or u.has_perm("sql.menu_slowquery"))
+        )
 
 
 # ---------- helpers ----------
@@ -108,8 +114,15 @@ def _parse_date(date_str):
             return None
 
 
-def _build_queryset(qs, start_dt=None, end_dt=None, db_name=None, search=None,
-                    search_field="fingerprint", time_field="last_seen"):
+def _build_queryset(
+    qs,
+    start_dt=None,
+    end_dt=None,
+    db_name=None,
+    search=None,
+    search_field="fingerprint",
+    time_field="last_seen",
+):
     """
     构建通用查询条件
 
@@ -158,12 +171,20 @@ SUMMARY_CONFIG = {
     "mysql": {
         "model": MySQLSlowQuerySummary,
         "fields": [
-            "sql_hash", "fingerprint", "sample_sql", "db_name",
-            "total_execution_counts", "total_execution_times",
-            "query_time_avg", "query_time_p95",
-            "parse_total_row_counts", "return_total_row_counts",
-            "parse_row_avg", "return_row_avg",
-            "first_seen", "last_seen",
+            "sql_hash",
+            "fingerprint",
+            "sample_sql",
+            "db_name",
+            "total_execution_counts",
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "parse_total_row_counts",
+            "return_total_row_counts",
+            "parse_row_avg",
+            "return_row_avg",
+            "first_seen",
+            "last_seen",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -185,12 +206,21 @@ SUMMARY_CONFIG = {
     "pgsql": {
         "model": PgSQLSlowQuerySummary,
         "fields": [
-            "sql_hash", "fingerprint", "sample_sql", "db_name", "user_name",
-            "total_execution_counts", "total_execution_times",
-            "query_time_avg", "query_time_p95",
-            "rows_sum", "rows_avg",
-            "shared_blks_hit", "shared_blks_read",
-            "first_seen", "last_seen",
+            "sql_hash",
+            "fingerprint",
+            "sample_sql",
+            "db_name",
+            "user_name",
+            "total_execution_counts",
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "rows_sum",
+            "rows_avg",
+            "shared_blks_hit",
+            "shared_blks_read",
+            "first_seen",
+            "last_seen",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -206,18 +236,32 @@ SUMMARY_CONFIG = {
             "shared_blks_hit": "SharedBlksHit",
             "shared_blks_read": "SharedBlksRead",
         },
-        "round_fields": ["total_execution_times", "query_time_avg", "query_time_p95", "rows_avg"],
+        "round_fields": [
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "rows_avg",
+        ],
         "int_fields": [],
     },
     "mongo": {
         "model": MongoSlowQuerySummary,
         "fields": [
-            "sql_hash", "fingerprint", "sample_sql", "db_name",
-            "collection_name", "operation_type",
-            "total_execution_counts", "total_execution_times",
-            "query_time_avg", "query_time_p95",
-            "docs_examined_avg", "docs_returned_avg", "has_sort",
-            "first_seen", "last_seen",
+            "sql_hash",
+            "fingerprint",
+            "sample_sql",
+            "db_name",
+            "collection_name",
+            "operation_type",
+            "total_execution_counts",
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "docs_examined_avg",
+            "docs_returned_avg",
+            "has_sort",
+            "first_seen",
+            "last_seen",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -234,18 +278,28 @@ SUMMARY_CONFIG = {
             "docs_returned_avg": "DocsReturnedAvg",
             "has_sort": "HasSort",
         },
-        "round_fields": ["total_execution_times", "query_time_avg", "query_time_p95",
-                         "docs_examined_avg", "docs_returned_avg"],
+        "round_fields": [
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "docs_examined_avg",
+            "docs_returned_avg",
+        ],
         "int_fields": [],
         "bool_fields": {"has_sort": {True: "是", False: "否"}},
     },
     "redis": {
         "model": RedisSlowQuerySummary,
         "fields": [
-            "sql_hash", "fingerprint", "sample_sql",
-            "total_execution_counts", "total_execution_times",
-            "query_time_avg", "query_time_p95",
-            "first_seen", "last_seen",
+            "sql_hash",
+            "fingerprint",
+            "sample_sql",
+            "total_execution_counts",
+            "total_execution_times",
+            "query_time_avg",
+            "query_time_p95",
+            "first_seen",
+            "last_seen",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -266,8 +320,15 @@ DETAIL_CONFIG = {
     "mysql": {
         "model": MySQLSlowQueryDetail,
         "fields": [
-            "sql_hash", "execution_start_time", "host_address", "db_name", "sql_text",
-            "query_time", "lock_time", "rows_sent", "rows_examined",
+            "sql_hash",
+            "execution_start_time",
+            "host_address",
+            "db_name",
+            "sql_text",
+            "query_time",
+            "lock_time",
+            "rows_sent",
+            "rows_examined",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -287,8 +348,16 @@ DETAIL_CONFIG = {
     "pgsql": {
         "model": PgSQLSlowQueryDetail,
         "fields": [
-            "sql_hash", "execution_start_time", "host_address", "user_name", "db_name", "sql_text",
-            "query_time", "rows_sent", "shared_blks_hit", "shared_blks_read",
+            "sql_hash",
+            "execution_start_time",
+            "host_address",
+            "user_name",
+            "db_name",
+            "sql_text",
+            "query_time",
+            "rows_sent",
+            "shared_blks_hit",
+            "shared_blks_read",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -308,9 +377,18 @@ DETAIL_CONFIG = {
     "mongo": {
         "model": MongoSlowQueryDetail,
         "fields": [
-            "sql_hash", "execution_start_time", "operation_type", "host_address",
-            "db_name", "collection_name", "command_text",
-            "duration", "docs_examined", "docs_returned", "nreturned", "has_sort",
+            "sql_hash",
+            "execution_start_time",
+            "operation_type",
+            "host_address",
+            "db_name",
+            "collection_name",
+            "command_text",
+            "duration",
+            "docs_examined",
+            "docs_returned",
+            "nreturned",
+            "has_sort",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -334,7 +412,11 @@ DETAIL_CONFIG = {
     "redis": {
         "model": RedisSlowQueryDetail,
         "fields": [
-            "sql_hash", "execution_start_time", "host_address", "command_text", "duration",
+            "sql_hash",
+            "execution_start_time",
+            "host_address",
+            "command_text",
+            "duration",
         ],
         "field_map": {
             "sql_hash": "SQLId",
@@ -367,8 +449,12 @@ def _format_rows(rows, config, db_type):
 
     # 需要进行时间单位转换的字段
     TIME_FIELDS = [
-        "total_execution_times", "query_time_avg", "query_time_p95",
-        "query_time", "lock_time", "duration",
+        "total_execution_times",
+        "query_time_avg",
+        "query_time_p95",
+        "query_time",
+        "lock_time",
+        "duration",
     ]
 
     formatted = []
@@ -379,7 +465,9 @@ def _format_rows(rows, config, db_type):
 
             # 时间单位转换
             if old_key in round_fields and old_key in TIME_FIELDS:
-                value = _round_or_zero(value * time_unit if time_unit != 1 else value, 2)
+                value = _round_or_zero(
+                    value * time_unit if time_unit != 1 else value, 2
+                )
             elif old_key in round_fields:
                 value = _round_or_zero(value, 2)
 
@@ -411,7 +499,9 @@ class SlowQuerySummaryView(APIView):
     def post(self, request):
         instance_name = request.data.get("instance_name")
         start_time = request.data.get("StartTime") or "2010-01-01"
-        end_time = request.data.get("EndTime") or _dt.datetime.now().strftime("%Y-%m-%d")
+        end_time = request.data.get("EndTime") or _dt.datetime.now().strftime(
+            "%Y-%m-%d"
+        )
         db_name = request.data.get("db_name")
         search = request.data.get("search", "")
         limit = _safe_int(request.data.get("limit"), 50)
@@ -429,15 +519,22 @@ class SlowQuerySummaryView(APIView):
 
         # 检查是否是阿里云 RDS 实例
         from sql.models import AliyunRdsConfig
-        is_aliyun_rds = AliyunRdsConfig.objects.filter(instance=instance, is_enable=True).exists()
+
+        is_aliyun_rds = AliyunRdsConfig.objects.filter(
+            instance=instance, is_enable=True
+        ).exists()
 
         try:
             # 根据数据库类型分发
             db_type = instance.db_type
             if is_aliyun_rds:
-                result = self._query_aliyun(instance, db_type, start_time, end_time, db_name, limit, offset)
+                result = self._query_aliyun(
+                    instance, db_type, start_time, end_time, db_name, limit, offset
+                )
             elif db_type in SUMMARY_CONFIG:
-                result = self._query_local(instance, db_type, start_dt, end_dt, db_name, search, limit, offset)
+                result = self._query_local(
+                    instance, db_type, start_dt, end_dt, db_name, search, limit, offset
+                )
             else:
                 return error_response(f"不支持的数据库类型: {db_type}")
 
@@ -448,41 +545,64 @@ class SlowQuerySummaryView(APIView):
             logger.error(f"获取慢查询统计失败: {e}", exc_info=True)
             return error_response("获取慢查询统计失败")
 
-    def _query_aliyun(self, instance, db_type, start_time, end_time, db_name, limit, offset):
+    def _query_aliyun(
+        self, instance, db_type, start_time, end_time, db_name, limit, offset
+    ):
         """查询阿里云 RDS 慢查询统计"""
         if db_type == "mysql":
             from sql.engines import get_engine
+
             engine = get_engine(instance=instance)
-            result = engine.slowquery_review(start_time, end_time, db_name, limit, offset)
+            result = engine.slowquery_review(
+                start_time, end_time, db_name, limit, offset
+            )
             # 阿里云MySQL统计返回的时间字段单位是秒，需要乘以1000转为毫秒
             if "rows" in result:
                 for row in result["rows"]:
                     # 阿里云返回的字段名
-                    for time_field in ["QueryTimeAvg", "QueryTimePct95", "TotalExecutionTimes",
-                                       "MySQLTotalExecutionTimes", "QueryTimes", "LockTimes"]:
+                    for time_field in [
+                        "QueryTimeAvg",
+                        "QueryTimePct95",
+                        "TotalExecutionTimes",
+                        "MySQLTotalExecutionTimes",
+                        "QueryTimes",
+                        "LockTimes",
+                    ]:
                         if time_field in row and row[time_field] is not None:
                             row[time_field] = round(float(row[time_field]) * 1000, 2)
             return result
         elif db_type == "mongo":
             from sql.engines.cloud.aliyun_mongo import AliyunMongoEngine
+
             engine = AliyunMongoEngine(instance=instance)
             return engine.slowquery_review(start_time, end_time, db_name, limit, offset)
         elif db_type == "redis":
             from sql.engines.cloud.aliyun_redis import AliyunRedisEngine
+
             engine = AliyunRedisEngine(instance=instance)
-            result = engine.slowquery_review(start_time, end_time, db_name, limit, offset)
+            result = engine.slowquery_review(
+                start_time, end_time, db_name, limit, offset
+            )
             # 阿里云Redis统计返回的时间字段单位是微秒，需要除以1000转为毫秒
             if "rows" in result:
                 for row in result["rows"]:
-                    for time_field in ["TotalExecutionTimes", "ElapsedTimeAvg", "ElapsedTimePct95",
-                                       "QueryTimeAvg", "QueryTimePct95", "DurationPct95"]:
+                    for time_field in [
+                        "TotalExecutionTimes",
+                        "ElapsedTimeAvg",
+                        "ElapsedTimePct95",
+                        "QueryTimeAvg",
+                        "QueryTimePct95",
+                        "DurationPct95",
+                    ]:
                         if time_field in row and row[time_field] is not None:
                             row[time_field] = round(float(row[time_field]) / 1000, 2)
             return result
         else:
             raise ValueError(f"阿里云不支持的数据库类型: {db_type}")
 
-    def _query_local(self, instance, db_type, start_dt, end_dt, db_name, search, limit, offset):
+    def _query_local(
+        self, instance, db_type, start_dt, end_dt, db_name, search, limit, offset
+    ):
         """查询本地数据库慢查询"""
         config = SUMMARY_CONFIG[db_type]
         model = config["model"]
@@ -496,9 +616,9 @@ class SlowQuerySummaryView(APIView):
 
         # 查询数据
         rows = list(
-            qs.order_by("-total_execution_times")
-            [offset:offset + limit]
-            .values(*config["fields"])
+            qs.order_by("-total_execution_times")[offset : offset + limit].values(
+                *config["fields"]
+            )
         )
 
         # 格式化数据
@@ -518,7 +638,9 @@ class SlowQueryDetailView(APIView):
     def post(self, request):
         instance_name = request.data.get("instance_name")
         start_time = request.data.get("StartTime") or "2010-01-01"
-        end_time = request.data.get("EndTime") or _dt.datetime.now().strftime("%Y-%m-%d")
+        end_time = request.data.get("EndTime") or _dt.datetime.now().strftime(
+            "%Y-%m-%d"
+        )
         db_name = request.data.get("db_name")
         sql_id = request.data.get("SQLId")
         search = request.data.get("search", "")
@@ -537,15 +659,37 @@ class SlowQueryDetailView(APIView):
 
         # 检查是否是阿里云 RDS 实例
         from sql.models import AliyunRdsConfig
-        is_aliyun_rds = AliyunRdsConfig.objects.filter(instance=instance, is_enable=True).exists()
+
+        is_aliyun_rds = AliyunRdsConfig.objects.filter(
+            instance=instance, is_enable=True
+        ).exists()
 
         try:
             # 根据数据库类型分发
             db_type = instance.db_type
             if is_aliyun_rds:
-                result = self._query_aliyun(instance, db_type, start_time, end_time, db_name, sql_id, limit, offset)
+                result = self._query_aliyun(
+                    instance,
+                    db_type,
+                    start_time,
+                    end_time,
+                    db_name,
+                    sql_id,
+                    limit,
+                    offset,
+                )
             elif db_type in DETAIL_CONFIG:
-                result = self._query_local(instance, db_type, start_dt, end_dt, db_name, sql_id, search, limit, offset)
+                result = self._query_local(
+                    instance,
+                    db_type,
+                    start_dt,
+                    end_dt,
+                    db_name,
+                    sql_id,
+                    search,
+                    limit,
+                    offset,
+                )
             else:
                 return error_response(f"不支持的数据库类型: {db_type}")
 
@@ -555,24 +699,36 @@ class SlowQueryDetailView(APIView):
             logger.error(f"获取慢查询明细失败: {e}", exc_info=True)
             return error_response("获取慢查询明细失败")
 
-    def _query_aliyun(self, instance, db_type, start_time, end_time, db_name, sql_id, limit, offset):
+    def _query_aliyun(
+        self, instance, db_type, start_time, end_time, db_name, sql_id, limit, offset
+    ):
         """查询阿里云 RDS 慢查询明细"""
         if db_type == "mysql":
             from sql.engines import get_engine
+
             engine = get_engine(instance=instance)
-            result = engine.slowquery_review_history(start_time, end_time, db_name, sql_id, limit, offset)
+            result = engine.slowquery_review_history(
+                start_time, end_time, db_name, sql_id, limit, offset
+            )
             # 格式化阿里云 MySQL 返回的字段
             # 注意：阿里云返回的时间单位是秒，需要乘以1000转为毫秒
             if "rows" in result:
                 result["rows"] = [
                     {
-                        "SQLId": row.get("SQLId") or row.get("SQLHASH") or row.get("SQLHash") or "",
+                        "SQLId": row.get("SQLId")
+                        or row.get("SQLHASH")
+                        or row.get("SQLHash")
+                        or "",
                         "ExecutionStartTime": row.get("ExecutionStartTime"),
                         "HostAddress": row.get("HostAddress"),
                         "DBName": row.get("DBName"),
                         "SQLText": row.get("SQLText"),
-                        "QueryTimes": round(float(row.get("QueryTimes", 0)) * 1000, 2),  # 秒 -> 毫秒
-                        "LockTimes": round(float(row.get("LockTimes", 0)) * 1000, 2),  # 秒 -> 毫秒
+                        "QueryTimes": round(
+                            float(row.get("QueryTimes", 0)) * 1000, 2
+                        ),  # 秒 -> 毫秒
+                        "LockTimes": round(
+                            float(row.get("LockTimes", 0)) * 1000, 2
+                        ),  # 秒 -> 毫秒
                         "ParseRowCounts": row.get("ParseRowCounts"),
                         "ReturnRowCounts": row.get("ReturnRowCounts"),
                     }
@@ -581,8 +737,11 @@ class SlowQueryDetailView(APIView):
             return result
         elif db_type == "mongo":
             from sql.engines.cloud.aliyun_mongo import AliyunMongoEngine
+
             engine = AliyunMongoEngine(instance=instance)
-            result = engine.slowquery_review_history(start_time, end_time, db_name, sql_id, limit, offset)
+            result = engine.slowquery_review_history(
+                start_time, end_time, db_name, sql_id, limit, offset
+            )
             # 格式化阿里云 MongoDB 返回的字段
             if "rows" in result:
                 result["rows"] = [
@@ -602,8 +761,11 @@ class SlowQueryDetailView(APIView):
             return result
         elif db_type == "redis":
             from sql.engines.cloud.aliyun_redis import AliyunRedisEngine
+
             engine = AliyunRedisEngine(instance=instance)
-            result = engine.slowquery_review_history(start_time, end_time, db_name, sql_id, limit, offset)
+            result = engine.slowquery_review_history(
+                start_time, end_time, db_name, sql_id, limit, offset
+            )
             # 格式化阿里云 Redis 返回的字段
             if "rows" in result:
                 result["rows"] = [
@@ -620,7 +782,18 @@ class SlowQueryDetailView(APIView):
         else:
             raise ValueError(f"阿里云不支持的数据库类型: {db_type}")
 
-    def _query_local(self, instance, db_type, start_dt, end_dt, db_name, sql_id, search, limit, offset):
+    def _query_local(
+        self,
+        instance,
+        db_type,
+        start_dt,
+        end_dt,
+        db_name,
+        sql_id,
+        search,
+        limit,
+        offset,
+    ):
         """查询本地数据库慢查询明细"""
         config = DETAIL_CONFIG[db_type]
         model = config["model"]
@@ -628,9 +801,15 @@ class SlowQueryDetailView(APIView):
 
         # 构建查询
         qs = model.objects.filter(instance_id=instance.id)
-        qs = _build_queryset(qs, start_dt, end_dt, db_name, search,
-                            search_field="sql_text" if db_type != "mongo" else "command_text",
-                            time_field=time_field)
+        qs = _build_queryset(
+            qs,
+            start_dt,
+            end_dt,
+            db_name,
+            search,
+            search_field="sql_text" if db_type != "mongo" else "command_text",
+            time_field=time_field,
+        )
 
         # SQL ID 过滤
         if sql_id:
@@ -641,9 +820,9 @@ class SlowQueryDetailView(APIView):
 
         # 查询数据
         rows = list(
-            qs.order_by(f"-{time_field}")
-            [offset:offset + limit]
-            .values(*config["fields"])
+            qs.order_by(f"-{time_field}")[offset : offset + limit].values(
+                *config["fields"]
+            )
         )
 
         # 格式化数据
@@ -680,13 +859,45 @@ class SlowQueryTrendView(APIView):
         try:
             db_type = instance.db_type
             if db_type == "mysql":
-                result = self._query_trend(MySQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time", db_type)
+                result = self._query_trend(
+                    MySQLSlowQueryDetail,
+                    instance,
+                    sql_hash,
+                    start_dt,
+                    end_dt,
+                    "query_time",
+                    db_type,
+                )
             elif db_type == "pgsql":
-                result = self._query_trend(PgSQLSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "query_time", db_type)
+                result = self._query_trend(
+                    PgSQLSlowQueryDetail,
+                    instance,
+                    sql_hash,
+                    start_dt,
+                    end_dt,
+                    "query_time",
+                    db_type,
+                )
             elif db_type == "mongo":
-                result = self._query_trend(MongoSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration", db_type)
+                result = self._query_trend(
+                    MongoSlowQueryDetail,
+                    instance,
+                    sql_hash,
+                    start_dt,
+                    end_dt,
+                    "duration",
+                    db_type,
+                )
             elif db_type == "redis":
-                result = self._query_trend(RedisSlowQueryDetail, instance, sql_hash, start_dt, end_dt, "duration", db_type)
+                result = self._query_trend(
+                    RedisSlowQueryDetail,
+                    instance,
+                    sql_hash,
+                    start_dt,
+                    end_dt,
+                    "duration",
+                    db_type,
+                )
             else:
                 return error_response(f"不支持的数据库类型: {db_type}")
 
@@ -696,7 +907,9 @@ class SlowQueryTrendView(APIView):
             logger.error(f"获取慢查询趋势失败: {e}", exc_info=True)
             return error_response("获取慢查询趋势失败")
 
-    def _query_trend(self, model, instance, sql_hash, start_dt, end_dt, time_field, db_type):
+    def _query_trend(
+        self, model, instance, sql_hash, start_dt, end_dt, time_field, db_type
+    ):
         """查询趋势数据（时间统一换算为毫秒，与 summary/诊断口径一致）"""
         qs = model.objects.filter(
             instance_id=instance.id,
@@ -778,18 +991,26 @@ class SlowQueryCollectView(APIView):
 DIAGNOSIS_CACHE_DAYS = 7
 
 # 诊断任务 stale 判定阈值（分钟）：超过后自动判 failed，防止前端无限轮询。
-# - running（执行中）：AI 单次 ≤60s + 采集余量，健康任务 ~2min 内收敛，5 分钟足够兜底，
-#   且能在用户轮询放弃（~370s）前收到明确 failed。
-# - pending（排队中）：线程池并发满时最长排队 4 并发+4 排队 × ~60s ≈ 8min，
-#   放宽到 12 分钟避免排队中的任务被误判失败。
+# - running（执行中）：从 started_at 起算，AI 单次 ≤60s + 采集余量，15 分钟兜底；
+# - pending（排队中）：允许 qcluster 队列积压，30 分钟兜底。
 
-# 诊断线程池：在 web 进程内用线程池直接执行诊断，不依赖 django-q 队列/worker。
-# 这样即使后台任务队列积压（qcluster worker 卡死等）也不影响诊断出报告。
-_DIAG_MAX_WORKERS = 4       # 同时最多 4 个诊断并发执行
-_DIAG_MAX_PENDING = 4       # 允许排队的数量（超过直接拒绝，前端可稍后重试）
+# 诊断线程池：仅在本地无 qcluster（AI_TASK_QUEUE=false）时作为回退；
+# 生产默认走 django-q 持久队列，web worker 重启不会丢失在途任务。
+_DIAG_MAX_WORKERS = 4  # 线程池回退模式：同时最多 4 个诊断并发执行
+_DIAG_MAX_PENDING = 4  # 线程池回退模式：允许排队的数量
 _DIAG_EXECUTOR = None
 _DIAG_SLOTS = None
 _DIAG_EXECUTOR_LOCK = threading.Lock()
+# django-q 任务级超时（秒），覆盖 AI 60s + 采集余量
+_AI_DIAG_TASK_TIMEOUT = 300
+
+
+def _ai_task_queue_enabled():
+    """AI 任务是否走 django-q 持久队列（本地无 qcluster 时回退线程池）。"""
+    if not getattr(settings, "AI_TASK_QUEUE", True):
+        return False
+    # Q_CLUSTER_SYNC=true 时 async_task 会阻塞当前 web 请求，改用线程池
+    return not bool(settings.Q_CLUSTER.get("sync", False))
 
 
 def _get_diag_executor():
@@ -798,12 +1019,16 @@ def _get_diag_executor():
     if _DIAG_EXECUTOR is None:
         with _DIAG_EXECUTOR_LOCK:
             if _DIAG_EXECUTOR is None:
-                _DIAG_SLOTS = threading.BoundedSemaphore(_DIAG_MAX_WORKERS + _DIAG_MAX_PENDING)
+                _DIAG_SLOTS = threading.BoundedSemaphore(
+                    _DIAG_MAX_WORKERS + _DIAG_MAX_PENDING
+                )
                 _DIAG_EXECUTOR = ThreadPoolExecutor(max_workers=_DIAG_MAX_WORKERS)
     return _DIAG_EXECUTOR, _DIAG_SLOTS
 
+
 # 深度诊断支持的数据库类型（有稳定 EXPLAIN）
 DEEP_DIAGNOSIS_DB_TYPES = {"mysql", "pgsql"}
+
 
 def _check_diagnosis_permission(user):
     """检查用户是否有 AI 诊断权限"""
@@ -833,8 +1058,7 @@ def _get_cached_report(instance, db_name, sql_hash, model_name=""):
 
     cutoff = _dt.datetime.now() - _dt.timedelta(days=DIAGNOSIS_CACHE_DAYS)
     task = (
-        AIDiagnosisTask.objects
-        .filter(
+        AIDiagnosisTask.objects.filter(
             instance=instance,
             db_name=db_name,
             sql_hash=sql_hash,
@@ -856,8 +1080,6 @@ def _get_cached_report(instance, db_name, sql_hash, model_name=""):
     return task, report
 
 
-
-
 def _serialize_report(report):
     """序列化诊断报告为前端可用的 dict（结构化字段即完整内容，无叙述性报告）"""
     return {
@@ -871,7 +1093,9 @@ def _serialize_report(report):
         "suggestions": report.suggestions,
         "confidence": report.confidence,
         "model": report.model,
-        "created_at": report.created_at.strftime("%Y-%m-%d %H:%M:%S") if report.created_at else "",
+        "created_at": (
+            report.created_at.strftime("%Y-%m-%d %H:%M:%S") if report.created_at else ""
+        ),
     }
 
 
@@ -883,12 +1107,13 @@ def _serialize_task(task):
         "progress": task.progress,
         "sql_hash": task.sql_hash,
         "error": task.error,
-        "created_at": task.created_at.strftime("%Y-%m-%d %H:%M:%S") if task.created_at else "",
+        "created_at": (
+            task.created_at.strftime("%Y-%m-%d %H:%M:%S") if task.created_at else ""
+        ),
     }
     if task.status == "success" and hasattr(task, "report"):
         data["report"] = _serialize_report(task.report)
     return data
-
 
 
 # 诊断采集/任务执行已下沉 sql/services/diagnosis.py（此处保留兼容引用）
@@ -942,8 +1167,7 @@ class SlowQueryDiagnoseBatchStatusView(APIView):
 
         cutoff = _dt.datetime.now() - _dt.timedelta(days=DIAGNOSIS_CACHE_DAYS)
         diagnosed = set(
-            AIDiagnosisTask.objects
-            .filter(
+            AIDiagnosisTask.objects.filter(
                 instance=instance,
                 db_name=db_name,
                 sql_hash__in=hashes,
@@ -1010,29 +1234,36 @@ class SlowQueryDiagnoseView(APIView):
                     user_name=request.user.username,
                     cache_hit=True,
                 )
-                return success_response({
-                    "task_id": cached_task.id,
-                    "hit_cache": True,
-                    "report": _serialize_report(cached_report),
-                }, "命中 7 天内缓存报告")
+                return success_response(
+                    {
+                        "task_id": cached_task.id,
+                        "hit_cache": True,
+                        "report": _serialize_report(cached_report),
+                    },
+                    "命中 7 天内缓存报告",
+                )
 
         # 进行中去重（M7）：同指纹已有 pending/running 任务时复用其 task_id，
         # 前端直接轮询该任务，避免并发双击重复建任务、重复烧 token
         running_task = (
-            AIDiagnosisTask.objects
-            .filter(
-                instance=instance, db_name=db_name, sql_hash=sql_hash,
+            AIDiagnosisTask.objects.filter(
+                instance=instance,
+                db_name=db_name,
+                sql_hash=sql_hash,
                 status__in=["pending", "running"],
             )
             .order_by("-created_at")
             .first()
         )
         if running_task:
-            return success_response({
-                "task_id": running_task.id,
-                "hit_cache": False,
-                "reused": True,
-            }, "已有进行中的诊断任务，直接复用")
+            return success_response(
+                {
+                    "task_id": running_task.id,
+                    "hit_cache": False,
+                    "reused": True,
+                },
+                "已有进行中的诊断任务，直接复用",
+            )
 
         # 创建诊断任务
         task = AIDiagnosisTask.objects.create(
@@ -1044,8 +1275,42 @@ class SlowQueryDiagnoseView(APIView):
             model=model_name,
         )
 
-        # 线程池旁路执行诊断：不依赖 django-q 队列/worker，
-        # 即使后台任务队列积压（qcluster worker 卡死等），诊断照常出报告。
+        # 审计日志（提交即记，队列/线程池两条路径一致）
+        try:
+            from sql.models import AuditEntry
+
+            AuditEntry.objects.create(
+                user_id=request.user.id,
+                user_name=request.user.username,
+                user_display=request.user.display,
+                action="slowquery.diagnose_start",
+                extra_info=f"instance={instance_name}, db={db_name}, sql_hash={sql_hash}, task_id={task.id}",
+            )
+        except Exception:
+            pass  # 审计失败不影响主流程
+
+        # 生产默认走 django-q 持久队列：web worker 重启/回收不丢任务，
+        # 前端轮询仍以 DB 状态为准。本地无 qcluster 时用线程池回退。
+        if _ai_task_queue_enabled():
+            try:
+                async_task(
+                    "sql.services.diagnosis.diagnose_slowquery_task",
+                    task.id,
+                    timeout=_AI_DIAG_TASK_TIMEOUT,
+                    task_name=f"ai-diagnosis-{task.id}",
+                )
+            except Exception as e:
+                logger.error(f"提交诊断任务失败: {e}", exc_info=True)
+                task.status = "failed"
+                task.error = f"提交诊断任务失败: {e}"
+                task.finished_at = _dt.datetime.now()
+                task.save(update_fields=["status", "error", "finished_at"])
+                return error_response("提交诊断任务失败")
+            return success_response(
+                {"task_id": task.id, "hit_cache": False}, "诊断任务已提交"
+            )
+
+        # 线程池回退：不依赖 django-q 队列/worker
         executor, slots = _get_diag_executor()
         if not slots.acquire(blocking=False):
             task.status = "failed"
@@ -1068,6 +1333,7 @@ class SlowQueryDiagnoseView(APIView):
                 # 线程池线程不是 Django 请求线程，任务结束主动关闭 DB 连接防泄漏
                 try:
                     from django.db import connections
+
                     connections.close_all()
                 except Exception:
                     pass
@@ -1082,23 +1348,9 @@ class SlowQueryDiagnoseView(APIView):
             task.save(update_fields=["status", "error"])
             return error_response("提交诊断任务失败")
 
-        # 审计日志
-        try:
-            from sql.models import AuditEntry
-            AuditEntry.objects.create(
-                user_id=request.user.id,
-                user_name=request.user.username,
-                user_display=request.user.display,
-                action="slowquery.diagnose_start",
-                extra_info=f"instance={instance_name}, db={db_name}, sql_hash={sql_hash}, task_id={task.id}",
-            )
-        except Exception:
-            pass  # 审计失败不影响主流程
-
-        return success_response({
-            "task_id": task.id,
-            "hit_cache": False,
-        }, "诊断任务已提交")
+        return success_response(
+            {"task_id": task.id, "hit_cache": False}, "诊断任务已提交"
+        )
 
     def get(self, request):
         """查询已有报告（按 instance + db + sql_hash）"""
@@ -1116,17 +1368,21 @@ class SlowQueryDiagnoseView(APIView):
 
         cached_task, cached_report = _get_cached_report(instance, db_name, sql_hash)
         if cached_task and cached_report:
-            return success_response({
-                "task_id": cached_task.id,
-                "report": _serialize_report(cached_report),
-            })
+            return success_response(
+                {
+                    "task_id": cached_task.id,
+                    "report": _serialize_report(cached_report),
+                }
+            )
 
         # 查是否有进行中的任务
         from sql.models import AIDiagnosisTask
+
         running_task = (
-            AIDiagnosisTask.objects
-            .filter(
-                instance=instance, db_name=db_name, sql_hash=sql_hash,
+            AIDiagnosisTask.objects.filter(
+                instance=instance,
+                db_name=db_name,
+                sql_hash=sql_hash,
                 status__in=["pending", "running"],
             )
             .order_by("-created_at")
@@ -1135,15 +1391,19 @@ class SlowQueryDiagnoseView(APIView):
         if running_task:
             # stale 任务自动判失败，前端直接展示失败原因而非继续轮询
             if _mark_stale_task_failed(running_task):
-                return success_response({
+                return success_response(
+                    {
+                        "task_id": running_task.id,
+                        "status": "failed",
+                        "error": running_task.error,
+                    }
+                )
+            return success_response(
+                {
                     "task_id": running_task.id,
-                    "status": "failed",
-                    "error": running_task.error,
-                })
-            return success_response({
-                "task_id": running_task.id,
-                "status": running_task.status,
-            })
+                    "status": running_task.status,
+                }
+            )
 
         return success_response(None, "未找到已有报告")
 
@@ -1166,14 +1426,20 @@ class SlowQueryDiagnoseTaskView(APIView):
 
         # 权限：超管或任务发起人或有慢查菜单权限
         u = request.user
-        if not (u.is_superuser or task.user_id == u.id or u.has_perm("sql.menu_slowquery")):
+        if not (
+            u.is_superuser or task.user_id == u.id or u.has_perm("sql.menu_slowquery")
+        ):
             return error_response("无权查看此诊断任务")
 
         # 防 IDOR：菜单权限分支还须校验任务所属实例在当前用户可访问组内，
         # 否则仅持菜单权限即可枚举读取任意资源组的诊断报告（H3，2026-08-20 审查）
         if not u.is_superuser and task.user_id != u.id:
             instance = task.instance
-            if not user_instances(u, db_type=[instance.db_type]).filter(id=instance.id).exists():
+            if (
+                not user_instances(u, db_type=[instance.db_type])
+                .filter(id=instance.id)
+                .exists()
+            ):
                 return error_response("无权查看此诊断任务")
 
         # stale 任务自动判失败（worker 未运行/任务卡住时结束轮询）
@@ -1191,13 +1457,19 @@ class SlowQueryDiagnoseFeedbackView(APIView):
         from sql.models import AIDiagnosisReport, AIDiagnosisFeedback
 
         try:
-            report = AIDiagnosisReport.objects.select_related("task__instance").get(id=report_id)
+            report = AIDiagnosisReport.objects.select_related("task__instance").get(
+                id=report_id
+            )
         except AIDiagnosisReport.DoesNotExist:
             return error_response("诊断报告不存在")
 
         # 防 IDOR：report 所属实例须在当前用户可访问组内
         instance = report.task.instance
-        if not user_instances(request.user, db_type=[instance.db_type]).filter(id=instance.id).exists():
+        if (
+            not user_instances(request.user, db_type=[instance.db_type])
+            .filter(id=instance.id)
+            .exists()
+        ):
             return error_response("无权访问该诊断报告所属实例")
 
         helpful = request.data.get("helpful", True)
@@ -1213,6 +1485,7 @@ class SlowQueryDiagnoseFeedbackView(APIView):
         # 审计
         try:
             from sql.models import AuditEntry
+
             AuditEntry.objects.create(
                 user_id=request.user.id,
                 user_name=request.user.username,
@@ -1256,14 +1529,20 @@ class SlowQueryDiagnoseWorkflowView(APIView):
             return error_response(msg)
 
         try:
-            report = AIDiagnosisReport.objects.select_related("task__instance").get(id=report_id)
+            report = AIDiagnosisReport.objects.select_related("task__instance").get(
+                id=report_id
+            )
         except AIDiagnosisReport.DoesNotExist:
             return error_response("诊断报告不存在")
 
         # 防 IDOR：校验 report 所属实例在当前用户可访问组内，
         # 防止有 use_ai_diagnosis 权限的用户枚举 report_id 取任意报告草稿
         instance = report.task.instance
-        if not user_instances(request.user, db_type=[instance.db_type]).filter(id=instance.id).exists():
+        if (
+            not user_instances(request.user, db_type=[instance.db_type])
+            .filter(id=instance.id)
+            .exists()
+        ):
             return error_response("无权访问该诊断报告所属实例")
 
         suggestions = report.suggestions or []
@@ -1279,7 +1558,9 @@ class SlowQueryDiagnoseWorkflowView(APIView):
         elif suggestion_type == "rewrite":
             workflow_sql = suggestion.get("after", "")
         else:
-            workflow_sql = suggestion.get("index_ddl", "") or suggestion.get("after", "")
+            workflow_sql = suggestion.get("index_ddl", "") or suggestion.get(
+                "after", ""
+            )
 
         if not workflow_sql:
             return error_response("该建议无可用于工单的 SQL 内容")
@@ -1287,6 +1568,7 @@ class SlowQueryDiagnoseWorkflowView(APIView):
         # 审计
         try:
             from sql.models import AuditEntry
+
             AuditEntry.objects.create(
                 user_id=request.user.id,
                 user_name=request.user.username,
@@ -1311,29 +1593,36 @@ class SlowQueryDiagnoseWorkflowView(APIView):
             from sql_api.api_workflow import WorkflowDetail
 
             has_ai = report.severity in VALID_JUDGED_LEVELS
-            review_content = [{
-                "ai_risk_level": report.severity if has_ai else None,
-                "ai_risk_score": int((report.confidence or 0) * 100) if has_ai else None,
-                "ai_ddl_lock_risk": (
-                    "high"
-                    if suggestion_type == "index_ddl" and report.severity == "high"
-                    else ""
-                ),
-            }]
+            review_content = [
+                {
+                    "ai_risk_level": report.severity if has_ai else None,
+                    "ai_risk_score": (
+                        int((report.confidence or 0) * 100) if has_ai else None
+                    ),
+                    "ai_ddl_lock_risk": (
+                        "high"
+                        if suggestion_type == "index_ddl" and report.severity == "high"
+                        else ""
+                    ),
+                }
+            ]
             ai_risk_summary = WorkflowDetail._calc_ai_risk_summary(review_content)
         except Exception as e:
             logger.warning(f"生成 AI 风险汇总失败: {e}")
 
-        return success_response({
-            "sql": workflow_sql,
-            "suggestion_type": suggestion_type,
-            "source": "ai_diagnosis",
-            "report_id": report_id,
-            "root_cause": report.root_cause,
-            "severity": report.severity,
-            "bottleneck_type": report.bottleneck_type,
-            "desc": suggestion.get("desc", ""),
-            "before": suggestion.get("before", ""),
-            "after": suggestion.get("after", ""),
-            "ai_risk_summary": ai_risk_summary,
-        }, "工单草稿已生成，请前往工单提交流程确认")
+        return success_response(
+            {
+                "sql": workflow_sql,
+                "suggestion_type": suggestion_type,
+                "source": "ai_diagnosis",
+                "report_id": report_id,
+                "root_cause": report.root_cause,
+                "severity": report.severity,
+                "bottleneck_type": report.bottleneck_type,
+                "desc": suggestion.get("desc", ""),
+                "before": suggestion.get("before", ""),
+                "after": suggestion.get("after", ""),
+                "ai_risk_summary": ai_risk_summary,
+            },
+            "工单草稿已生成，请前往工单提交流程确认",
+        )

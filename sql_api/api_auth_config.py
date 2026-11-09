@@ -28,6 +28,13 @@ logger = logging.getLogger(__name__)
 # 合法的 auth_provider 取值
 PROVIDERS = ("local", "ldap", "oidc", "dingding", "cas")
 
+# 多 worker 部署的生效说明：reload 只影响处理本次请求的 worker，
+# 其他 worker（以及 CAS 的 middleware 链）需要重启进程才能全量生效。
+MULTI_WORKER_RELOAD_HINT = (
+    "若使用 Docker/gunicorn 多 worker 部署，请重启 dbshield 服务，"
+    "确保所有 worker 生效（CAS 认证方式必须重启）。"
+)
+
 
 class LoginOptionsView(views.APIView):
     """登录页可选项（AllowAny，未登录态可访问）。
@@ -105,9 +112,7 @@ class AuthConfigView(views.APIView):
 
         params = data.get("params") or {}
         if not isinstance(params, dict):
-            return JsonResponse(
-                {"status": 1, "msg": "params 必须是对象"}, status=400
-            )
+            return JsonResponse({"status": 1, "msg": "params 必须是对象"}, status=400)
 
         try:
             sys_config = SysConfig()
@@ -120,8 +125,9 @@ class AuthConfigView(views.APIView):
         if data.get("reload"):
             ok, reload_msg = reload_auth_config()
             status = 0 if ok else 1
+            suffix = f"；{MULTI_WORKER_RELOAD_HINT}" if ok else ""
             return JsonResponse(
-                {"status": status, "msg": f"{msg}；{reload_msg}"}
+                {"status": status, "msg": f"{msg}；{reload_msg}{suffix}"}
             )
         msg += "。点击「重载认证配置」后生效。"
         return JsonResponse({"status": 0, "msg": msg})
@@ -134,10 +140,13 @@ class ReloadAuthConfigView(views.APIView):
 
     @extend_schema(
         summary="重载认证配置",
-        description="把数据库中的认证配置写回 .env 并重新加载 settings，即时生效。",
+        description="把数据库中的认证配置写回 .env 并重新加载 settings；"
+        "多 worker 部署需重启服务让全部 worker 生效。",
     )
     def post(self, request):
         ok, msg = reload_auth_config()
+        if ok:
+            msg = f"{msg}；{MULTI_WORKER_RELOAD_HINT}"
         return JsonResponse({"status": 0 if ok else 1, "msg": msg})
 
 
@@ -206,7 +215,9 @@ class TestAuthConnectionView(views.APIView):
                 conn.unbind()
             if bound:
                 return JsonResponse({"status": 0, "msg": "LDAP 连接成功（ldap3）"})
-            return JsonResponse({"status": 1, "msg": "LDAP bind 失败：凭据无效或服务拒绝"})
+            return JsonResponse(
+                {"status": 1, "msg": "LDAP bind 失败：凭据无效或服务拒绝"}
+            )
         except ImportError:
             pass  # 降级到方案 2
         except Exception as e:

@@ -848,7 +848,9 @@ class TestSpaEndpoints(APITestCase):
             dao.workflow_by_group.return_value = {"rows": [("g1", 2)]}
             dao.syntax_type.return_value = {"rows": [("DDL", 1)]}
             dao.workflow_by_user.return_value = {"rows": [("u1", 1)]}
-            dao.querylog_effect_row_by_date.return_value = {"rows": [("2026-01-01", 10)]}
+            dao.querylog_effect_row_by_date.return_value = {
+                "rows": [("2026-01-01", 10)]
+            }
             dao.querylog_count_by_date.return_value = {"rows": [("2026-01-01", 3)]}
             dao.querylog_effect_row_by_user.return_value = {"rows": [("u1", 10)]}
             dao.querylog_effect_row_by_db.return_value = {"rows": [("db1", 10)]}
@@ -860,7 +862,18 @@ class TestSpaEndpoints(APITestCase):
             )
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         body = r.json()
-        for key in ["bar1", "bar2", "bar3", "bar5", "pie1", "pie2", "pie3", "pie4", "pie5", "line1"]:
+        for key in [
+            "bar1",
+            "bar2",
+            "bar3",
+            "bar5",
+            "pie1",
+            "pie2",
+            "pie3",
+            "pie4",
+            "pie5",
+            "line1",
+        ]:
             self.assertIn(key, body)
 
     def test_dashboard_charts_bad_date(self):
@@ -879,12 +892,16 @@ class TestSpaEndpoints(APITestCase):
             dao.workflow_by_group.return_value = {"rows": [("g1", 2)]}
             dao.syntax_type.return_value = {"rows": [("DDL", 1)]}
             dao.workflow_by_user.return_value = {"rows": [("u1", 1)]}
-            dao.querylog_effect_row_by_date.return_value = {"rows": [("2026-01-01", 10)]}
+            dao.querylog_effect_row_by_date.return_value = {
+                "rows": [("2026-01-01", 10)]
+            }
             dao.querylog_count_by_date.return_value = {"rows": [("2026-01-01", 3)]}
             dao.querylog_effect_row_by_user.return_value = {"rows": [("u1", 10)]}
             dao.querylog_effect_row_by_db.return_value = {"rows": [("db1", 10)]}
             # 慢查询表不存在 → 这两个方法抛异常
-            dao.slow_query_count_by_db_by_user.side_effect = RuntimeError("Table doesn't exist")
+            dao.slow_query_count_by_db_by_user.side_effect = RuntimeError(
+                "Table doesn't exist"
+            )
             dao.slow_query_count_by_db.side_effect = RuntimeError("Table doesn't exist")
             dao.query_sql_prod_bill.return_value = {"rows": [("p1", 1)]}
             r = self.client.get(
@@ -916,7 +933,9 @@ class TestSpaEndpoints(APITestCase):
     def test_slowquery_trend_missing_sql_hash(self):
         """慢查趋势：缺 sql_hash 返回业务错误（v2 读取 sql_hash，非旧版 checksum）"""
         ins = self._make_trend_instance("trend_nohash_ins")
-        r = self.client.get(f"/api/v1/slowquery/trend/?instance_name={ins.instance_name}")
+        r = self.client.get(
+            f"/api/v1/slowquery/trend/?instance_name={ins.instance_name}"
+        )
         body = r.json()
         self.assertEqual(body["status"], 1)
         self.assertIn("sql_hash", body["msg"])
@@ -1105,14 +1124,21 @@ class TestSpaEndpoints(APITestCase):
         from sql.models import CloudAccessKey, AliyunRdsConfig
 
         ins = Instance.objects.create(
-            instance_name="rds_ins", type="master", db_type="mysql",
-            host="h", port=3306, user="u", password="p",
+            instance_name="rds_ins",
+            type="master",
+            db_type="mysql",
+            host="h",
+            port=3306,
+            user="u",
+            password="p",
         )
         # 无配置 → by_instance 404
         r = self.client.get(f"/api/v1/instance/rds/by_instance/?instance={ins.id}")
         self.assertEqual(r.status_code, 404)
         # 直接建配置（create 接口另有 test_create_aliyunrds 覆盖）
-        ak = CloudAccessKey.objects.create(type="aliyun", key_id="kid", key_secret="ksec")
+        ak = CloudAccessKey.objects.create(
+            type="aliyun", key_id="kid", key_secret="ksec"
+        )
         rds = AliyunRdsConfig.objects.create(
             rds_dbinstanceid="rm-xxx", is_enable=True, instance=ins, ak=ak
         )
@@ -1123,8 +1149,11 @@ class TestSpaEndpoints(APITestCase):
         # 更新
         up = self.client.put(
             f"/api/v1/instance/rds/{rds.id}/",
-            {"rds_dbinstanceid": "rm-yyy", "is_enable": False,
-             "ak": {"key_id": "kid2"}},
+            {
+                "rds_dbinstanceid": "rm-yyy",
+                "is_enable": False,
+                "ak": {"key_id": "kid2"},
+            },
             format="json",
         )
         self.assertEqual(up.status_code, status.HTTP_200_OK)
@@ -1322,12 +1351,24 @@ class AiRiskSummaryTest(TestCase):
     def test_counts_lock_high_risk(self):
         """汇总应统计 DDL 锁表高危（ai_ddl_lock_risk=high）的条数。"""
         rows = [
-            {"sql": "ddl1", "ai_risk_level": "high", "ai_risk_score": 85,
-             "ai_ddl_lock_risk": "high"},
-            {"sql": "ddl2", "ai_risk_level": "high", "ai_risk_score": 80,
-             "ai_ddl_lock_risk": "medium"},
-            {"sql": "dml1", "ai_risk_level": "medium", "ai_risk_score": 55,
-             "ai_ddl_lock_risk": "none"},
+            {
+                "sql": "ddl1",
+                "ai_risk_level": "high",
+                "ai_risk_score": 85,
+                "ai_ddl_lock_risk": "high",
+            },
+            {
+                "sql": "ddl2",
+                "ai_risk_level": "high",
+                "ai_risk_score": 80,
+                "ai_ddl_lock_risk": "medium",
+            },
+            {
+                "sql": "dml1",
+                "ai_risk_level": "medium",
+                "ai_risk_score": 55,
+                "ai_ddl_lock_risk": "none",
+            },
         ]
         s = self._summary(json.dumps(rows))
         self.assertEqual(s["ai_lock_high_count"], 1)
@@ -1403,15 +1444,17 @@ class ExecuteCheckAiIntegrationTest(TestCase):
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
         rs = self._make_reviewset(["alter table t add index idx_a(a)"])
         mock_client = MagicMock()
-        mock_client.review_sql_batch_by_openai.return_value = [{
-            "risk_level": "high",
-            "risk_score": 88,
-            "summary": "大表加索引将长时间锁表",
-            "suggestion": "建议走 gh-ost",
-            "ddl_lock_risk": "high",
-            "affected_rows_estimate": "约132万行",
-            "use_osc": True,
-        }]
+        mock_client.review_sql_batch_by_openai.return_value = [
+            {
+                "risk_level": "high",
+                "risk_score": 88,
+                "summary": "大表加索引将长时间锁表",
+                "suggestion": "建议走 gh-ost",
+                "ddl_lock_risk": "high",
+                "affected_rows_estimate": "约132万行",
+                "use_osc": True,
+            }
+        ]
         with patch(
             "common.utils.ai_gateway.check_openai_config", return_value=True
         ), patch(
@@ -1485,9 +1528,13 @@ class AiReviewMaskingAndUsageTest(TestCase):
         rs = self._make_reviewset(["update t set phone='13800138000' where id=999"])
         captured = {}
         valid_result = {
-            "risk_level": "low", "risk_score": 10, "summary": "ok",
-            "suggestion": "", "ddl_lock_risk": "none",
-            "affected_rows_estimate": "", "use_osc": False,
+            "risk_level": "low",
+            "risk_score": 10,
+            "summary": "ok",
+            "suggestion": "",
+            "ddl_lock_risk": "none",
+            "affected_rows_estimate": "",
+            "use_osc": False,
         }
         mock_client = MagicMock()
 
@@ -1504,7 +1551,10 @@ class AiReviewMaskingAndUsageTest(TestCase):
             "sql.utils.ai_review.extract_tables", return_value=[{"name": "t"}]
         ), patch(
             "sql.utils.ai_review._collect_context",
-            return_value=("CREATE TABLE t (c varchar(10) COMMENT '真实手机号')", "t: 约 100 行"),
+            return_value=(
+                "CREATE TABLE t (c varchar(10) COMMENT '真实手机号')",
+                "t: 约 100 行",
+            ),
         ):
             engine._ai_review_check(rs, "test", user_name="alice")
         # SQL 字面量不外发：字符串→'?'，数字→0
@@ -1577,9 +1627,13 @@ class AiReviewCacheTest(TestCase):
         engine = self._make_engine()
         engine.config.get = lambda k, d=False: True if k == "ai_review_enabled" else d
         review_result = {
-            "risk_level": "high", "risk_score": 88, "summary": "大表加索引将长时间锁表",
-            "suggestion": "建议走 gh-ost", "ddl_lock_risk": "high",
-            "affected_rows_estimate": "约132万行", "use_osc": True,
+            "risk_level": "high",
+            "risk_score": 88,
+            "summary": "大表加索引将长时间锁表",
+            "suggestion": "建议走 gh-ost",
+            "ddl_lock_risk": "high",
+            "affected_rows_estimate": "约132万行",
+            "use_osc": True,
         }
         mock_client = MagicMock()
         mock_client.review_sql_batch_by_openai.return_value = [dict(review_result)]
@@ -1623,14 +1677,26 @@ class AiUsageApiTest(APITestCase):
         self.normal_user.set_password("test_password")
         self.normal_user.save()
         AIUsageLog.objects.create(
-            capability="sql_review", model="m1", db_type="mysql",
-            instance_name="ins1", db_name="db1", user_name="alice",
-            prompt_tokens=100, completion_tokens=20, latency_ms=1500,
+            capability="sql_review",
+            model="m1",
+            db_type="mysql",
+            instance_name="ins1",
+            db_name="db1",
+            user_name="alice",
+            prompt_tokens=100,
+            completion_tokens=20,
+            latency_ms=1500,
         )
         AIUsageLog.objects.create(
-            capability="sql_optimize", model="m1", db_type="mysql",
-            instance_name="ins1", db_name="db1", user_name="bob",
-            prompt_tokens=50, completion_tokens=10, latency_ms=2500,
+            capability="sql_optimize",
+            model="m1",
+            db_type="mysql",
+            instance_name="ins1",
+            db_name="db1",
+            user_name="bob",
+            prompt_tokens=50,
+            completion_tokens=10,
+            latency_ms=2500,
             cache_hit=True,
         )
 
@@ -1650,9 +1716,7 @@ class AiUsageApiTest(APITestCase):
 
     def test_list_filter(self):
         self.client.force_login(self.superuser)
-        resp = self.client.get(
-            "/api/v1/ai_usage/list/", {"capability": "sql_review"}
-        )
+        resp = self.client.get("/api/v1/ai_usage/list/", {"capability": "sql_review"})
         data = resp.json()
         self.assertEqual(data["total"], 1)
         self.assertEqual(data["rows"][0]["user_name"], "alice")
@@ -1666,7 +1730,8 @@ class AiUsageApiTest(APITestCase):
 
 
 @override_settings(
-    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}},
+    AI_TASK_QUEUE=False,
 )
 class OptimizeAIAsyncTest(APITestCase):
     """AI 优化异步任务：提交/轮询/缓存回填/去重/越权防护"""
@@ -1694,8 +1759,13 @@ class OptimizeAIAsyncTest(APITestCase):
         )
         res_group = ResourceGroup.objects.create(group_name="async_g1")
         self.ins = Instance.objects.create(
-            instance_name="async_ins", type="master", db_type="mysql",
-            host="some_host", port=3306, user="ins_user", password="some_str",
+            instance_name="async_ins",
+            type="master",
+            db_type="mysql",
+            host="some_host",
+            port=3306,
+            user="ins_user",
+            password="some_str",
         )
         self.ins.resource_group.add(res_group)
         self.superuser.resource_group.add(res_group)
@@ -1708,25 +1778,31 @@ class OptimizeAIAsyncTest(APITestCase):
         return client
 
     def _patch_ai(self, mock_client, executor):
-        return patch(
-            "sql_api.api_slowquery.check_openai_config", return_value=True
-        ), patch(
-            "sql_api.api_slowquery.SysConfig"
-        ), patch(
-            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client
-        ), patch(
-            "sql_api.api_slowquery.run_agent_optimize",
-            return_value=("# 优化报告", [{"tool": "get_table_ddl", "args": {}, "ok": True, "elapsed": 0.1}]),
-        ), patch(
-            "sql_api.api_slowquery._get_optimize_executor", return_value=executor
+        return (
+            patch("sql_api.api_slowquery.check_openai_config", return_value=True),
+            patch("sql_api.api_slowquery.SysConfig"),
+            patch("sql_api.api_slowquery.OpenaiClient", return_value=mock_client),
+            patch(
+                "sql_api.api_slowquery.run_agent_optimize",
+                return_value=(
+                    "# 优化报告",
+                    [{"tool": "get_table_ddl", "args": {}, "ok": True, "elapsed": 0.1}],
+                ),
+            ),
+            patch(
+                "sql_api.api_slowquery._get_optimize_executor", return_value=executor
+            ),
         )
 
     def _post_submit(self):
-        return self.client.post("/api/v1/optimize/ai/async/", {
-            "instance_name": "async_ins",
-            "db_name": "db1",
-            "sql_content": "select * from t1 where id = 1",
-        })
+        return self.client.post(
+            "/api/v1/optimize/ai/async/",
+            {
+                "instance_name": "async_ins",
+                "db_name": "db1",
+                "sql_content": "select * from t1 where id = 1",
+            },
+        )
 
     def test_submit_run_poll_and_cache_backfill(self):
         """提交 → 同步执行任务体 → 轮询取报告；重复提交命中回填缓存。
@@ -1784,6 +1860,35 @@ class OptimizeAIAsyncTest(APITestCase):
         self.assertTrue(logs[1].cache_hit)
         self.assertEqual(logs[1].prompt_tokens, 0)
 
+    @override_settings(AI_TASK_QUEUE=True)
+    def test_submit_enqueues_django_q_task(self):
+        """生产队列模式：提交写入 django-q，而不是进程内线程池。"""
+        import threading
+        from sql.models import AIOptimizeTask
+
+        class NonRunningExecutor:
+            def submit(self, fn):
+                pass
+
+        mock_client = self._mock_client()
+        p1, p2, p3, p4, p5 = self._patch_ai(
+            mock_client, (NonRunningExecutor(), threading.Semaphore(99))
+        )
+        self.client.force_login(self.superuser)
+        with p1, p2 as mock_cfg, p3, p4, p5, patch(
+            "sql_api.api_slowquery.async_task"
+        ) as mock_async:
+            mock_cfg.return_value.get.return_value = "model-a"
+            resp = self._post_submit()
+            task_id = resp.json()["data"]["task_id"]
+            mock_async.assert_called_once()
+            self.assertEqual(
+                mock_async.call_args.args[0],
+                "sql_api.api_slowquery.run_optimize_task",
+            )
+            self.assertEqual(mock_async.call_args.args[1], task_id)
+            self.assertEqual(AIOptimizeTask.objects.get(id=task_id).status, "pending")
+
     def test_submit_dedupes_running_task(self):
         """已有 pending/running 同指纹任务时复用 task_id，不重复建任务。"""
         import threading
@@ -1798,7 +1903,9 @@ class OptimizeAIAsyncTest(APITestCase):
 
         mock_client = self._mock_client()
         executor = NonRunningExecutor()
-        p1, p2, p3, p4, p5 = self._patch_ai(mock_client, (executor, threading.Semaphore(99)))
+        p1, p2, p3, p4, p5 = self._patch_ai(
+            mock_client, (executor, threading.Semaphore(99))
+        )
         self.client.force_login(self.superuser)
         with p1, p2 as mock_cfg, p3, p4, p5:
             mock_cfg.return_value.get.return_value = "model-a"
@@ -1865,10 +1972,9 @@ class OptimizeAIViewTest(APITestCase):
         mock_client_cls.return_value.optimize_sql_by_openai.return_value = "mock report"
         with patch(
             "sql_api.api_slowquery.check_openai_config", return_value=True
-        ), patch(
-            "sql_api.api_slowquery.SysConfig"
-        ) as mock_cfg, patch(
-            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client_cls.return_value
+        ), patch("sql_api.api_slowquery.SysConfig") as mock_cfg, patch(
+            "sql_api.api_slowquery.OpenaiClient",
+            return_value=mock_client_cls.return_value,
         ):
             mock_cfg.return_value.get.return_value = "model-a"
             resp1 = self._post()
@@ -1890,10 +1996,9 @@ class OptimizeAIViewTest(APITestCase):
         mock_client_cls.return_value.optimize_sql_by_openai.return_value = "mock report"
         with patch(
             "sql_api.api_slowquery.check_openai_config", return_value=True
-        ), patch(
-            "sql_api.api_slowquery.SysConfig"
-        ) as mock_cfg, patch(
-            "sql_api.api_slowquery.OpenaiClient", return_value=mock_client_cls.return_value
+        ), patch("sql_api.api_slowquery.SysConfig") as mock_cfg, patch(
+            "sql_api.api_slowquery.OpenaiClient",
+            return_value=mock_client_cls.return_value,
         ):
             mock_cfg.return_value.get.return_value = "model-a"
             self._post()
@@ -1903,7 +2008,9 @@ class OptimizeAIViewTest(APITestCase):
             self.assertEqual(
                 mock_client_cls.return_value.optimize_sql_by_openai.call_count, 2
             )
-        self.assertEqual(AIUsageLog.objects.filter(capability="sql_optimize").count(), 2)
+        self.assertEqual(
+            AIUsageLog.objects.filter(capability="sql_optimize").count(), 2
+        )
 
 
 class RunAgentOptimizeTest(TestCase):
@@ -1986,10 +2093,12 @@ class RunAgentOptimizeTest(TestCase):
         from sql_api.ai_optimizer import run_agent_optimize
 
         engine, queries = self._fake_engine()
-        client = self._fake_client([
-            self._tool_call_resp("get_table_ddl", '{"table": "t1"}'),
-            self._content_resp("# 优化报告"),
-        ])
+        client = self._fake_client(
+            [
+                self._tool_call_resp("get_table_ddl", '{"table": "t1"}'),
+                self._content_resp("# 优化报告"),
+            ]
+        )
         report, steps = run_agent_optimize(
             engine, "db1", "select * from t1 where id = 1", ["t1"], client=client
         )
@@ -2005,7 +2114,9 @@ class RunAgentOptimizeTest(TestCase):
 
         engine, _ = self._fake_engine()
         responses = [
-            self._tool_call_resp("get_table_indexes", '{"table": "t1"}', call_id=f"c{i}")
+            self._tool_call_resp(
+                "get_table_indexes", '{"table": "t1"}', call_id=f"c{i}"
+            )
             for i in range(AGENT_MAX_ROUNDS)
         ]
         responses.append(self._content_resp("收敛报告"))
@@ -2026,12 +2137,21 @@ class DiagnoseUsageRecordTest(TestCase):
 
         user = User.objects.create(username="diag_user", is_active=True)
         ins = Instance.objects.create(
-            instance_name="diag_ins", type="master", db_type="mysql",
-            host="some_host", port=3306, user="ins_user", password="some_str",
+            instance_name="diag_ins",
+            type="master",
+            db_type="mysql",
+            host="some_host",
+            port=3306,
+            user="ins_user",
+            password="some_str",
         )
         task = AIDiagnosisTask.objects.create(
-            user=user, instance=ins, db_name="db1", sql_hash="hash1",
-            status="pending", model="m",
+            user=user,
+            instance=ins,
+            db_name="db1",
+            sql_hash="hash1",
+            status="pending",
+            model="m",
         )
         with patch(
             "sql.services.diagnosis._collect_stats",
@@ -2048,10 +2168,14 @@ class DiagnoseUsageRecordTest(TestCase):
             mock_client = mock_client_cls.return_value
             mock_client.default_chat_model = "test-model"
             mock_client.diagnose_slowquery_by_openai.return_value = {
-                "root_cause": "缺索引", "severity": "high",
-                "bottleneck_type": "missing_index", "evidence": [],
-                "suggestions": [], "confidence": 0.8,
-                "_prompt_tokens": 100, "_completion_tokens": 20,
+                "root_cause": "缺索引",
+                "severity": "high",
+                "bottleneck_type": "missing_index",
+                "evidence": [],
+                "suggestions": [],
+                "confidence": 0.8,
+                "_prompt_tokens": 100,
+                "_completion_tokens": 20,
             }
             diagnose_slowquery_task(task.id)
         task.refresh_from_db()
@@ -2111,7 +2235,9 @@ class OptimizeToolsViewTest(APITestCase):
         self.sys_config.set("sqladvisor", "/opt/dbshield/src/plugins/sqladvisor")
         self.sys_config.get_all_config()
         r = self.client.post("/api/v1/optimize/sqladvisor/", base_data)
-        self.assertEqual(r.json(), {"status": 0, "msg": "success", "data": "some_stdout"})
+        self.assertEqual(
+            r.json(), {"status": 0, "msg": "success", "data": "some_stdout"}
+        )
 
         # db_name 注入 → check_args 拦截
         for evil_db in ("--help", ";drop table"):
@@ -2130,7 +2256,9 @@ class OptimizeToolsViewTest(APITestCase):
             "option": ["sys_parm", "sql_plan"],
         }
         with patch("sql_api.api_slowquery.SqlTuning") as mock_tuning_cls:
-            mock_tuning_cls.return_value.tuning.return_value = {"sqltext": "select * from t"}
+            mock_tuning_cls.return_value.tuning.return_value = {
+                "sqltext": "select * from t"
+            }
             r = self.client.post("/api/v1/optimize/sqltuning/", data, format="json")
         self.assertEqual(r.json()["status"], 0)
         mock_tuning_cls.assert_called_once_with(

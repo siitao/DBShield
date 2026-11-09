@@ -28,33 +28,33 @@ logger = logging.getLogger("default")
 
 # —— stale 任务回收 ——
 
-DIAGNOSIS_STALE_RUNNING_MINUTES = 5
-DIAGNOSIS_STALE_PENDING_MINUTES = 12
+DIAGNOSIS_STALE_RUNNING_MINUTES = 15
+DIAGNOSIS_STALE_PENDING_MINUTES = 30
+
 
 def _mark_stale_task_failed(task):
     """将长时间停留在 pending/running 的任务标记为 failed。
 
-    场景：web 进程线程池异常、或任务执行被环境卡住（如 AI 无响应）。
+    场景：进程重启、任务执行被环境卡住（如 AI 无响应）。
     判定后前端轮询会收到 failed 并停止，避免无限请求。
-    pending（排队中）与 running（执行中）阈值不同，见常量注释。
+    pending 使用更长阈值（允许 qcluster 队列积压）；running 从 started_at 起算。
     """
-    if task.status in ("pending", "running") and task.created_at:
-        stale_minutes = (
-            DIAGNOSIS_STALE_RUNNING_MINUTES
-            if task.status == "running"
-            else DIAGNOSIS_STALE_PENDING_MINUTES
-        )
-        elapsed = _dt.datetime.now() - task.created_at
-        if elapsed.total_seconds() > stale_minutes * 60:
-            task.status = "failed"
-            task.error = (
-                f"诊断任务超时（{stale_minutes} 分钟内未完成），"
-                "请稍后重新触发诊断"
-            )
-            task.finished_at = _dt.datetime.now()
-            task.save(update_fields=["status", "error", "finished_at"])
-            return True
-    return False
+    if task.status not in ("pending", "running"):
+        return False
+    now = _dt.datetime.now()
+    if task.status == "running":
+        stale_minutes = DIAGNOSIS_STALE_RUNNING_MINUTES
+        since = task.started_at or task.created_at
+    else:
+        stale_minutes = DIAGNOSIS_STALE_PENDING_MINUTES
+        since = task.created_at
+    if not since or now - since <= _dt.timedelta(minutes=stale_minutes):
+        return False
+    task.status = "failed"
+    task.error = f"诊断任务超时（{stale_minutes} 分钟内未完成），请稍后重新触发诊断"
+    task.finished_at = now
+    task.save(update_fields=["status", "error", "finished_at"])
+    return True
 
 
 def cleanup_stale_diagnosis_tasks():
@@ -67,15 +67,14 @@ def cleanup_stale_diagnosis_tasks():
     from sql.models import AIDiagnosisTask
 
     marked = 0
-    for task in (
-        AIDiagnosisTask.objects
-        .filter(status__in=["pending", "running"])
-        .iterator()
-    ):
+    for task in AIDiagnosisTask.objects.filter(
+        status__in=["pending", "running"]
+    ).iterator():
         if _mark_stale_task_failed(task):
             marked += 1
     if marked:
         logger.info(f"诊断 stale 任务清理完成，标记 failed: {marked} 个")
+
 
 # —— 深度诊断范围与模型映射 ——
 
@@ -102,9 +101,9 @@ _DETAIL_MODEL_MAP = {
 
 # 诊断上下文统一时间单位：一律换算为毫秒，避免误导 AI 严重度判断
 _DIAG_TIME_UNIT = {
-    "mysql": 1000,   # 秒 -> 毫秒
-    "pgsql": 1000,   # 秒 -> 毫秒
-    "mongo": 1,      # 已是毫秒
+    "mysql": 1000,  # 秒 -> 毫秒
+    "pgsql": 1000,  # 秒 -> 毫秒
+    "mongo": 1,  # 已是毫秒
     "redis": 0.001,  # 微秒 -> 毫秒
 }
 
@@ -241,9 +240,9 @@ def _collect_aliyun_stats(instance, db_type, sql_hash, db_name=""):
         # 阿里云 MongoDB 的 DescribeSlowLogs 只接受 ≤7 天查询窗口（实测 8 天即
         # 报 InvalidParam）；MySQL 的 DescribeSlowLogs 可用 30 天
         window_days = 7 if db_type == "mongo" else 30
-        start_time = (
-            _dt.datetime.now() - _dt.timedelta(days=window_days)
-        ).strftime("%Y-%m-%d")
+        start_time = (_dt.datetime.now() - _dt.timedelta(days=window_days)).strftime(
+            "%Y-%m-%d"
+        )
         page_size = 100
         # DescribeSlowLogs 按 SQLHASH 去重分页，慢 SQL 统计通常几十~几百条，
         # 最多拉 10 页（1000 条）足够，避免极端情况下多次往返云端接口
@@ -272,17 +271,20 @@ def _collect_stats(instance, db_type, sql_hash, db_name=""):
     model = _SUMMARY_MODEL_MAP.get(db_type)
     if not model:
         return {}
-    summary = model.objects.filter(
-        instance_id=instance.id, sql_hash=sql_hash
-    ).first()
+    summary = model.objects.filter(instance_id=instance.id, sql_hash=sql_hash).first()
     if not summary:
         return {}
     time_unit = _DIAG_TIME_UNIT.get(db_type, 1)
     stats = {}
     for field in [
-        "query_time_p95", "query_time_avg", "total_execution_counts",
-        "total_execution_times", "parse_total_row_counts",
-        "return_total_row_counts", "parse_row_avg", "return_row_avg",
+        "query_time_p95",
+        "query_time_avg",
+        "total_execution_counts",
+        "total_execution_times",
+        "parse_total_row_counts",
+        "return_total_row_counts",
+        "parse_row_avg",
+        "return_row_avg",
     ]:
         val = getattr(summary, field, None)
         if val is not None:
@@ -306,7 +308,9 @@ def _collect_stats(instance, db_type, sql_hash, db_name=""):
         # 避免严重度规则把缺失数据当"极快"误判
         if not stats.get("query_time_p95"):
             stats["query_time_p95"] = stats.get("query_time_avg", 0)
-    stats["sample_sql"] = getattr(summary, "sample_sql", "") or getattr(summary, "fingerprint", "")
+    stats["sample_sql"] = getattr(summary, "sample_sql", "") or getattr(
+        summary, "fingerprint", ""
+    )
     stats["fingerprint"] = getattr(summary, "fingerprint", "")
     stats["db_name"] = getattr(summary, "db_name", "") or ""
     return stats
@@ -347,9 +351,7 @@ def _collect_trend(instance, db_type, sql_hash, days=14):
         d = item["date"].strftime("%Y-%m-%d") if item["date"] else "N/A"
         avg_ms = round((item["avg_time"] or 0) * time_unit, 1)
         max_ms = round((item["max_time"] or 0) * time_unit, 1)
-        lines.append(
-            f"  {d}: 执行{item['count']}次, 平均{avg_ms}ms, 最大{max_ms}ms"
-        )
+        lines.append(f"  {d}: 执行{item['count']}次, 平均{avg_ms}ms, 最大{max_ms}ms")
     summary_text = f"近 {days} 天趋势:\n" + "\n".join(lines)
 
     # 判断是否近期恶化（毫秒基准：平均耗时 3 倍以上且 > 500ms 视为恶化）
@@ -415,7 +417,11 @@ def _collect_pgsql_ddl(engine, db_name, table):
     col_defs = []
     for row in col_result.rows:
         name, dtype, char_len, nullable, default = (
-            str(row[0]), str(row[1]), row[2], str(row[3]), row[4]
+            str(row[0]),
+            str(row[1]),
+            row[2],
+            str(row[3]),
+            row[4],
         )
         col_def = f'  "{name}" {dtype}'
         if char_len and dtype in ("character varying", "character"):
@@ -532,6 +538,7 @@ def _collect_table_schemas(instance, db_type, db_name, sql_text, collection_name
         return "（未从 SQL 中识别到表名）"
     try:
         from sql.engines import get_engine
+
         engine = get_engine(instance=instance)
         schemas = []
         for table in table_names:
@@ -563,8 +570,7 @@ def _collect_mongo_plan_summary(instance, sql_hash):
     采集期记录了 planSummary，形如 "IXSCAN { status: 1 }, FETCH" / "COLLSCAN"。
     """
     detail = (
-        MongoSlowQueryDetail.objects
-        .filter(instance_id=instance.id, sql_hash=sql_hash)
+        MongoSlowQueryDetail.objects.filter(instance_id=instance.id, sql_hash=sql_hash)
         .exclude(plan_summary__isnull=True)
         .exclude(plan_summary="")
         .order_by("-execution_start_time")
@@ -585,6 +591,7 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
         return "（无 SQL 文本，无法执行 EXPLAIN）"
     try:
         from sql.engines import get_engine
+
         engine = get_engine(instance=instance)
         # 安全红线（H4）：统一走 sanitize_explain_sql 公共闸门——
         # 截首句、剥注释、SELECT/WITH 白名单、拒 INTO OUTFILE/DUMPFILE
@@ -600,9 +607,7 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
             first_sql = re.sub(r"%s", "1", first_sql)
         # max_execution_time=30000：兜底病态优化器/超复杂查询的规划耗时
         # （MySQL set session max_execution_time=30000ms；PgSQL SET statement_timeout TO 30000ms）
-        result = engine.query(
-            db_name, f"EXPLAIN {first_sql}", max_execution_time=30000
-        )
+        result = engine.query(db_name, f"EXPLAIN {first_sql}", max_execution_time=30000)
         # 引擎把异常吞进 ResultSet.error，直接看 rows 会把失败误报成"无结果"
         if result.error:
             return f"（EXPLAIN 执行失败：{result.error}）"
@@ -615,7 +620,15 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
         # PgSQL EXPLAIN 输出为文本
         if db_type == "mysql":
             key_indices = {}
-            for key_field in ["id", "select_type", "table", "type", "key", "rows", "extra"]:
+            for key_field in [
+                "id",
+                "select_type",
+                "table",
+                "type",
+                "key",
+                "rows",
+                "extra",
+            ]:
                 for i, c in enumerate(col_lower):
                     if c == key_field or c.endswith(key_field):
                         key_indices[key_field] = i
@@ -648,25 +661,35 @@ def _collect_explain(instance, db_type, db_name, sql_text, sql_hash=""):
 
 
 def diagnose_slowquery_task(task_id):
-    """执行 AI 慢查诊断任务（在 web 进程线程池中运行，不依赖 django-q）。
+    """执行 AI 慢查诊断任务（django-q 或本地线程池中运行）。
 
     通过 task_id 关联 AIDiagnosisTask 记录。
     状态机: pending → running → success | failed
     """
     import datetime as _dt_mod
+
+    from django.db import close_old_connections, connection
     from sql.models import AIDiagnosisTask, AIDiagnosisReport
-    from common.utils.ai_gateway import OpenaiClient, DIAGNOSIS_FALLBACK, record_ai_usage
+    from common.utils.ai_gateway import (
+        OpenaiClient,
+        DIAGNOSIS_FALLBACK,
+        record_ai_usage,
+    )
     from common.config import SysConfig
 
+    # qcluster worker 长连接可能已被服务端断开；TestCase 事务中不要关闭连接
+    if not connection.in_atomic_block:
+        close_old_connections()
     try:
         task = AIDiagnosisTask.objects.get(id=task_id)
     except AIDiagnosisTask.DoesNotExist:
         logger.error(f"诊断任务 {task_id} 不存在")
         return
 
-    # 标记为运行中
+    # 标记为运行中（started_at 用于 stale 判定，避免队列积压被误杀）
     task.status = "running"
-    task.save(update_fields=["status"])
+    task.started_at = _dt_mod.datetime.now()
+    task.save(update_fields=["status", "started_at"])
 
     def _set_progress(progress):
         """上报阶段进度（collecting_stats/trend/ddl/explain/analyzing/saving），供前端展示"""
@@ -683,7 +706,9 @@ def diagnose_slowquery_task(task_id):
 
         # 1. 采集上下文（统计/趋势/表结构/执行计划），每步完成后上报进度
         _set_progress("collecting")
-        logger.info(f"[诊断 {task_id}] 开始采集上下文: instance={instance.instance_name}, db={db_name}, hash={sql_hash}")
+        logger.info(
+            f"[诊断 {task_id}] 开始采集上下文: instance={instance.instance_name}, db={db_name}, hash={sql_hash}"
+        )
 
         stats = _collect_stats(instance, db_type, sql_hash, db_name)
         sample_sql = stats.get("sample_sql", "") or stats.get("fingerprint", "")
@@ -697,7 +722,10 @@ def diagnose_slowquery_task(task_id):
         _set_progress("collecting_ddl")
         # 非深度支持类型也尝试采集（会返回提示文本）
         table_schemas = _collect_table_schemas(
-            instance, db_type, db_name, sample_sql,
+            instance,
+            db_type,
+            db_name,
+            sample_sql,
             collection_name=stats.get("collection_name", ""),
         )
         _set_progress("collecting_explain")
@@ -715,7 +743,7 @@ def diagnose_slowquery_task(task_id):
 
         # 外发脱敏：prompt 只携带字面量脱敏后的 SQL（H1），
         # 真实业务数据（手机号/日期/ID 等字面量）不出内网
-        prompt_sql = mask_sql_literals(sample_sql)
+        prompt_sql = mask_sql_literals(sample_sql, db_type)
 
         result = client.diagnose_slowquery_by_openai(
             db_type=db_type,
@@ -778,10 +806,15 @@ def diagnose_slowquery_task(task_id):
         task.prompt_tokens = prompt_tokens
         task.completion_tokens = completion_tokens
         task.finished_at = _dt_mod.datetime.now()
-        task.save(update_fields=[
-            "status", "model", "prompt_tokens",
-            "completion_tokens", "finished_at",
-        ])
+        task.save(
+            update_fields=[
+                "status",
+                "model",
+                "prompt_tokens",
+                "completion_tokens",
+                "finished_at",
+            ]
+        )
 
         # 统一用量记账（AIDiagnosisTask 上的 token 字段保留，此处补全链路统一流水）
         record_ai_usage(
@@ -804,5 +837,3 @@ def diagnose_slowquery_task(task_id):
         task.error = str(e)[:1000]
         task.finished_at = _dt.datetime.now()
         task.save(update_fields=["status", "error", "finished_at"])
-
-

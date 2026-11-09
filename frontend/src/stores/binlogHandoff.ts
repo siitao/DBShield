@@ -27,5 +27,10 @@ export const useBinlogHandoffStore = defineStore("binlogHandoff", () => {
     return data;
   }
 
-  return { pending, set, consume };
+  /** 清空（登出/切换账号时调用） */
+  function reset(): void {
+    pending.value = null;
+  }
+
+  return { pending, set, consume, reset };
 });

@@ -88,7 +88,9 @@ def _build_managed_block(auth_config):
     """根据 DB 中的认证配置，生成要写入 .env 的受管块文本（含边界标记）。"""
     buf = StringIO()
     buf.write(f"{_ENV_MANAGED_BEGIN}\n")
-    buf.write("# 本段由「认证配置」页面自动维护，请勿手动编辑；手动配置请写在本段之外。\n")
+    buf.write(
+        "# 本段由「认证配置」页面自动维护，请勿手动编辑；手动配置请写在本段之外。\n"
+    )
 
     provider = auth_config.get("auth_provider", "local")
     flags = _provider_to_env_flags(provider)
@@ -102,7 +104,13 @@ def _build_managed_block(auth_config):
         value = auth_config.get(dbkey, "")
         if not envkey or value == "":
             continue
-        buf.write(f"{envkey}={value}\n")
+        text = str(value)
+        # 认证参数写入 .env 时不能包含换行/受管块标记，否则可注入任意环境变量
+        if any(ch in text for ch in ("\n", "\r")):
+            raise ValueError(f"认证配置 {dbkey} 不能包含换行符")
+        if _ENV_MANAGED_BEGIN in text or _ENV_MANAGED_END in text:
+            raise ValueError(f"认证配置 {dbkey} 不能包含受管块标记")
+        buf.write(f"{envkey}={text}\n")
 
     buf.write(f"{_ENV_MANAGED_END}\n")
     return buf.getvalue()
@@ -151,8 +159,10 @@ def _rewrite_env(new_block):
         new_content = before + new_block + after.lstrip("\n")
     else:
         # 追加（保证前面有空行分隔）
-        sep = "\n\n" if original and not original.endswith("\n") else (
-            "\n" if original else ""
+        sep = (
+            "\n\n"
+            if original and not original.endswith("\n")
+            else ("\n" if original else "")
         )
         new_content = original + sep + new_block
 

@@ -3,7 +3,7 @@ import logging
 import re
 import traceback
 import MySQLdb
-import pymysql
+from pymysql.converters import escape_string
 import simplejson as json
 
 from common.config import SysConfig
@@ -52,7 +52,7 @@ class GoInceptionEngine(EngineBase):
         """字符串参数转义"""
         if value is None:
             return ""
-        return pymysql.escape_string(value)
+        return escape_string(value)
 
     def execute_check(self, instance=None, db_name=None, sql=""):
         """inception check"""

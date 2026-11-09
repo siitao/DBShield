@@ -6,6 +6,7 @@ from . import TwoFactorAuthBase
 from common.config import SysConfig
 import traceback
 import logging
+import hmac
 import json
 import time
 
@@ -55,13 +56,18 @@ class SMS(TwoFactorAuthBase):
                 result = {"status": 1, "msg": "系统未配置短信服务商！"}
         return result
 
-    def verify(self, otp, phone=None):
-        """校验验证码"""
+    def verify(self, otp):
+        """校验验证码（手机号只从服务端绑定配置读取）"""
         result = {"status": 0, "msg": "ok"}
-        if phone:
-            phone = phone
-        else:
-            phone = TwoFactorAuthConfig.objects.get(username=self.user.username).phone
+        try:
+            config = TwoFactorAuthConfig.objects.get(
+                username=self.user.username, auth_type=self.auth_type
+            )
+        except TwoFactorAuthConfig.DoesNotExist:
+            return {"status": 1, "msg": "用户未配置短信验证码"}
+        phone = (config.phone or "").strip()
+        if not phone:
+            return {"status": 1, "msg": "用户绑定手机号为空，请重新绑定"}
 
         r = get_redis_connection("default")
         data = r.get(f"captcha-{phone}")
@@ -70,9 +76,15 @@ class SMS(TwoFactorAuthBase):
             result["msg"] = "未获取验证码或验证码已过期！"
         else:
             captcha = json.loads(data.decode("utf8"))
-            if otp != captcha["otp"]:
+            if not hmac.compare_digest(str(otp), str(captcha["otp"])):
                 result["status"] = 1
                 result["msg"] = "验证码不正确！"
+            else:
+                # 一次性使用，验证成功后立即失效，防止重放
+                try:
+                    r.delete(f"captcha-{phone}")
+                except Exception:
+                    pass
         return result
 
     def save(self, phone):

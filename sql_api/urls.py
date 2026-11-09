@@ -1,17 +1,35 @@
 from django.urls import path, include
 from sql_api import views
 from rest_framework import routers
-from rest_framework_simplejwt.views import (
-    TokenObtainPairView,
-    TokenRefreshView,
-    TokenVerifyView,
-)
+from rest_framework_simplejwt.views import TokenRefreshView, TokenVerifyView
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularRedocView,
     SpectacularSwaggerView,
 )
-from . import api_user, api_instance, api_workflow, api_sqlquery, api_document, api_query_priv, api_archiver, api_dashboard, api_config, api_auth_config, api_dictionary, api_instance_admin, api_diagnostic, api_slowquery, api_slowquery_v2, api_resource_group, api_misc, api_auth, api_schema, ai_usage_api
+from . import (
+    api_user,
+    api_instance,
+    api_workflow,
+    api_sqlquery,
+    api_document,
+    api_query_priv,
+    api_archiver,
+    api_dashboard,
+    api_config,
+    api_auth_config,
+    api_dictionary,
+    api_instance_admin,
+    api_diagnostic,
+    api_slowquery,
+    api_slowquery_v2,
+    api_resource_group,
+    api_misc,
+    api_auth,
+    api_schema,
+    ai_usage_api,
+)
+from .token_view import TwoFactorAwareTokenObtainPairView
 
 router = routers.DefaultRouter()
 router.register(
@@ -22,7 +40,11 @@ router.register(
 
 urlpatterns = [
     path("v1/", include(router.urls)),
-    path("auth/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path(
+        "auth/token/",
+        TwoFactorAwareTokenObtainPairView.as_view(),
+        name="token_obtain_pair",
+    ),
     path("auth/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     path("auth/token/verify/", TokenVerifyView.as_view(), name="token_verify"),
     path("schema/", SpectacularAPIView.as_view(), name="schema"),
@@ -105,14 +127,23 @@ urlpatterns = [
     path("v1/logout/", api_auth.LogoutView.as_view()),
     # ---- 实例管理 ----
     path("v1/instance/accounts/", api_instance_admin.AccountListView.as_view()),
-    path("v1/instance/accounts/create/", api_instance_admin.AccountCreateView.as_view()),
+    path(
+        "v1/instance/accounts/create/", api_instance_admin.AccountCreateView.as_view()
+    ),
     path("v1/instance/accounts/edit/", api_instance_admin.AccountEditView.as_view()),
     path("v1/instance/accounts/grant/", api_instance_admin.AccountGrantView.as_view()),
-    path("v1/instance/accounts/reset_pwd/", api_instance_admin.AccountResetPwdView.as_view()),
+    path(
+        "v1/instance/accounts/reset_pwd/",
+        api_instance_admin.AccountResetPwdView.as_view(),
+    ),
     path("v1/instance/accounts/lock/", api_instance_admin.AccountLockView.as_view()),
-    path("v1/instance/accounts/delete/", api_instance_admin.AccountDeleteView.as_view()),
+    path(
+        "v1/instance/accounts/delete/", api_instance_admin.AccountDeleteView.as_view()
+    ),
     path("v1/instance/databases/", api_instance_admin.DatabaseListView.as_view()),
-    path("v1/instance/databases/create/", api_instance_admin.DatabaseCreateView.as_view()),
+    path(
+        "v1/instance/databases/create/", api_instance_admin.DatabaseCreateView.as_view()
+    ),
     path("v1/instance/databases/edit/", api_instance_admin.DatabaseEditView.as_view()),
     path("v1/instance/params/", api_instance_admin.ParamListView.as_view()),
     path("v1/instance/params/history/", api_instance_admin.ParamHistoryView.as_view()),
@@ -132,11 +163,23 @@ urlpatterns = [
     path("v1/slowquery/collect/", api_slowquery_v2.SlowQueryCollectView.as_view()),
     # ---- AI 慢查诊断 ----
     path("v1/slowquery/diagnose/", api_slowquery_v2.SlowQueryDiagnoseView.as_view()),
-    path("v1/slowquery/diagnose/batch_status/", api_slowquery_v2.SlowQueryDiagnoseBatchStatusView.as_view()),
-    path("v1/slowquery/diagnose/<int:task_id>/", api_slowquery_v2.SlowQueryDiagnoseTaskView.as_view()),
+    path(
+        "v1/slowquery/diagnose/batch_status/",
+        api_slowquery_v2.SlowQueryDiagnoseBatchStatusView.as_view(),
+    ),
+    path(
+        "v1/slowquery/diagnose/<int:task_id>/",
+        api_slowquery_v2.SlowQueryDiagnoseTaskView.as_view(),
+    ),
     # PRD §8.3：反馈路由为 diagnose/<report_id>/feedback/
-    path("v1/slowquery/diagnose/<int:report_id>/feedback/", api_slowquery_v2.SlowQueryDiagnoseFeedbackView.as_view()),
-    path("v1/slowquery/diagnose/workflow_draft/", api_slowquery_v2.SlowQueryDiagnoseWorkflowView.as_view()),
+    path(
+        "v1/slowquery/diagnose/<int:report_id>/feedback/",
+        api_slowquery_v2.SlowQueryDiagnoseFeedbackView.as_view(),
+    ),
+    path(
+        "v1/slowquery/diagnose/workflow_draft/",
+        api_slowquery_v2.SlowQueryDiagnoseWorkflowView.as_view(),
+    ),
     # ---- SQL 分析 ----
     path("v1/sql_analyze/generate/", api_slowquery.SqlAnalyzeGenerateView.as_view()),
     path("v1/sql_analyze/analyze/", api_slowquery.SqlAnalyzeAnalyzeView.as_view()),
@@ -147,7 +190,10 @@ urlpatterns = [
     path("v1/optimize/explain/", api_slowquery.ExplainSqlView.as_view()),
     path("v1/optimize/ai/", api_slowquery.OptimizeAIView.as_view()),
     path("v1/optimize/ai/async/", api_slowquery.OptimizeAIAsyncSubmitView.as_view()),
-    path("v1/optimize/ai/async/<int:task_id>/", api_slowquery.OptimizeAIAsyncStatusView.as_view()),
+    path(
+        "v1/optimize/ai/async/<int:task_id>/",
+        api_slowquery.OptimizeAIAsyncStatusView.as_view(),
+    ),
     # ---- AI 用量（超管） ----
     path("v1/ai_usage/summary/", ai_usage_api.AiUsageSummaryView.as_view()),
     path("v1/ai_usage/list/", ai_usage_api.AiUsageListView.as_view()),

@@ -18,8 +18,17 @@ def list_query_logs(
     end_date="",
 ):
     """返回历史查询数据，结构兼容 bootstrap-table。"""
+    # limit 为页大小；0/负数/超大值统一收敛，避免一次拉全表
+    try:
+        limit = int(limit or 20)
+    except (TypeError, ValueError):
+        limit = 20
+    limit = min(max(limit, 1), 500)
+    try:
+        offset = max(int(offset or 0), 0)
+    except (TypeError, ValueError):
+        offset = 0
     limit = offset + limit
-    limit = limit if limit else None
 
     filter_dict = {}
     if star:

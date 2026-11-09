@@ -92,7 +92,7 @@ def remove_comments(sql, db_type="mysql"):
     return regex.sub(_replacer, sql).strip()
 
 
-def mask_sql_literals(sql_text):
+def mask_sql_literals(sql_text, db_type=None):
     """对 SQL 中的字面量脱敏，供外发到外部 AI 时使用（H1）。
 
     慢查样本 SQL / 工单 SQL 含真实业务数据（user_id、手机号、日期等字面量），
@@ -100,12 +100,25 @@ def mask_sql_literals(sql_text):
     数字字面量替换为 0，保留 SQL 结构语义（与 pg_stat_statements 等指纹
     归一化同思路），仅影响 AI prompt，不影响 EXPLAIN 等需要真实值的场景。
 
-    注意：`\\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
+    - db_type=pgsql 时保留双引号标识符（PostgreSQL 的双引号是标识符），
+      但会脱敏 dollar-quoted 字符串；
+    - 其他类型（或未传 db_type）同时脱敏双引号字符串，覆盖 MySQL 默认
+      双引号字符串与 Mongo shell 命令；
+    - `\\b` 保证标识符内的数字（如 table_2024、idx_2）不被误伤。
     """
     if not sql_text:
         return sql_text
+    masked = sql_text
+    # PostgreSQL dollar-quoted 字符串：$$...$$ / $tag$...$tag$
+    masked = re.sub(r"\$\$.*?\$\$", "'?'", masked, flags=re.S)
+    masked = re.sub(r"\$([A-Za-z_]\w*)\$.*?\$\1\$", "'?'", masked, flags=re.S)
     # 字符串字面量（含转义序列），替换为 '?'
-    masked = re.sub(r"'(?:[^'\\]|\\.)*'", "'?'", sql_text)
+    masked = re.sub(r"'(?:[^'\\]|\\.)*'", "'?'", masked)
+    # 双引号字符串：pg 中双引号是标识符，不能脱敏；其他库按字符串处理
+    if db_type != "pgsql":
+        masked = re.sub(r'"(?:[^"\\]|\\.)*"', '"?"', masked)
+    # 十六进制字面量（0x...）
+    masked = re.sub(r"\b0x[0-9a-fA-F]+\b", "0", masked)
     # 数字字面量（整数/小数/科学计数法），替换为 0
     masked = re.sub(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b", "0", masked)
     return masked
@@ -115,7 +128,9 @@ def mask_sql_literals(sql_text):
 _COLLECTION_NAME_RE = re.compile(r"[\w][\w\-.]{0,120}")
 # 从 mongo shell 语句中提取集合名的粗解析：db.orders.find(...) / db.getCollection('x') / db['x'].find(...)
 _MONGO_COLL_RES = [
-    re.compile(r"\bdb\.([A-Za-z_][\w]*)\.\s*(?:find|findOne|aggregate|count|countDocuments|estimatedDocumentCount|distinct|updateOne|updateMany|deleteOne|deleteMany|replaceOne|insertOne|insertMany)\s*\("),
+    re.compile(
+        r"\bdb\.([A-Za-z_][\w]*)\.\s*(?:find|findOne|aggregate|count|countDocuments|estimatedDocumentCount|distinct|updateOne|updateMany|deleteOne|deleteMany|replaceOne|insertOne|insertMany)\s*\("
+    ),
     re.compile(r"\bdb\.getCollection\s*\(\s*['\"]([\w\-.]+)['\"]\s*\)"),
     re.compile(r"\bdb\[[\"']([\w\-.]+)[\"']\]"),
 ]
@@ -183,9 +198,7 @@ def sanitize_explain_sql(sql_text):
     if not first_sql:
         return None, "SQL 文本为空"
     # 注释剥离后再校验语句类型（版本注释剥离后剩余为空同样被拒）
-    clean_sql = re.sub(
-        r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL
-    )
+    clean_sql = re.sub(r"(?:--[^\n]*|/\*.*?\*/)", "", first_sql, flags=re.DOTALL)
     if not re.match(r"^\s*(?:SELECT|WITH)\b", clean_sql, re.IGNORECASE):
         return None, "仅支持 SELECT/WITH 语句的 EXPLAIN"
     if re.search(r"\bINTO\s+(?:OUTFILE|DUMPFILE)\b", clean_sql, re.IGNORECASE):

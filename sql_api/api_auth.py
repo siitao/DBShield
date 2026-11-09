@@ -44,18 +44,11 @@ class AuthenticateView(views.APIView):
         "支持 form-encoded 与 JSON 两种 body。",
     )
     def post(self, request):
-        # DBShieldAuth 内部用 request.POST 取字段。DRF 对 form-encoded 会正确填充 request.POST；
-        # 但 JSON body 时 request.POST 为空。这里把 JSON 字段合并进一份可写 QueryDict，
-        # 让 DBShieldAuth 能统一通过 request.POST 读到（不污染原始 request）。
-        if not request.POST and request.data:
-            from django.http import QueryDict
-
-            qd = QueryDict(mutable=True)
-            for k, v in request.data.items():
-                qd[k] = "" if v is None else str(v)
-            request.POST = qd
-
-        result = DBShieldAuth(request).authenticate()
+        # DBShieldAuth 需要按字段读取用户名/密码：form-encoded 用 request.POST，
+        # JSON body 用 request.data。两者统一传入，避免修改 DRF Request.POST
+        # （它是只读 property，赋值会抛 AttributeError）。
+        post_data = request.POST if request.POST else request.data
+        result = DBShieldAuth(request, post_data=post_data).authenticate()
         if result["status"] == 0:
             authenticated_user = result["data"]
             twofa_enabled = TwoFactorAuthConfig.objects.filter(user=authenticated_user)
@@ -85,7 +78,7 @@ class AuthenticateView(views.APIView):
 
                 django_login(request, authenticated_user)
                 # 拉取钉钉 user_id（仅用于单独发消息，失败不影响登录）
-                username = request.POST.get("username")
+                username = post_data.get("username")
                 if (
                     SysConfig().get("ding_to_person") is True
                     and username

@@ -1,4 +1,5 @@
 import pytest
+from django.contrib.auth.models import Permission
 from rest_framework.test import APIClient
 
 CANONICAL = {
@@ -18,6 +19,7 @@ def api_client():
 
 @pytest.fixture
 def authenticated_user(normal_user):
+    normal_user.user_permissions.add(Permission.objects.get(codename="menu_sqlquery"))
     return normal_user
 
 
@@ -188,6 +190,7 @@ def test_favorite_returns_expected_shape(monkeypatch, api_client, privileged_use
     assert response.status_code == 200
     assert response.json() == expected
 
+
 # ========== AI 生成 SQL 开关（ai_nl2sql_enabled） ==========
 
 GENERATE_SQL = "/api/v1/query/generate_sql/"
@@ -196,7 +199,7 @@ CHECK_OPENAI = "/api/v1/query/check_openai/"
 
 @pytest.mark.django_db
 def test_generate_sql_rejected_when_switch_off(
-    monkeypatch, api_client, authenticated_user
+    monkeypatch, api_client, privileged_user
 ):
     from common.config import SysConfig
 
@@ -207,7 +210,7 @@ def test_generate_sql_rejected_when_switch_off(
 
     monkeypatch.setattr("common.utils.ai_gateway.OpenaiClient", _boom)
 
-    api_client.force_authenticate(user=authenticated_user)
+    api_client.force_authenticate(user=privileged_user)
     response = api_client.post(GENERATE_SQL, {"query_desc": "查用户表"}, format="json")
 
     assert response.status_code == 200
