@@ -137,6 +137,8 @@ def execute_sql_query(
 
         if result["status"] == 0 and not query_result.error:
             result["data"]["seconds_behind_master"] = seconds_behind_master
+            # 返回实际生效的行数上限（可能已被查询权限压低），供前端提示结果是否被截断
+            result["data"]["limit_num"] = int(limit_num)
             if int(limit_num) == 0:
                 effect_row = int(query_result.affected_rows)
             else:

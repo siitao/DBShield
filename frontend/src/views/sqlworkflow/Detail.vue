@@ -19,6 +19,7 @@ import {
   type WorkflowLogRow,
 } from "@/api/sqlworkflow";
 import SqlReviewTable from "@/components/SqlReviewTable.vue";
+import { parseReviewRows } from "@/utils/reviewRows";
 import { downloadExportFile } from "@/api/sqlexport";
 import { fetchBackupSql, downloadRollback, oscControl, type OscProgressRow } from "@/api/sqlworkflow";
 
@@ -95,30 +96,6 @@ function onTabChange(name: string | number) {
   if (String(name) === "logs") loadLogs();
 }
 
-/** 解析 ReviewSet JSON，兼容新格式（rows 为 dict 列表）与旧格式（rows 为 [[...], ...] + column_list） */
-function parseRows(jsonStr?: string): ReviewRow[] {
-  if (!jsonStr) return [];
-  try {
-    const obj = JSON.parse(jsonStr);
-    // Direct array format (from ReviewSet.json() / DRF serializer)
-    if (Array.isArray(obj)) {
-      return obj as ReviewRow[];
-    }
-    const rows = obj?.rows ?? obj?.data ?? [];
-    if (Array.isArray(rows) && rows.length && Array.isArray(rows[0])) {
-      const cols: string[] = obj?.column_list ?? [];
-      return rows.map((r: unknown[]) => {
-        const o: Record<string, unknown> = {};
-        cols.forEach((c, i) => (o[c] = r[i]));
-        return o as ReviewRow;
-      });
-    }
-    return Array.isArray(rows) ? (rows as ReviewRow[]) : [];
-  } catch {
-    return [];
-  }
-}
-
 /** AI 汇总风险等级 → el-tag type */
 function aiSummaryTagType(
   level?: string
@@ -162,7 +139,7 @@ const reviewRows = computed<ReviewRow[]>(() => {
   const field = isFinished.value
     ? detail.value.execute_result
     : detail.value.review_content;
-  return parseRows(field);
+  return parseReviewRows(field);
 });
 
 const statusTag = computed(() => {
@@ -443,6 +420,14 @@ onUnmounted(() => {
           <el-tag v-if="statusTag" :type="statusTag.type" size="small">
             {{ statusTag.label }}
           </el-tag>
+          <el-tag
+            v-if="detail.ai_max_risk_level"
+            :type="aiSummaryTagType(detail.ai_max_risk_level)"
+            size="small"
+            effect="dark"
+          >
+            AI {{ aiSummaryText(detail.ai_max_risk_level) }}
+          </el-tag>
           <span class="title">{{ detail.workflow.workflow_name }}</span>
           <el-link
             v-if="detail.workflow.demand_url"
@@ -454,6 +439,50 @@ onUnmounted(() => {
             需求链接
           </el-link>
         </div>
+      </el-card>
+
+      <!-- 操作按钮区：置顶吸附，避免长页面滚到底才能审批/执行 -->
+      <el-card shadow="never" class="action-card" body-style="padding: 12px 16px">
+        <el-button v-if="detail.is_can_review" type="primary" @click="onPass">
+          审核通过
+        </el-button>
+        <el-button v-if="detail.is_can_review" @click="openRunDate">
+          改可执行时间
+        </el-button>
+        <el-button
+          v-if="detail.is_can_execute"
+          type="success"
+          @click="onExecute('auto', '立即执行')"
+        >
+          立即执行
+        </el-button>
+        <el-button
+          v-if="detail.is_can_execute && detail.manual"
+          type="success"
+          @click="onExecute('manual', '已手工完成')"
+        >
+          已手工完成
+        </el-button>
+        <el-button v-if="detail.is_can_timingtask" @click="openTiming">
+          定时执行
+        </el-button>
+        <el-button v-if="detail.is_can_cancel" type="danger" @click="onCancel">
+          终止/驳回
+        </el-button>
+        <el-button
+          v-if="canDownload"
+          type="warning"
+          :loading="downloading"
+          @click="onDownload"
+        >
+          下载文件
+        </el-button>
+        <el-button v-if="detail.is_can_rollback" @click="onViewRollback">
+          查看回滚SQL
+        </el-button>
+        <el-button v-if="detail.is_can_rollback" @click="onDownloadRollback">
+          下载回滚SQL
+        </el-button>
       </el-card>
 
       <!-- 审批流 -->
@@ -593,49 +622,6 @@ onUnmounted(() => {
         </el-tabs>
       </el-card>
 
-      <!-- 底部操作按钮区（按后端 is_can_* 显隐） -->
-      <el-card shadow="never" class="action-card" body-style="padding: 12px 16px">
-        <el-button v-if="detail.is_can_review" type="primary" @click="onPass">
-          审核通过
-        </el-button>
-        <el-button v-if="detail.is_can_review" @click="openRunDate">
-          改可执行时间
-        </el-button>
-        <el-button
-          v-if="detail.is_can_execute"
-          type="success"
-          @click="onExecute('auto', '立即执行')"
-        >
-          立即执行
-        </el-button>
-        <el-button
-          v-if="detail.is_can_execute && detail.manual"
-          type="success"
-          @click="onExecute('manual', '已手工完成')"
-        >
-          已手工完成
-        </el-button>
-        <el-button v-if="detail.is_can_timingtask" @click="openTiming">
-          定时执行
-        </el-button>
-        <el-button v-if="detail.is_can_cancel" type="danger" @click="onCancel">
-          终止/驳回
-        </el-button>
-        <el-button
-          v-if="canDownload"
-          type="warning"
-          :loading="downloading"
-          @click="onDownload"
-        >
-          下载文件
-        </el-button>
-        <el-button v-if="detail.is_can_rollback" @click="onViewRollback">
-          查看回滚SQL
-        </el-button>
-        <el-button v-if="detail.is_can_rollback" @click="onDownloadRollback">
-          下载回滚SQL
-        </el-button>
-      </el-card>
     </template>
 
     <!-- 定时执行弹窗 -->
@@ -760,6 +746,12 @@ onUnmounted(() => {
 }
 
 .action-card {
+  position: sticky;
+  top: 12px;
+  z-index: 10;
+  background: var(--el-bg-color);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+
   :deep(.el-card__body) {
     display: flex;
     flex-wrap: wrap;

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, watch, onMounted } from "vue";
+import { ref, reactive, watch, onMounted, onBeforeUnmount } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
@@ -35,6 +35,15 @@ const groupOptions = ref<ResourceGroupRow[]>([]);
 const instanceOptions = ref<GroupInstanceRow[]>([]);
 const dbOptions = ref<Array<string | { value: string; text: string }>>([]);
 const auditorsDisplay = ref("");
+
+// 工单名默认值：用户手动编辑后不再覆盖
+const nameTouched = ref(false);
+const autoName = ref("");
+
+const DRAFT_KEY = "archery:sqlworkflow:draft:v1";
+let draftTimer: number | null = null;
+let draftEnabled = true;
+const draftRestored = ref(false);
 
 // SQL 检测结果
 const checkRows = ref<ReviewRow[]>([]);
@@ -98,18 +107,167 @@ watch(
   }
 );
 
-// SQL 内容变更后需重新检测（提交按钮重新锁定）
+// SQL 内容变更后需重新检测（提交时自动重检）
 watch(sqlContent, () => {
   if (checked.value) {
     checked.value = false;
     checkRows.value = [];
   }
+  maybeFillName();
+  scheduleSaveDraft();
 });
 
-async function onCheck() {
-  if (!form.instance) return ElMessage.warning("请选择实例");
-  if (!form.db_name.trim()) return ElMessage.warning("请输入数据库名");
-  if (!sqlContent.value.trim()) return ElMessage.warning("请输入 SQL");
+// 库/表变化时同步刷新默认工单名
+watch(
+  () => form.db_name,
+  () => {
+    maybeFillName();
+    scheduleSaveDraft();
+  }
+);
+
+/** 从 SQL 里粗略猜一个表名，用于默认工单名 */
+function guessTableFromSql(sql: string): string {
+  const m = sql.match(/\b(?:from|update|into|table)\s+[`"\[\]]?([\w.$]+)/i);
+  if (!m) return "";
+  return m[1].split(".").pop()!.replace(/[`"[\]]/g, "");
+}
+
+function buildDefaultName(): string {
+  const db = form.db_name.trim();
+  const table = guessTableFromSql(sqlContent.value);
+  const now = new Date();
+  const date = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("");
+  return ([db, table, date].filter(Boolean).join("_") || `SQL工单_${date}`).slice(
+    0,
+    50
+  );
+}
+
+/** 仅当工单名仍为空或仍是自动生成值时刷新，避免覆盖用户输入 */
+function maybeFillName() {
+  if (nameTouched.value) return;
+  if (form.workflow_name.trim() && form.workflow_name !== autoName.value) return;
+  autoName.value = buildDefaultName();
+  form.workflow_name = autoName.value;
+}
+
+function saveDraft() {
+  if (!draftEnabled) return;
+  const payload = {
+    workflow_name: form.workflow_name,
+    demand_url: form.demand_url,
+    is_backup: form.is_backup,
+    run_date_start: form.run_date_start,
+    run_date_end: form.run_date_end,
+    sql_content: sqlContent.value,
+    saved_at: Date.now(),
+  };
+  try {
+    // 没有 SQL 就没有恢复价值，避免把自动生成的工单名当成草稿
+    if (!payload.sql_content.trim()) {
+      localStorage.removeItem(DRAFT_KEY);
+      return;
+    }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(payload));
+  } catch {
+    // 草稿是增强能力，存储失败不影响提交
+  }
+}
+
+function scheduleSaveDraft() {
+  if (draftTimer) window.clearTimeout(draftTimer);
+  draftTimer = window.setTimeout(saveDraft, 500);
+}
+
+function restoreDraft() {
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return;
+    const draft = JSON.parse(raw) as Record<string, unknown>;
+    if (!draft || typeof draft !== "object") return;
+    if (draft.workflow_name) {
+      form.workflow_name = String(draft.workflow_name);
+      nameTouched.value = true;
+    }
+    if (draft.demand_url) form.demand_url = String(draft.demand_url);
+    if (typeof draft.is_backup === "boolean") form.is_backup = draft.is_backup;
+    if (draft.run_date_start) form.run_date_start = String(draft.run_date_start);
+    if (draft.run_date_end) form.run_date_end = String(draft.run_date_end);
+    if (draft.sql_content) sqlContent.value = String(draft.sql_content);
+    if (draft.sql_content || draft.workflow_name) {
+      draftRestored.value = true;
+      ElMessage.info("已恢复上次未提交的工单草稿");
+    }
+  } catch {
+    // 草稿损坏时忽略，不阻塞新建工单
+  }
+}
+
+function clearDraft() {
+  draftEnabled = false;
+  localStorage.removeItem(DRAFT_KEY);
+}
+
+/** 放弃草稿并清空表单，方便重新发起一张工单 */
+async function resetForm() {
+  try {
+    await ElMessageBox.confirm("确认清空当前草稿和已填内容？", "清空草稿", {
+      type: "warning",
+    });
+  } catch {
+    return;
+  }
+  if (draftTimer) window.clearTimeout(draftTimer);
+  form.workflow_name = "";
+  form.demand_url = "";
+  form.group_id = undefined;
+  form.instance = undefined;
+  form.db_name = "";
+  form.is_backup = true;
+  form.run_date_start = "";
+  form.run_date_end = "";
+  sqlContent.value = "";
+  checked.value = false;
+  checkRows.value = [];
+  checkWarning.value = 0;
+  checkError.value = 0;
+  nameTouched.value = false;
+  autoName.value = "";
+  draftRestored.value = false;
+  localStorage.removeItem(DRAFT_KEY);
+  draftEnabled = true;
+}
+
+// 表单内容变化时自动保存草稿（SQL 单独 watch 已处理，这里覆盖其余字段）
+watch(
+  () => [
+    form.workflow_name,
+    form.demand_url,
+    form.is_backup,
+    form.run_date_start,
+    form.run_date_end,
+  ],
+  scheduleSaveDraft
+);
+
+async function runCheck(): Promise<boolean> {
+  if (!form.instance) {
+    ElMessage.warning("请选择实例");
+    return false;
+  }
+  if (!form.db_name.trim()) {
+    ElMessage.warning("请输入数据库名");
+    return false;
+  }
+  if (!sqlContent.value.trim()) {
+    ElMessage.warning("请输入 SQL");
+    return false;
+  }
   checking.value = true;
   // 检测期间清除上次结果，避免「旧结果 + 转圈」并存
   checked.value = false;
@@ -124,27 +282,37 @@ async function onCheck() {
     checkWarning.value = Number(data.warning_count ?? 0);
     checkError.value = Number(data.error_count ?? 0);
     checked.value = true;
-    if (checkError.value > 0) {
-      ElMessage.warning(`检测完成，存在 ${checkError.value} 个错误`);
-    } else {
-      ElMessage.success("检测完成");
-    }
+    return true;
   } catch {
     // 后端 execute_check 异常以 DRF ValidationError({"errors": "..."}) 返回（HTTP 400），
-    // 请求拦截器已弹出 ElMessage 提示，这里只需标记检测未通过、保持提交按钮锁定。
+    // 请求拦截器已弹出 ElMessage 提示，这里只需标记检测未通过。
     checked.value = false;
+    return false;
   } finally {
     checking.value = false;
   }
 }
 
+async function onCheck() {
+  const ok = await runCheck();
+  if (!ok) return;
+  if (checkError.value > 0) {
+    ElMessage.warning(`检测完成，存在 ${checkError.value} 个错误`);
+  } else {
+    ElMessage.success("检测完成");
+  }
+}
+
 function validate(): string | null {
-  if (!form.workflow_name.trim()) return "请输入工单名称";
-  if (form.workflow_name.length > 50) return "工单名称不能超过 50 字符";
   if (!form.group_id) return "请选择资源组";
   if (!form.instance) return "请选择实例";
   if (!form.db_name.trim()) return "请输入数据库名";
   if (!sqlContent.value.trim()) return "请输入 SQL";
+  if (!form.workflow_name.trim()) {
+    form.workflow_name = buildDefaultName();
+    autoName.value = form.workflow_name;
+  }
+  if (form.workflow_name.length > 50) return "工单名称不能超过 50 字符";
   if (form.run_date_start && form.run_date_end) {
     const s = new Date(form.run_date_start.replace(" ", "T"));
     const e = new Date(form.run_date_end.replace(" ", "T"));
@@ -158,7 +326,11 @@ function validate(): string | null {
 async function onSubmit() {
   const err = validate();
   if (err) return ElMessage.warning(err);
-  if (!checked.value) return ElMessage.warning("请先进行 SQL 检测");
+  // 一键提交：未检测时自动先检测；检测失败则不提交
+  if (!checked.value) {
+    const ok = await runCheck();
+    if (!ok) return;
+  }
   try {
     if (checkWarning.value > 0 || checkError.value > 0) {
       await ElMessageBox.confirm(
@@ -184,6 +356,7 @@ async function onSubmit() {
       // 回传检测阶段的含 AI 字段的结果，提交时复用，避免重复调用 AI
       ai_review_content: checkRows.value,
     });
+    clearDraft();
     ElMessage.success("提交成功");
     router.replace({
       name: "sqlworkflow-detail",
@@ -198,14 +371,25 @@ async function onSubmit() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   // 消费 My2SQL「提交工单」handoff：预填工单名 + SQL（实例/组/库留用户选）
   const pending = handoff.consume();
   if (pending) {
     form.workflow_name = pending.workflow_name;
+    nameTouched.value = true;
     sqlContent.value = pending.sql_content;
+    scheduleSaveDraft();
+  } else {
+    // 先恢复草稿，避免资源组接口慢时编辑器长时间空白
+    restoreDraft();
   }
-  loadGroups();
+  await loadGroups();
+});
+
+onBeforeUnmount(() => {
+  if (draftTimer) window.clearTimeout(draftTimer);
+  // 提交成功时 clearDraft 已禁用保存，不会把刚提交的内容又存回草稿
+  saveDraft();
 });
 </script>
 
@@ -226,7 +410,8 @@ onMounted(() => {
                 v-model="form.workflow_name"
                 maxlength="50"
                 show-word-limit
-                placeholder="工单名称（≤50 字符）"
+                placeholder="留空自动生成，也可手动填写（≤50 字符）"
+                @input="nameTouched = true"
               />
             </el-form-item>
             <el-form-item label="需求链接">
@@ -310,17 +495,42 @@ onMounted(() => {
               </div>
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" :loading="checking" @click="onCheck">
-                {{ checking ? "检测中..." : "SQL 检测" }}
-              </el-button>
-              <el-button
-                type="success"
-                :disabled="!checked || checking"
-                :loading="submitting"
-                @click="onSubmit"
-              >
-                提交工单
-              </el-button>
+              <div class="submit-actions">
+                <el-button
+                  type="success"
+                  :loading="submitting"
+                  :disabled="checking"
+                  @click="onSubmit"
+                >
+                  {{ checked ? "提交工单" : "检测并提交" }}
+                </el-button>
+                <el-button :loading="checking" :disabled="submitting" @click="onCheck">
+                  仅检测
+                </el-button>
+                <el-button
+                  v-if="draftRestored"
+                  link
+                  type="info"
+                  @click="resetForm"
+                >
+                  清空草稿
+                </el-button>
+              </div>
+              <div v-if="checked" class="check-status">
+                <el-tag v-if="checkError > 0" type="danger" size="small">
+                  错误 {{ checkError }}
+                </el-tag>
+                <el-tag v-if="checkWarning > 0" type="warning" size="small">
+                  警告 {{ checkWarning }}
+                </el-tag>
+                <el-tag
+                  v-if="!checkError && !checkWarning"
+                  type="success"
+                  size="small"
+                >
+                  检测通过
+                </el-tag>
+              </div>
             </el-form-item>
           </el-form>
         </div>
@@ -390,6 +600,19 @@ onMounted(() => {
 .hint {
   color: var(--el-text-color-secondary);
   font-size: 13px;
+}
+
+.submit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.check-status {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .date-range {

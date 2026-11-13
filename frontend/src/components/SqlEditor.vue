@@ -185,12 +185,37 @@ function onUpload(e: Event) {
   input.value = "";
 }
 
+/** 定位到指定行/列，并短暂高亮该行（用于查询报错定位） */
+function focusLine(line: number, column?: number) {
+  if (!editor) return;
+  const row = Math.max(
+    0,
+    Math.min((line || 1) - 1, editor.session.getLength() - 1)
+  );
+  const col = Math.max(0, (column || 1) - 1);
+  editor.gotoLine(row + 1, col, true);
+  editor.focus();
+  try {
+    const RangeCtor = (ace as any).require("ace/range").Range;
+    const lineText = editor.session.getLine(row) || "";
+    const markerId = editor.session.addMarker(
+      new RangeCtor(row, 0, row, lineText.length),
+      "ace-error-line",
+      "fullLine"
+    );
+    window.setTimeout(() => editor?.session.removeMarker(markerId), 4000);
+  } catch {
+    // 高亮失败不影响定位
+  }
+}
+
 defineExpose({
   beautify,
   getSelection: () =>
     editor ? editor.session.getTextRange(editor.getSelectionRange()) : "",
   getValue: () => (editor ? editor.getValue() : ""),
   insert: (text: string) => editor?.insert(text),
+  focusLine,
 });
 </script>
 
@@ -253,5 +278,11 @@ defineExpose({
 .upload-btn {
   display: inline-flex;
   cursor: pointer;
+}
+
+:deep(.ace-error-line) {
+  position: absolute;
+  z-index: 20;
+  background: rgba(245, 108, 108, 0.16);
 }
 </style>

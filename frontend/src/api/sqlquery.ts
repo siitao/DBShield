@@ -34,6 +34,8 @@ export interface QueryResultSet {
   status: string | null;
   affected_rows: number;
   seconds_behind_master?: number;
+  /** 实际生效的行数上限（后端结合查询权限计算，0=不限） */
+  limit_num?: number;
   [key: string]: unknown;
 }
 

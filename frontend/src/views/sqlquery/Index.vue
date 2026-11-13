@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted } from "vue";
+import { ref, reactive, computed, watch, onMounted, nextTick } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import {
@@ -88,6 +88,12 @@ interface ResultTab {
   envelope: QueryResultEnvelope | null;
   loading: boolean;
   sql: string;
+  /** 本次执行生效的行数上限，0=不限 */
+  limitNum: number;
+  /** 本次查询的表名，用于生成 INSERT/WHERE */
+  tableName: string;
+  /** query=SQL 执行结果；structure=表结构，执行查询时不会被覆盖 */
+  kind: "query" | "structure";
 }
 let tabSeq = 0;
 const resultTabs = ref<ResultTab[]>([]);
@@ -96,15 +102,18 @@ const activeResultTab = computed(() =>
   resultTabs.value.find((t) => t.id === activeTabId.value)
 );
 
-function addResultTab(): ResultTab {
+function addResultTab(kind: "query" | "structure" = "query"): ResultTab {
   tabSeq += 1;
   const id = `result-${tabSeq}`;
   const tab = reactive<ResultTab>({
     id,
-    title: `结果${tabSeq}`,
+    title: kind === "structure" ? "表结构" : `结果${tabSeq}`,
     envelope: null,
     loading: false,
     sql: "",
+    limitNum: form.limit_num,
+    tableName: form.table_name,
+    kind,
   });
   resultTabs.value.push(tab);
   activeTabId.value = id;
@@ -125,8 +134,21 @@ function onTabRemove(name: string | number) {
 }
 
 function ensureResultTab(): ResultTab {
-  return activeResultTab.value ?? addResultTab();
+  // 只复用 SQL 结果标签；表结构标签保持独立，避免执行查询时被覆盖
+  const active = activeResultTab.value;
+  return active && active.kind === "query" ? active : addResultTab("query");
 }
+
+// 「每次执行新建标签」开关，默认关闭（保持原有覆盖当前结果的行为），选择后记住
+const NEW_RESULT_TAB_KEY = "archery:sqlquery:new-result-tab";
+const newResultTab = ref(localStorage.getItem(NEW_RESULT_TAB_KEY) === "1");
+watch(newResultTab, (value) => {
+  try {
+    localStorage.setItem(NEW_RESULT_TAB_KEY, value ? "1" : "0");
+  } catch {
+    // 本地存储不可用时仅本次生效
+  }
+});
 
 // 编辑器实例
 const editorRef = ref<InstanceType<typeof SqlEditor>>();
@@ -308,10 +330,18 @@ function onBeautify() {
 
 async function onViewTableStructure() {
   if (!form.table_name) return;
-  const tab = ensureResultTab();
+  const title = `表结构: ${form.table_name}`;
+  // 同一张表复用已有结构标签，不同表新开标签，绝不覆盖查询结果
+  let tab = resultTabs.value.find(
+    (t) => t.kind === "structure" && t.title === title
+  );
+  if (!tab) tab = addResultTab("structure");
+  activeTabId.value = tab.id;
   tab.loading = true;
   tab.envelope = null;
-  tab.title = `表结构: ${form.table_name}`;
+  tab.title = title;
+  tab.limitNum = 0;
+  tab.tableName = form.table_name;
   try {
     const r = await describeTable({
       instance_name: form.instance_name,
@@ -380,6 +410,33 @@ function getSqlToRun(): string {
   return sel || sqlContent.value;
 }
 
+/** 结果 tab 标题：优先显示 SQL 摘要，便于区分多个结果 */
+function makeResultTitle(sql: string, fallback: string): string {
+  const cleaned = sql
+    .replace(/^\s*(?:--[^\n]*\n|\/\*[\s\S]*?\*\/|\s)+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return fallback;
+  return cleaned.length > 28 ? `${cleaned.slice(0, 28)}…` : cleaned;
+}
+
+/** 查询报错定位：编辑器为空时回填本次 SQL；内容不一致时按行号尽力定位 */
+function onLocateError(
+  tab: ResultTab,
+  position: { line: number; column?: number }
+) {
+  const current = editorRef.value?.getValue() || "";
+  if (!current.trim() && tab.sql) {
+    sqlContent.value = tab.sql;
+    nextTick(() => editorRef.value?.focusLine(position.line, position.column));
+    return;
+  }
+  if (tab.sql && current.trim() !== tab.sql.trim()) {
+    ElMessage.info("编辑器内容与本次执行 SQL 不一致，按行号定位");
+  }
+  editorRef.value?.focusLine(position.line, position.column);
+}
+
 async function doExecute(isExplain = false) {
   if (!form.instance_name) return ElMessage.warning("请选择实例");
   if (!form.db_name) return ElMessage.warning("请选择库");
@@ -388,10 +445,15 @@ async function doExecute(isExplain = false) {
   sql = sql.replace(/\$\{([^}]+)\}/g, (_s, k) => paramValues.value[k] ?? "");
   if (isExplain) sql = withExplain(sql);
 
-  const tab = ensureResultTab();
+  const tab = newResultTab.value
+    ? addResultTab("query")
+    : ensureResultTab();
   tab.loading = true;
   tab.envelope = null;
   tab.sql = sql;
+  tab.limitNum = form.limit_num;
+  tab.tableName = form.table_name;
+  tab.title = makeResultTitle(sql, tab.title);
   try {
     const { data } = await executeQuery({
       instance_name: form.instance_name,
@@ -402,6 +464,10 @@ async function doExecute(isExplain = false) {
       tb_name: form.table_name || undefined,
     });
     tab.envelope = data;
+    // 后端会按查询权限压低 limit_num，以后端实际生效值为准
+    if (data.status === 0 && typeof data.data?.limit_num === "number") {
+      tab.limitNum = data.data.limit_num;
+    }
   } catch {
     tab.envelope = {
       status: 1,
@@ -602,6 +668,17 @@ onMounted(() => {
               </el-select>
             </el-form-item>
 
+            <el-form-item label="结果标签">
+              <el-tooltip
+                content="勾选后每次执行都会保留当前结果，在新标签中展示新结果"
+                placement="left"
+              >
+                <el-checkbox v-model="newResultTab">
+                  每次执行新建标签
+                </el-checkbox>
+              </el-tooltip>
+            </el-form-item>
+
             <el-form-item label="操作">
               <div class="action-btns">
                 <el-button
@@ -758,11 +835,20 @@ onMounted(() => {
         <el-tab-pane
           v-for="t in resultTabs"
           :key="t.id"
-          :label="t.title"
           :name="t.id"
           closable
         >
-          <SqlQueryResultTable :envelope="t.envelope" :loading="t.loading" />
+          <template #label>
+            <span :title="t.sql || t.title">{{ t.title }}</span>
+          </template>
+          <SqlQueryResultTable
+            :envelope="t.envelope"
+            :loading="t.loading"
+            :limit-num="t.limitNum"
+            :sql="t.sql"
+            :table-name="t.tableName"
+            @locate-error="(pos) => onLocateError(t, pos)"
+          />
           <div v-if="t.sql" class="executed-sql">
             <span class="lbl">执行 SQL：</span>
             <code>{{ t.sql }}</code>
