@@ -92,7 +92,13 @@ async function loadConfig() {
     const values: Record<string, any> = {};
     for (const f of CONFIG_FIELDS) {
       const raw = data[f.key];
-      if (isMultiselectArray(f)) {
+      if (f.type === "timerange") {
+        const parts = typeof raw === "string" ? raw.split("-") : [];
+        values[f.key] =
+          parts.length === 2 && parts[0].trim() && parts[1].trim()
+            ? [parts[0].trim(), parts[1].trim()]
+            : null;
+      } else if (isMultiselectArray(f)) {
         values[f.key] = typeof raw === "string" && raw ? raw.split(",") : Array.isArray(raw) ? raw : [];
       } else {
         values[f.key] = raw ?? (f.type === "boolean" ? false : f.type === "number" ? "" : "");
@@ -133,7 +139,21 @@ async function loadDynamicOptions() {
 async function onSave() {
   saving.value = true;
   try {
-    await saveConfig(configValues.value);
+    // timerange 字段在前端是 [start, end]，落库统一为 "HH:mm-HH:mm"
+    const payload: Record<string, unknown> = { ...configValues.value };
+    for (const f of CONFIG_FIELDS) {
+      if (f.type !== "timerange") continue;
+      const range = payload[f.key];
+      if (Array.isArray(range) && range.length === 2 && range[0] && range[0] === range[1]) {
+        ElMessage.error(`${f.label}的起止时间不能相同`);
+        return;
+      }
+      payload[f.key] =
+        Array.isArray(range) && range.length === 2 && range[0] && range[1]
+          ? `${range[0]}-${range[1]}`
+          : "";
+    }
+    await saveConfig(payload);
     ElMessage.success("配置已保存");
   } catch (e) {
     ElMessage.error(`保存失败：${(e as Error).message}`);
@@ -294,6 +314,18 @@ onMounted(() => {
                         :value="o.value"
                       />
                     </el-select>
+                    <!-- timerange -->
+                    <el-time-picker
+                      v-else-if="field.type === 'timerange'"
+                      v-model="configValues[field.key]"
+                      is-range
+                      format="HH:mm"
+                      value-format="HH:mm"
+                      range-separator="至"
+                      start-placeholder="开始时间"
+                      end-placeholder="结束时间"
+                      class="field-input field-time-range"
+                    />
                     <!-- text (default) -->
                     <el-input
                       v-else
@@ -301,6 +333,7 @@ onMounted(() => {
                       :placeholder="field.desc || ''"
                       class="field-input"
                     />
+                    <span v-if="field.type === 'timerange'" class="field-hint">留空为全天</span>
                     <!-- 描述 tooltip -->
                     <el-tooltip
                       v-if="field.desc"
@@ -455,6 +488,10 @@ onMounted(() => {
   .field-input {
     flex: 1;
     max-width: 320px;
+  }
+
+  .field-time-range {
+    max-width: 360px;
   }
 
   .field-help {

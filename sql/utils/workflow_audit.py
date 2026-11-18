@@ -1,5 +1,6 @@
 # -*- coding: UTF-8 -*-
 import dataclasses
+import datetime
 import importlib
 import json
 import re
@@ -110,6 +111,49 @@ class AuditSetting:
         if self.auto_reject or self.auto_pass:
             return ""
         return ",".join(str(x) for x in self.audit_auth_groups)
+
+
+_AUTO_REVIEW_TIME_RANGE_PATTERN = re.compile(
+    r"^\s*(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\s*$"
+)
+
+
+def in_auto_review_time_range(
+    time_range: str, now: datetime.datetime = None
+) -> bool:
+    """判断当前时间是否处于自动审核时间段内。
+
+    time_range 形如 "HH:MM-HH:MM"，为空表示全天生效；开始时间包含、
+    结束时间不包含，支持跨天（如 22:00-07:00）。配置非法、时间越界或
+    起止相同时均视为不在窗口内，交由人工审批（失败关闭）。
+    """
+    value = str(time_range or "").strip()
+    if not value:
+        return True
+    match = _AUTO_REVIEW_TIME_RANGE_PATTERN.match(value)
+    if not match:
+        logger.warning(f"自动审批时间段格式错误, 已转人工审批: {value}")
+        return False
+    start_hour, start_minute, end_hour, end_minute = map(int, match.groups())
+    if not (
+        0 <= start_hour <= 23
+        and 0 <= end_hour <= 23
+        and 0 <= start_minute <= 59
+        and 0 <= end_minute <= 59
+    ):
+        logger.warning(f"自动审批时间段取值越界, 已转人工审批: {value}")
+        return False
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    if start == end:
+        logger.warning(f"自动审批时间段起止相同, 已转人工审批: {value}")
+        return False
+    current = now or timezone.now()
+    current_minutes = current.hour * 60 + current.minute
+    if start < end:
+        return start <= current_minutes < end
+    # 跨天窗口，如 22:00-07:00
+    return current_minutes >= start or current_minutes < end
 
 
 # 列出审核工单中不同状态的合法操作
@@ -235,6 +279,11 @@ class AuditV2:
             return False
         auto_review_enabled = self.sys_config.get("auto_review", False)
         if not auto_review_enabled:
+            return False
+        # 未配置时间段时全天生效
+        if not in_auto_review_time_range(
+            self.sys_config.get("auto_review_time_range", "")
+        ):
             return False
         auto_review_tags = self.sys_config.get("auto_review_tag", "").split(",")
         auto_review_db_type = self.sys_config.get("auto_review_db_type", "").split(",")

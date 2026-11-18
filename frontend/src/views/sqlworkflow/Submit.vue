@@ -52,6 +52,20 @@ const checkError = ref(0);
 const checked = ref(false);
 const submitting = ref(false);
 const checking = ref(false);
+/** 服务端 AI 审核快照 token，随检测结果一起失效 */
+const aiReviewId = ref("");
+/** 检测请求序号：SQL/实例/库变化后，旧请求的结果直接丢弃 */
+let checkSeq = 0;
+
+function invalidateCheck() {
+  checkSeq += 1;
+  checked.value = false;
+  checkRows.value = [];
+  checkWarning.value = 0;
+  checkError.value = 0;
+  aiReviewId.value = "";
+  checking.value = false;
+}
 
 async function loadGroups() {
   try {
@@ -66,6 +80,7 @@ async function loadGroups() {
 watch(
   () => form.group_id,
   async (gid) => {
+    invalidateCheck();
     instanceOptions.value = [];
     form.instance = undefined;
     dbOptions.value = [];
@@ -93,6 +108,7 @@ watch(
 watch(
   () => form.instance,
   async (iid) => {
+    invalidateCheck();
     dbOptions.value = [];
     form.db_name = "";
     if (!iid) return;
@@ -109,10 +125,7 @@ watch(
 
 // SQL 内容变更后需重新检测（提交时自动重检）
 watch(sqlContent, () => {
-  if (checked.value) {
-    checked.value = false;
-    checkRows.value = [];
-  }
+  invalidateCheck();
   maybeFillName();
   scheduleSaveDraft();
 });
@@ -121,6 +134,7 @@ watch(sqlContent, () => {
 watch(
   () => form.db_name,
   () => {
+    invalidateCheck();
     maybeFillName();
     scheduleSaveDraft();
   }
@@ -232,10 +246,7 @@ async function resetForm() {
   form.run_date_start = "";
   form.run_date_end = "";
   sqlContent.value = "";
-  checked.value = false;
-  checkRows.value = [];
-  checkWarning.value = 0;
-  checkError.value = 0;
+  invalidateCheck();
   nameTouched.value = false;
   autoName.value = "";
   draftRestored.value = false;
@@ -268,28 +279,36 @@ async function runCheck(): Promise<boolean> {
     ElMessage.warning("请输入 SQL");
     return false;
   }
+  const seq = ++checkSeq;
   checking.value = true;
   // 检测期间清除上次结果，避免「旧结果 + 转圈」并存
   checked.value = false;
   checkRows.value = [];
+  aiReviewId.value = "";
   try {
     const { data } = await sqlCheck({
       instance_id: form.instance,
       db_name: form.db_name,
       full_sql: sqlContent.value,
     });
+    // SQL/实例/库在请求期间被改过：丢弃旧结果
+    if (seq !== checkSeq) return false;
     checkRows.value = Array.isArray(data.rows) ? (data.rows as ReviewRow[]) : [];
     checkWarning.value = Number(data.warning_count ?? 0);
     checkError.value = Number(data.error_count ?? 0);
+    aiReviewId.value = String(data.ai_review_id || "");
     checked.value = true;
     return true;
   } catch {
     // 后端 execute_check 异常以 DRF ValidationError({"errors": "..."}) 返回（HTTP 400），
     // 请求拦截器已弹出 ElMessage 提示，这里只需标记检测未通过。
-    checked.value = false;
+    if (seq === checkSeq) {
+      checked.value = false;
+      aiReviewId.value = "";
+    }
     return false;
   } finally {
-    checking.value = false;
+    if (seq === checkSeq) checking.value = false;
   }
 }
 
@@ -353,8 +372,8 @@ async function onSubmit() {
         is_offline_export: 0,
       },
       sql_content: sqlContent.value,
-      // 回传检测阶段的含 AI 字段的结果，提交时复用，避免重复调用 AI
-      ai_review_content: checkRows.value,
+      // 只回传服务端审核快照 token；后端会重新校验 SQL 指纹与目标实例/库
+      ai_review_id: aiReviewId.value || undefined,
     });
     clearDraft();
     ElMessage.success("提交成功");

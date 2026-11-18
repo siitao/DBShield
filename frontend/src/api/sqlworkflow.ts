@@ -269,6 +269,8 @@ export interface SqlCheckResult {
   column_list?: string[];
   status?: string;
   affected_rows?: number;
+  /** 服务端 AI 审核快照 token，提交时回传以复用 AI 结论 */
+  ai_review_id?: string;
   [key: string]: unknown;
 }
 
@@ -296,8 +298,8 @@ export function submitWorkflow(params: {
     export_format?: string;
   };
   sql_content: string;
-  /** 检测阶段返回的含 AI 字段的 rows，提交时回传以复用 AI 结果（避免重复调用 AI） */
-  ai_review_content?: ReviewRow[];
+  /** 检测接口返回的服务端 AI 审核快照 token；SQL 变更后必须重新检测 */
+  ai_review_id?: string;
 }) {
   return request.post<SqlWorkflowRow>("/api/v1/workflow/", params);
 }

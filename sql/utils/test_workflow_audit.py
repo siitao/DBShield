@@ -31,6 +31,7 @@ from sql.utils.workflow_audit import (
     ReviewNode,
     ReviewInfo,
     get_auditor,
+    in_auto_review_time_range,
 )
 from sql.models import WorkflowAuditDetail
 from unittest.mock import patch, MagicMock
@@ -513,6 +514,66 @@ def test_auto_review_not_applicable(
     audit.sys_config.set("auto_review_max_update_rows", 1000)
     # 全部条件满足, 自动审核通过
     assert audit.is_auto_review() is True
+
+
+@pytest.mark.parametrize(
+    "time_range,now,expected",
+    [
+        # 未配置时间段, 全天生效
+        ("", datetime.datetime(2026, 11, 18, 12, 0), True),
+        ("   ", datetime.datetime(2026, 11, 18, 12, 0), True),
+        # 普通时间段, 开始包含、结束不包含
+        ("09:00-18:00", datetime.datetime(2026, 11, 18, 8, 59), False),
+        ("09:00-18:00", datetime.datetime(2026, 11, 18, 9, 0), True),
+        ("09:00-18:00", datetime.datetime(2026, 11, 18, 17, 59), True),
+        ("09:00-18:00", datetime.datetime(2026, 11, 18, 18, 0), False),
+        # 允许宽松格式与空格
+        (" 9:00 - 18:00 ", datetime.datetime(2026, 11, 18, 10, 0), True),
+        # 跨天时间段
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 22, 0), True),
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 23, 30), True),
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 3, 0), True),
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 6, 59), True),
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 7, 0), False),
+        ("22:00-07:00", datetime.datetime(2026, 11, 18, 12, 0), False),
+        # 非法配置, 失败关闭
+        ("09:00-09:00", datetime.datetime(2026, 11, 18, 12, 0), False),
+        ("24:00-01:00", datetime.datetime(2026, 11, 18, 0, 30), False),
+        ("09:60-18:00", datetime.datetime(2026, 11, 18, 12, 0), False),
+        ("not-a-range", datetime.datetime(2026, 11, 18, 12, 0), False),
+    ],
+)
+def test_in_auto_review_time_range(time_range, now, expected):
+    assert in_auto_review_time_range(time_range, now) is expected
+
+
+def test_auto_review_time_range(
+    db_instance, sql_workflow, instance_tag, setup_sys_config
+):
+    """时间段外提交的工单转人工审批, 窗口内保持原有自动审核逻辑"""
+    sql_workflow, _ = sql_workflow
+    setup_sys_config.set("auto_review", True)
+    setup_sys_config.set("auto_review_db_type", "mysql")
+    setup_sys_config.set("auto_review_tag", instance_tag.tag_code)
+    setup_sys_config.set("auto_review_time_range", "09:00-18:00")
+    db_instance.instance_tag.add(instance_tag)
+
+    audit = AuditV2(workflow=sql_workflow, sys_config=setup_sys_config)
+    audit.workflow.sqlworkflowcontent.review_content = json.dumps(
+        [{"sql": "insert into t values (1)", "affected_rows": 0}]
+    )
+    audit.workflow.sqlworkflowcontent.save()
+
+    with patch(
+        "sql.utils.workflow_audit.timezone.now",
+        return_value=datetime.datetime(2026, 11, 18, 10, 0),
+    ):
+        assert audit.is_auto_review() is True
+    with patch(
+        "sql.utils.workflow_audit.timezone.now",
+        return_value=datetime.datetime(2026, 11, 18, 19, 0),
+    ):
+        assert audit.is_auto_review() is False
 
 
 @pytest.mark.parametrize(

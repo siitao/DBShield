@@ -2,6 +2,7 @@
 import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { Download } from "@element-plus/icons-vue";
 import { format as sqlFormat } from "sql-formatter";
 import TruncateCell from "@/components/TruncateCell.vue";
 import { fetchQueryInstances, fetchQueryResources } from "@/api/sqlquery";
@@ -319,6 +320,35 @@ function onCopyResult() {
   );
 }
 
+function onDownloadResult() {
+  if (result.value.length === 0) return;
+  const content = result.value.map((r) => r.sql).filter(Boolean).join("\n");
+  if (!content) {
+    ElMessage.warning("没有可下载的 SQL");
+    return;
+  }
+  const safePart = (value: string) => value.replace(/[\\/:*?"<>|]/g, "_");
+  const parts = [form.instance_name, form.only_schemas]
+    .filter(Boolean)
+    .map((v) => safePart(String(v)));
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/[-:T]/g, "")
+    .slice(0, 14);
+  const fileName = `my2sql_${parts.length ? parts.join("_") + "_" : ""}${timestamp}.sql`;
+
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  ElMessage.success(`已下载 ${result.value.length} 条 SQL`);
+}
+
 function confirmRollbackModeTip(): void {
   void ElMessageBox.confirm(
     "回滚模式生成的是反向 SQL（原 insert → delete，原 delete → insert），执行前务必人工核对；" +
@@ -455,7 +485,6 @@ loadInstances();
                 {{ form.save_sql ? "提交后台解析" : "获取 SQL" }}
               </el-button>
               <el-button type="success" :disabled="result.length === 0" @click="onSubmitWorkflow">提交工单</el-button>
-              <el-button :disabled="result.length === 0" @click="onCopyResult">复制</el-button>
             </div>
           </el-form>
 
@@ -477,7 +506,17 @@ loadInstances();
       <!-- 右：结果 -->
       <el-col :span="17">
         <el-card shadow="never">
-          <template #header>SQL 语句（{{ result.length }}）</template>
+          <template #header>
+            <div class="result-header">
+              <span>SQL 语句（{{ result.length }}）</span>
+              <div v-if="result.length > 0" class="result-actions">
+                <el-button size="small" @click="onCopyResult">复制</el-button>
+                <el-button size="small" type="primary" :icon="Download" @click="onDownloadResult">
+                  下载 SQL
+                </el-button>
+              </div>
+            </div>
+          </template>
 
           <el-alert
             v-if="asyncTaskId"
@@ -532,7 +571,7 @@ loadInstances();
                 <TruncateCell :value="(row as My2SqlRow).sql" :row="(row as My2SqlRow) as unknown as Record<string,unknown>" col="sql" />
               </template>
             </el-table-column>
-            <el-table-column label="ExtraInfo" min-width="200">
+            <el-table-column v-if="form.extra_info" label="ExtraInfo" min-width="200">
               <template #default="{ row }">
                 <TruncateCell :value="(row as My2SqlRow).extra_info || ''" :row="(row as My2SqlRow) as unknown as Record<string,unknown>" col="extra_info" />
               </template>
@@ -551,6 +590,19 @@ loadInstances();
     font-weight: 600;
     font-size: 13px;
     color: var(--el-text-color-primary);
+  }
+
+  .result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .result-actions {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
   }
 
   .el-select,

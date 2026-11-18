@@ -257,6 +257,7 @@ class OpenaiClient:
         sql_text: str,
         table_schemas: str,
         table_rows: str,
+        context_truncated: bool = False,
     ):
         """对单条 SQL 做风险审核 + 变更影响预测，返回结构化结果。
 
@@ -280,6 +281,7 @@ class OpenaiClient:
             sql_text=sql_text,
             table_schemas=table_schemas,
             table_rows=table_rows,
+            context_truncated=context_truncated,
         )
         messages = [dict(role="user", content=prompt)]
         try:
@@ -292,7 +294,13 @@ class OpenaiClient:
             return dict(AI_REVIEW_FALLBACK)
 
     def review_sql_batch_by_openai(
-        self, db_type: str, db_name: str, statements: list, table_schemas: str, table_rows: str
+        self,
+        db_type: str,
+        db_name: str,
+        statements: list,
+        table_schemas: str,
+        table_rows: str,
+        context_truncated: bool = False,
     ):
         """批量审核：一次评审多条 SQL，返回与 statements 等长的归一结果 list。
 
@@ -305,6 +313,7 @@ class OpenaiClient:
             statements=statements,
             table_schemas=table_schemas,
             table_rows=table_rows,
+            context_truncated=context_truncated,
         )
         messages = [dict(role="user", content=prompt)]
         logger.info(f"AI 批量审核 prompt 长度: {len(prompt)} 字符，语句数: {len(statements)}")

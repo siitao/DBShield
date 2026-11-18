@@ -78,6 +78,18 @@ function colLabel(col: string): string {
   return COL_LABEL_MAP[activeTab.value]?.[col] || col;
 }
 
+/** 通用审计里部分 action 是代码（如 slowquery.diagnose_start），展示时转成中文 */
+const ACTION_LABEL_MAP: Record<string, string> = {
+  "slowquery.diagnose_start": "发起慢查询诊断",
+  "slowquery.feedback": "慢查询诊断反馈",
+  "slowquery.suggestion_adopt": "采纳优化建议",
+};
+
+function actionLabel(action: unknown): string {
+  const raw = String(action ?? "");
+  return ACTION_LABEL_MAP[raw] || raw;
+}
+
 async function loadData() {
   loading.value = true;
   list.value = [];
@@ -143,7 +155,7 @@ onMounted(loadData);
           />
         </el-form-item>
         <el-form-item v-if="activeTab === 'general'" label="操作">
-          <el-input v-model="query.action" placeholder="操作类型" style="width: 160px" />
+          <el-input v-model="query.action" placeholder="操作代码，如 slowquery.feedback" style="width: 220px" />
         </el-form-item>
         <el-form-item v-if="activeTab === 'general'" label="时间">
           <el-date-picker
@@ -175,9 +187,17 @@ onMounted(loadData);
           :prop="col"
           :label="colLabel(col)"
           min-width="140"
-          :show-overflow-tooltip="!isSqlColumn(col)"
+          :show-overflow-tooltip="!isSqlColumn(col) && !(activeTab === 'general' && col === 'action')"
         >
-          <template v-if="isSqlColumn(col)" #default="{ row }">
+          <template
+            v-if="activeTab === 'general' && col === 'action'"
+            #default="{ row }"
+          >
+            <span :title="String((row as Record<string, unknown>).action ?? '')">
+              {{ actionLabel((row as Record<string, unknown>).action) }}
+            </span>
+          </template>
+          <template v-else-if="isSqlColumn(col)" #default="{ row }">
             <TruncateCell :value="(row as Record<string,unknown>)[col]" :row="row as Record<string,unknown>" :col="col" />
           </template>
         </el-table-column>

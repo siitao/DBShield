@@ -622,6 +622,7 @@ class TestWorkflow(APITestCase):
                 "column_list",
                 "status",
                 "affected_rows",
+                "ai_review_id",
             ],
         )
         self.assertListEqual(list(json.loads(r.content)["rows"][0].keys()), column_list)
@@ -644,6 +645,160 @@ class TestWorkflow(APITestCase):
         self.assertEqual(r.json()["workflow"]["workflow_name"], "上线工单1")
         self.assertEqual(r.json()["workflow"]["engineer"], self.user.username)
         self.assertEqual(r.json()["workflow"]["engineer_display"], self.user.display)
+
+    @patch("sql_api.api_workflow.get_engine")
+    def test_check_creates_server_ai_review_record(self, _get_engine):
+        """检测接口把 AI 结果落服务端快照并返回 token。"""
+        from sql.models import AIReviewRecord
+        from sql.utils.ai_review import sql_fingerprint
+
+        sql = "alter table abc add column note varchar(64);"
+        row = ReviewResult(
+            id=1,
+            stage="CHECKED",
+            errlevel=0,
+            stagestatus="Audit Completed",
+            errormessage="",
+            sql=sql,
+        )
+        row.ai_risk_level = "high"
+        row.ai_risk_score = 88
+        row.ai_summary = "AI summary"
+        row.ai_suggestion = "AI suggestion"
+        row.ai_ddl_lock_risk = "high"
+        row.ai_affected_rows_estimate = "约 100 行"
+        row.ai_use_osc = True
+        rs = ReviewSet(warning_count=0, error_count=0, rows=[row])
+        rs.ai_review_meta = {
+            "model": "test-model",
+            "prompt_version": "test-prompt-v1",
+            "contract_version": "1",
+            "schema_fingerprint": "schema-fp",
+            "context_truncated": True,
+        }
+        _get_engine.return_value.execute_check.return_value = rs
+        json_data = {
+            "full_sql": sql,
+            "db_name": "test_db",
+            "instance_id": self.ins.id,
+        }
+        r = self.client.post("/api/v1/workflow/sqlcheck/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        token = r.json().get("ai_review_id")
+        self.assertTrue(token)
+        record = AIReviewRecord.objects.get(token=token)
+        self.assertEqual(record.sql_hash, sql_fingerprint(sql))
+        self.assertEqual(record.ai_model, "test-model")
+        self.assertEqual(record.prompt_version, "test-prompt-v1")
+        self.assertTrue(record.context_truncated)
+        items = json.loads(record.result_json)
+        self.assertEqual(items[0]["ai_risk_level"], "high")
+
+    def _create_ai_review_record(self, sql, ai_level="high", **overrides):
+        """构造一条与检测结果绑定的服务端 AI 审核快照。"""
+        from sql.models import AIReviewRecord
+        from sql.utils.ai_review import sql_fingerprint
+
+        fields = {
+            "user": self.user,
+            "instance": self.ins,
+            "db_name": "test_db",
+            "db_type": "mysql",
+            "sql_hash": sql_fingerprint(sql),
+            "ai_model": "test-model",
+            "prompt_version": "test-prompt-v1",
+            "contract_version": "1",
+            "schema_fingerprint": "schema-fp",
+            "context_truncated": False,
+            "result_json": json.dumps(
+                [
+                    {
+                        "seq": 0,
+                        "sql_hash": sql_fingerprint(sql),
+                        "ai_risk_level": ai_level,
+                        "ai_risk_score": 88,
+                        "ai_summary": "AI summary",
+                        "ai_suggestion": "AI suggestion",
+                        "ai_ddl_lock_risk": "high",
+                        "ai_affected_rows_estimate": "约 100 行",
+                        "ai_use_osc": True,
+                    }
+                ],
+                ensure_ascii=False,
+            ),
+        }
+        fields.update(overrides)
+        return AIReviewRecord.objects.create(**fields)
+
+    def test_submit_workflow_reuses_server_ai_review(self):
+        """提交时只信任服务端 AI 审核快照，并按 SQL 指纹绑定。"""
+        sql = "alter table abc add column note varchar(64);"
+        record = self._create_ai_review_record(sql)
+        json_data = {
+            "workflow": {
+                "workflow_name": "AI审核工单",
+                "group_id": 1,
+                "db_name": "test_db",
+                "instance": self.ins.id,
+                "is_offline_export": 0,
+            },
+            "sql_content": sql,
+            "ai_review_id": str(record.token),
+        }
+        r = self.client.post("/api/v1/workflow/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED)
+        content = SqlWorkflowContent.objects.get(workflow_id=r.json()["workflow"]["id"])
+        rows = json.loads(content.review_content)
+        self.assertEqual(rows[0]["ai_risk_level"], "high")
+        self.assertEqual(rows[0]["ai_summary"], "AI summary")
+
+    def test_submit_workflow_rejects_ai_review_for_changed_sql(self):
+        """SQL 变更后旧 AI 审核快照必须失效。"""
+        record = self._create_ai_review_record(
+            "alter table abc add column note varchar(64);"
+        )
+        json_data = {
+            "workflow": {
+                "workflow_name": "AI审核工单",
+                "group_id": 1,
+                "db_name": "test_db",
+                "instance": self.ins.id,
+                "is_offline_export": 0,
+            },
+            "sql_content": "alter table abc add column other varchar(64);",
+            "ai_review_id": str(record.token),
+        }
+        r = self.client.post("/api/v1/workflow/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("SQL 内容已变更", str(r.json()))
+
+    def test_submit_workflow_rejects_expired_ai_review(self):
+        """超过有效期的 AI 审核快照必须重新检测。"""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from sql.models import AIReviewRecord
+
+        sql = "alter table abc add column note varchar(64);"
+        record = self._create_ai_review_record(sql)
+        AIReviewRecord.objects.filter(id=record.id).update(
+            created_at=timezone.now() - timedelta(hours=3)
+        )
+        json_data = {
+            "workflow": {
+                "workflow_name": "AI审核工单",
+                "group_id": 1,
+                "db_name": "test_db",
+                "instance": self.ins.id,
+                "is_offline_export": 0,
+            },
+            "sql_content": sql,
+            "ai_review_id": str(record.token),
+        }
+        r = self.client.post("/api/v1/workflow/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("已过期", str(r.json()))
 
     def test_submit_workflow_super(self):
         """测试管理员提交SQL上线工单，可以指定用户"""
@@ -1660,6 +1815,26 @@ class AiReviewCacheTest(TestCase):
         self.assertTrue(logs[1].cache_hit)
         self.assertEqual(logs[1].prompt_tokens, 0)
         self.assertEqual(logs[1].user_name, "u2")
+
+
+class AiReviewFingerprintTest(TestCase):
+    """AI 审核与提交内容绑定的 SQL 指纹。"""
+
+    def test_normalizes_line_endings(self):
+        from sql.utils.ai_review import sql_fingerprint
+
+        self.assertEqual(
+            sql_fingerprint("select 1\r\n"),
+            sql_fingerprint("select 1\n"),
+        )
+
+    def test_detects_sql_change(self):
+        from sql.utils.ai_review import sql_fingerprint
+
+        self.assertNotEqual(
+            sql_fingerprint("update t set a=1 where id=1"),
+            sql_fingerprint("update t set a=2 where id=1"),
+        )
 
 
 class AiUsageApiTest(APITestCase):

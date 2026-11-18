@@ -12,7 +12,8 @@ export type FieldType =
   | "boolean"
   | "password"
   | "select"
-  | "multiselect";
+  | "multiselect"
+  | "timerange";
 
 export interface ConfigField {
   key: string;
@@ -79,6 +80,7 @@ export const CONFIG_FIELDS: ConfigField[] = [
   { key: "auto_review_wrong", label: "自动驳回等级", type: "number", section: "功能模块配置", subsection: "SQL上线", desc: "1=警告驳回，2/空=错误驳回，其他不驳回" },
   { key: "enable_backup_switch", label: "是否开启备份选项", type: "boolean", section: "功能模块配置", subsection: "SQL上线", desc: "默认关闭，强制要求备份" },
   { key: "auto_review", label: "自动审批开关", type: "boolean", section: "功能模块配置", subsection: "SQL上线", desc: "是否开启SQL上线自动审批" },
+  { key: "auto_review_time_range", label: "自动审批时间段", type: "timerange", section: "功能模块配置", subsection: "SQL上线", desc: "如 22:00-07:00，支持跨天；留空表示全天自动审批（按服务器时间）", showWhen: { key: "auto_review", value: true } },
   { key: "auto_review_tag", label: "自动审批实例标签", type: "multiselect", section: "功能模块配置", subsection: "SQL上线", dynamic: "tags", showWhen: { key: "auto_review", value: true } },
   { key: "auto_review_db_type", label: "自动审批数据库类型", type: "multiselect", section: "功能模块配置", subsection: "SQL上线", options: DB_TYPES.map((t) => ({ value: t, label: t })), showWhen: { key: "auto_review", value: true } },
   { key: "auto_review_regex", label: "自动审批过滤正则", type: "text", section: "功能模块配置", subsection: "SQL上线", desc: "匹配的语句需要人工审批", showWhen: { key: "auto_review", value: true } },

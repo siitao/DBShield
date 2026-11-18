@@ -16,6 +16,10 @@ mysql / pgsql / mongo 的 execute_check 通过 run_ai_review() 接入，行为�
 import hashlib
 import logging
 
+from common.utils.ai_prompts import (
+    REVIEW_CONTRACT_VERSION,
+    REVIEW_PROMPT_VERSION,
+)
 from sql.utils.sql_utils import (
     extract_mongo_collections,
     extract_tables,
@@ -33,9 +37,22 @@ BATCH_SIZE = 10
 MAX_CONTEXT_OBJECTS = 5
 # 审核结果批级缓存 TTL：短于优化建议的 24h，降低结构/行数漂移的陈旧风险
 CACHE_TTL = 3600
+# 检测结果快照的提交有效期：超过后必须重新检测，避免旧结论被长期复用
+AI_REVIEW_TTL_HOURS = 2
 
 _UNKNOWN_SUMMARY = "AI 审核失败"
 _SKIP_SUMMARY = "AI 审核跳过（超过审核条数上限）"
+
+# 挂到 ReviewResult 上、需要跨请求复用的 AI 字段（检测 → 提交 → 详情）
+AI_REVIEW_FIELDS = (
+    "ai_risk_level",
+    "ai_risk_score",
+    "ai_summary",
+    "ai_suggestion",
+    "ai_ddl_lock_risk",
+    "ai_affected_rows_estimate",
+    "ai_use_osc",
+)
 
 
 def _cache_get_quiet(key):
@@ -56,9 +73,38 @@ def _cache_set_quiet(key, value, ttl):
         pass
 
 
-def batch_cache_key(model, db_name, masked_sqls):
+def sql_fingerprint(sql: str) -> str:
+    """SQL 文本指纹（统一换行、去除首尾空白后的 SHA-256）。
+
+    用于 AI 审核结果与提交内容绑定：SQL 任意变更都会导致指纹不同；
+    仅归一 CRLF/CR，避免同一 SQL 在不同传输层被误判为变更。
+    """
+    normalized = (sql or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def batch_cache_key(
+    model,
+    db_name,
+    masked_sqls,
+    schema_fingerprint="",
+    prompt_version="",
+    contract_version="",
+    db_type="",
+):
+    """批级缓存 key：模型、库类型/库、SQL、表结构指纹与 prompt/契约版本共同决定。"""
     digest = hashlib.md5(
-        "||".join([model, db_name or "", *masked_sqls]).encode("utf-8")
+        "||".join(
+            [
+                model,
+                db_type or "",
+                db_name or "",
+                prompt_version or "",
+                contract_version or "",
+                schema_fingerprint or "",
+                *masked_sqls,
+            ]
+        ).encode("utf-8")
     ).hexdigest()
     return f"ai_sql_review_batch:{digest}"
 
@@ -166,6 +212,26 @@ def _collect_context(engine, db_type, db_name, names):
     )
 
 
+def _prepare_context(engine, db_type, db_name, names):
+    """收集上下文并生成指纹/截断元数据。
+
+    返回 (schema_ctx, rows_ctx, meta)。meta 中的 schema_fingerprint 参与
+    缓存 key，context_truncated 暴露给 prompt 与工单审核记录。
+    """
+    included = names[:MAX_CONTEXT_OBJECTS]
+    schema_ctx, rows_ctx = _collect_context(engine, db_type, db_name, names)
+    schema_fingerprint = hashlib.sha256(
+        f"{schema_ctx}\n--rows--\n{rows_ctx}".encode("utf-8")
+    ).hexdigest()
+    meta = {
+        "context_truncated": len(names) > MAX_CONTEXT_OBJECTS,
+        "total_objects": len(names),
+        "included_objects": list(included),
+        "schema_fingerprint": schema_fingerprint,
+    }
+    return schema_ctx, rows_ctx, meta
+
+
 def _attach(row, result):
     """把归一后的审核结果挂到 ReviewResult 行的自定义属性上。"""
     row.ai_risk_level = result["risk_level"]
@@ -193,29 +259,53 @@ def _attach_unknown(row, summary=_UNKNOWN_SUMMARY):
 def _review_one(engine, client, db_type, db_name, masked_sql):
     """单条回退审核（批量不可用/个别缺失时）。失败返回 {"error": ...}。"""
     names = _extract_obj_names([masked_sql], db_type)
-    schema_ctx, rows_ctx = _collect_context(engine, db_type, db_name, names)
+    schema_ctx, rows_ctx, context_meta = _prepare_context(
+        engine, db_type, db_name, names
+    )
     return client.review_sql_by_openai(
         db_type=db_type,
         db_name=db_name,
         sql_text=masked_sql,
         table_schemas=mask_sql_literals(schema_ctx, db_type),
         table_rows=rows_ctx,
+        context_truncated=context_meta["context_truncated"],
     )
 
 
 def review_statements(
     engine, client, db_type, db_name, statements, instance_name="", user_name=""
 ):
-    """批量评审一批语句，返回与 statements 等长的归一结果 list。
+    """批量评审一批语句，返回 (与 statements 等长的结果 list, 上下文元数据)。
 
     每项为归一结果 dict；该项 AI 完全不可用时为 {"error": ...} 占位
-    （调用方按 "risk_level" 不存在判 unknown）。不会抛出异常。
+    （调用方按 "risk_level" 不存在判 unknown）。批级异常会抛出。
+    上下文元数据包含 schema 指纹、是否截断、模型/prompt/契约版本。
     """
     from common.utils.ai_gateway import record_ai_usage
 
     masked = [mask_sql_literals(s or "", db_type) for s in statements]
     model = str(client.default_chat_model)
-    cache_key = batch_cache_key(model, db_name or "", masked)
+
+    # 先收集上下文：schema 指纹参与缓存 key，表结构变化后旧缓存自然失效
+    names = _extract_obj_names(masked, db_type)
+    schema_ctx, rows_ctx, context_meta = _prepare_context(
+        engine, db_type, db_name, names
+    )
+    cache_key = batch_cache_key(
+        model,
+        db_name or "",
+        masked,
+        schema_fingerprint=context_meta["schema_fingerprint"],
+        prompt_version=REVIEW_PROMPT_VERSION,
+        contract_version=REVIEW_CONTRACT_VERSION,
+        db_type=db_type,
+    )
+    meta = {
+        **context_meta,
+        "model": model,
+        "prompt_version": REVIEW_PROMPT_VERSION,
+        "contract_version": REVIEW_CONTRACT_VERSION,
+    }
 
     results = None
     cache_hit = False
@@ -226,14 +316,13 @@ def review_statements(
 
     try:
         if results is None:
-            names = _extract_obj_names(masked, db_type)
-            schema_ctx, rows_ctx = _collect_context(engine, db_type, db_name, names)
             results = client.review_sql_batch_by_openai(
                 db_type=db_type,
                 db_name=db_name,
                 statements=masked,
                 table_schemas=mask_sql_literals(schema_ctx, db_type),
                 table_rows=rows_ctx,
+                context_truncated=context_meta["context_truncated"],
             )
         if results is None:
             # 整批解析失败 → 全部逐条回退
@@ -289,7 +378,7 @@ def review_statements(
             isinstance(r, dict) and "risk_level" in r for r in results
         ):
             _cache_set_quiet(cache_key, results, CACHE_TTL)
-        return results
+        return results, meta
     except Exception as e:
         # 批级异常（如上下文收集失败）：整批判 failed，由调用方逐行挂 unknown
         logger.warning(f"AI 批量审核失败，整批降级 unknown: {e}")
@@ -311,6 +400,9 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
 
     开关（ai_review_enabled）/ OpenAI 配置不满足时静默跳过；任何异常
     均降级为 unknown 占位，绝不影响检测主流程（errlevel 等不变）。
+
+    审核完成后把模型/prompt/契约版本、schema 指纹、上下文截断标记写入
+    check_result.ai_review_meta，供检测接口落 AIReviewRecord。
     """
     # 仅 mysql/clickhouse/tdengine 在 __init__ 里设了 self.config，
     # mongo/pgsql 等引擎没有该属性——缺失时视为未开启，而非 AttributeError
@@ -340,11 +432,27 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
             continue
         eligible.append(row)
 
+    if not eligible:
+        return None
+
+    aggregate_meta = {
+        "model": str(client.default_chat_model),
+        "prompt_version": REVIEW_PROMPT_VERSION,
+        "contract_version": REVIEW_CONTRACT_VERSION,
+        "context_truncated": False,
+        "total_objects": 0,
+        "included_objects": [],
+        "schema_fingerprint": "",
+        "statement_count": len(eligible),
+        "partial": False,
+    }
+    fingerprints = []
+
     for i in range(0, len(eligible), BATCH_SIZE):
         batch_rows = eligible[i : i + BATCH_SIZE]
         statements = [row.sql or "" for row in batch_rows]
         try:
-            results = review_statements(
+            results, batch_meta = review_statements(
                 engine,
                 client,
                 db_type,
@@ -353,8 +461,22 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
                 instance_name=instance_name,
                 user_name=user_name,
             )
+            aggregate_meta["context_truncated"] = bool(
+                aggregate_meta["context_truncated"]
+                or batch_meta.get("context_truncated")
+            )
+            aggregate_meta["total_objects"] = max(
+                aggregate_meta["total_objects"],
+                int(batch_meta.get("total_objects") or 0),
+            )
+            for obj in batch_meta.get("included_objects") or []:
+                if obj not in aggregate_meta["included_objects"]:
+                    aggregate_meta["included_objects"].append(obj)
+            if batch_meta.get("schema_fingerprint"):
+                fingerprints.append(batch_meta["schema_fingerprint"])
         except Exception:
             # 批级异常（上下文收集失败等）：整批挂 unknown，不中断检测
+            aggregate_meta["partial"] = True
             for row in batch_rows:
                 _attach_unknown(row)
             continue
@@ -363,3 +485,10 @@ def run_ai_review(engine, check_result, db_type, db_name, user_name=""):
                 _attach(row, result)
             else:
                 _attach_unknown(row)
+
+    if fingerprints:
+        aggregate_meta["schema_fingerprint"] = hashlib.sha256(
+            "|".join(fingerprints).encode("utf-8")
+        ).hexdigest()
+    check_result.ai_review_meta = aggregate_meta
+    return aggregate_meta

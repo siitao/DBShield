@@ -1,5 +1,6 @@
 import datetime
 import inspect
+import json
 import logging
 import traceback
 
@@ -19,6 +20,7 @@ from common.utils.ai_risk import score_band
 from common.utils.const import WorkflowStatus, WorkflowType, WorkflowAction
 from sql.engines import get_engine
 from sql.models import (
+    AIReviewRecord,
     Instance,
     SqlWorkflow,
     SqlWorkflowContent,
@@ -29,6 +31,7 @@ from sql.models import (
     QueryPrivilegesApply,
 )
 from sql.notify import notify_for_audit, notify_for_execute
+from sql.utils.ai_review import AI_REVIEW_FIELDS, sql_fingerprint
 from sql_api.api_misc import _query_apply_audit_call_back
 from sql.utils.resource_group import user_groups, user_instances, get_current_reviewers
 from sql.utils.sql_review import (
@@ -56,6 +59,50 @@ from .serializers import (
 )
 
 logger = logging.getLogger("default")
+
+
+def _save_ai_review_record(request, instance, check_result):
+    """把本次检测的服务端 AI 审核结果落快照，返回提交时可用的 token。
+
+    AI 未开启/未产生结果时返回空串；落库失败只记日志，不影响检测主流程。
+    """
+    meta = getattr(check_result, "ai_review_meta", None)
+    if not meta:
+        return ""
+    ai_rows = []
+    for seq, row in enumerate(getattr(check_result, "rows", None) or []):
+        if isinstance(row, dict):
+            sql = row.get("sql") or ""
+        else:
+            sql = getattr(row, "sql", "") or ""
+        if not sql:
+            continue
+        item = {"seq": seq, "sql_hash": sql_fingerprint(sql)}
+        for field in AI_REVIEW_FIELDS:
+            item[field] = (
+                row.get(field) if isinstance(row, dict) else getattr(row, field, None)
+            )
+        ai_rows.append(item)
+    if not ai_rows:
+        return ""
+    try:
+        record = AIReviewRecord.objects.create(
+            user=request.user,
+            instance=instance,
+            db_name=request.data.get("db_name", "") or "",
+            db_type=getattr(instance, "db_type", "") or "",
+            sql_hash=sql_fingerprint(request.data.get("full_sql", "")),
+            ai_model=str(meta.get("model") or ""),
+            prompt_version=str(meta.get("prompt_version") or ""),
+            contract_version=str(meta.get("contract_version") or ""),
+            schema_fingerprint=str(meta.get("schema_fingerprint") or ""),
+            context_truncated=bool(meta.get("context_truncated")),
+            result_json=json.dumps(ai_rows, ensure_ascii=False, default=str),
+        )
+    except Exception:
+        logger.warning("保存 AI 审核记录失败", exc_info=True)
+        return ""
+    return str(record.token)
 
 
 class ExecuteCheck(views.APIView):
@@ -99,6 +146,10 @@ class ExecuteCheck(views.APIView):
             check_result = check_engine.execute_check(**check_kwargs)
         except Exception as e:
             raise serializers.ValidationError({"errors": f"{e}"})
+        # AI 审核结果落服务端快照，返回 token；提交时凭 token 复用并校验绑定
+        ai_review_id = _save_ai_review_record(request, instance, check_result)
+        if ai_review_id:
+            check_result.ai_review_id = ai_review_id
         check_result.rows = check_result.to_dict()
         serializer_obj = ExecuteCheckResultSerializer(check_result)
         return Response(serializer_obj.data)

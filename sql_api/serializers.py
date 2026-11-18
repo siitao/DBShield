@@ -1,5 +1,10 @@
+import json
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import serializers
 from sql.models import (
+    AIReviewRecord,
     Users,
     Instance,
     Tunnel,
@@ -18,6 +23,7 @@ from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError
 from django.db import transaction
 from sql.engines import get_engine
+from sql.utils.ai_review import AI_REVIEW_FIELDS, AI_REVIEW_TTL_HOURS, sql_fingerprint
 from sql.utils.workflow_audit import Audit, get_auditor
 from sql.utils.resource_group import user_groups, user_instances
 from common.utils.const import WorkflowType, WorkflowStatus
@@ -428,6 +434,11 @@ class ExecuteCheckResultSerializer(serializers.Serializer):
     column_list = serializers.JSONField(read_only=True)
     status = serializers.CharField(read_only=True)
     affected_rows = serializers.IntegerField(read_only=True)
+    ai_review_id = serializers.SerializerMethodField()
+
+    def get_ai_review_id(self, obj):
+        """服务端 AI 审核快照 token；AI 未启用/失败时为空串。"""
+        return getattr(obj, "ai_review_id", "")
 
 
 class WorkflowSerializer(serializers.ModelSerializer):
@@ -528,10 +539,9 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
         except Exception as e:
             raise serializers.ValidationError({"errors": str(e)})
 
-        # 合并检测阶段的 AI 审核结果（提交时不重复调用 AI，直接复用前端回传的检测结果）。
-        # 按 SQL 文本匹配，把 ai_* 字段挂到本次重算的 check_result.rows 上，
-        # 保证详情页的 AI 建议不丢失，同时不重复消耗 AI token。
-        self._merge_ai_review_fields(check_result)
+        # 复用检测阶段的服务端 AI 审核快照：只信任 review_id，并校验发起人/
+        # 实例/库/SQL 指纹，避免客户端篡改 AI 字段或把旧结论套到新 SQL 上。
+        self._apply_ai_review_record(check_result, workflow_data, instance, sql_content)
 
         # 未开启备份选项，并且engine支持备份，强制设置备份
         is_backup = (
@@ -576,56 +586,68 @@ class WorkflowContentSerializer(serializers.ModelSerializer):
         auditor.workflow.save()
         return workflow_content
 
-    def _merge_ai_review_fields(self, check_result):
-        """把检测阶段的 AI 审核结果合并到提交时重算的 check_result 上。
+    def _apply_ai_review_record(
+        self, check_result, workflow_data, instance, sql_content
+    ):
+        """用服务端 AI 审核快照回填本次检测结果。
 
-        提交工单时会重跑 Inception 防绕过（得到权威的 errlevel/errormessage），
-        但跳过 AI 调用（避免与检测阶段重复）。这里从前端回传的
-        `ai_review_content`（检测接口返回的 rows）中提取 AI 字段，按 SQL 文本
-        匹配挂到本次 check_result.rows 上。任何异常均静默跳过，不影响提交。
+        检测接口已把 AI 结果落到 AIReviewRecord；提交时只信任 review_id，
+        并校验发起人、实例、库、SQL 指纹与有效期。客户端回传的 AI 字段
+        不再采信，避免篡改风险等级或把旧结论套到变更后的 SQL 上。
         """
-        import json
-
-        ai_rows = self.context["request"].data.get("ai_review_content")
-        if not ai_rows:
+        review_id = self.context["request"].data.get("ai_review_id")
+        if not review_id:
             return
-        if isinstance(ai_rows, str):
-            try:
-                ai_rows = json.loads(ai_rows)
-            except (ValueError, TypeError):
-                return
-        if not isinstance(ai_rows, list) or not ai_rows:
+        request_user = self.context["request"].user
+        try:
+            record = AIReviewRecord.objects.get(token=review_id)
+        except (AIReviewRecord.DoesNotExist, ValidationError, ValueError, TypeError):
+            raise serializers.ValidationError(
+                {"errors": "AI 审核结果无效，请重新检测后再提交"}
+            )
+        if record.user_id != request_user.id and not request_user.is_superuser:
+            raise serializers.ValidationError({"errors": "无权使用该 AI 审核结果"})
+        if record.instance_id != instance.id or (record.db_name or "") != (
+            workflow_data.get("db_name") or ""
+        ):
+            raise serializers.ValidationError(
+                {"errors": "AI 审核结果与当前实例/库不一致，请重新检测"}
+            )
+        if record.sql_hash != sql_fingerprint(sql_content):
+            raise serializers.ValidationError(
+                {"errors": "SQL 内容已变更，请重新检测后再提交"}
+            )
+        if record.created_at < timezone.now() - timedelta(hours=AI_REVIEW_TTL_HOURS):
+            raise serializers.ValidationError(
+                {"errors": "AI 审核结果已过期，请重新检测后再提交"}
+            )
+
+        try:
+            ai_rows = json.loads(record.result_json or "[]")
+        except (ValueError, TypeError):
+            ai_rows = []
+        ai_by_hash = {}
+        for item in ai_rows:
+            if isinstance(item, dict) and item.get("sql_hash"):
+                ai_by_hash[item["sql_hash"]] = item
+        if not ai_by_hash:
             return
 
-        # 构建 sql → ai 字段 映射（以检测阶段为准）
-        ai_fields = (
-            "ai_risk_level",
-            "ai_risk_score",
-            "ai_summary",
-            "ai_suggestion",
-            "ai_ddl_lock_risk",
-            "ai_affected_rows_estimate",
-            "ai_use_osc",
-        )
-        sql_to_ai = {}
-        for r in ai_rows:
-            if not isinstance(r, dict):
-                continue
-            sql = (r.get("sql") or "").strip()
-            if sql:
-                sql_to_ai[sql] = {k: r.get(k) for k in ai_fields if k in r}
-
-        if not sql_to_ai:
-            return
-
-        # 按 sql 匹配挂到本次 check_result.rows
         for row in check_result.rows:
             if isinstance(row, dict):
+                sql = row.get("sql") or ""
+            else:
+                sql = getattr(row, "sql", "") or ""
+            item = ai_by_hash.get(sql_fingerprint(sql))
+            if not item:
                 continue
-            sql = (getattr(row, "sql", "") or "").strip()
-            if sql in sql_to_ai:
-                for k, v in sql_to_ai[sql].items():
-                    setattr(row, k, v)
+            for field in AI_REVIEW_FIELDS:
+                if field not in item:
+                    continue
+                if isinstance(row, dict):
+                    row[field] = item[field]
+                else:
+                    setattr(row, field, item[field])
 
     class Meta:
         model = SqlWorkflowContent

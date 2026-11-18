@@ -2,7 +2,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { ArrowRight } from "@element-plus/icons-vue";
+import { ArrowRight, Download, View } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
 import { fetchUserInstances } from "@/api/group";
 import {
@@ -477,10 +477,28 @@ onUnmounted(() => {
         >
           下载文件
         </el-button>
-        <el-button v-if="detail.is_can_rollback" @click="onViewRollback">
+        <span
+          v-if="detail.is_can_rollback"
+          class="action-sep"
+          aria-hidden="true"
+        ></span>
+        <el-button
+          v-if="detail.is_can_rollback"
+          type="warning"
+          plain
+          :icon="View"
+          class="rollback-btn"
+          @click="onViewRollback"
+        >
           查看回滚SQL
         </el-button>
-        <el-button v-if="detail.is_can_rollback" @click="onDownloadRollback">
+        <el-button
+          v-if="detail.is_can_rollback"
+          type="warning"
+          :icon="Download"
+          class="rollback-btn"
+          @click="onDownloadRollback"
+        >
           下载回滚SQL
         </el-button>
       </el-card>
@@ -756,6 +774,17 @@ onUnmounted(() => {
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
+  }
+
+  .action-sep {
+    width: 1px;
+    align-self: stretch;
+    margin: 4px;
+    background: var(--el-border-color);
+  }
+
+  .rollback-btn {
+    font-weight: 600;
   }
 }
 

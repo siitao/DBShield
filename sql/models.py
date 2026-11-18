@@ -1,6 +1,7 @@
 # -*- coding: UTF-8 -*-
 import importlib
 import logging
+import uuid
 from typing import Optional
 
 from django.db import models
@@ -1474,6 +1475,68 @@ class SlowQueryCursor(models.Model):
         db_table = "slow_query_cursor"
         unique_together = ("instance", "db_type")
         verbose_name = "慢查询采集游标"
+        verbose_name_plural = verbose_name
+
+
+# ===================== AI 工单审核 =====================
+
+
+class AIReviewRecord(models.Model):
+    """工单 AI 审核结果服务端快照。
+
+    检测阶段生成，提交工单时凭 token 复用；按 SQL 指纹、实例、库重新校验，
+    避免客户端回传的 AI 字段被篡改或复用到已变更的 SQL 上。
+    """
+
+    token = models.UUIDField(
+        default=uuid.uuid4, unique=True, editable=False, verbose_name="审核凭证"
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        verbose_name="发起用户",
+    )
+    instance = models.ForeignKey(
+        Instance, on_delete=models.CASCADE, verbose_name="实例"
+    )
+    db_name = models.CharField(
+        max_length=128, blank=True, default="", verbose_name="数据库名"
+    )
+    db_type = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="数据库类型"
+    )
+    sql_hash = models.CharField(
+        max_length=64, db_index=True, verbose_name="SQL指纹哈希"
+    )
+    ai_model = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="AI模型"
+    )
+    prompt_version = models.CharField(
+        max_length=32, blank=True, default="", verbose_name="Prompt版本"
+    )
+    contract_version = models.CharField(
+        max_length=16, blank=True, default="", verbose_name="输出契约版本"
+    )
+    schema_fingerprint = models.CharField(
+        max_length=64, blank=True, default="", verbose_name="表结构指纹"
+    )
+    context_truncated = models.BooleanField(
+        default=False, verbose_name="上下文是否截断"
+    )
+    result_json = models.TextField(blank=True, default="", verbose_name="审核结果JSON")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    class Meta:
+        managed = True
+        db_table = "ai_review_record"
+        indexes = [
+            models.Index(
+                fields=["instance", "db_name", "sql_hash"],
+                name="idx_aireview_inst_db_hash",
+            ),
+            models.Index(fields=["created_at"], name="idx_aireview_created"),
+        ]
+        verbose_name = "AI工单审核记录"
         verbose_name_plural = verbose_name
 
 
