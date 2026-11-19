@@ -1,21 +1,24 @@
 <script setup lang="ts">
-import { ref, reactive, onMounted } from "vue";
+import { ref, reactive, watch, onMounted } from "vue";
 import { Search, Refresh, Plus } from "@element-plus/icons-vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import { useAuthStore } from "@/stores/auth";
 import {
   fetchInstances,
   fetchInstanceTags,
+  fetchInstanceEngines,
   fetchTunnels,
   createInstance,
   updateInstance,
   deleteInstance,
+  testInstanceConnection,
   fetchInstanceRds,
   createRds,
   updateRds,
   deleteRds,
   type InstanceRow,
   type InstanceForm,
+  type InstanceEngineOption,
   type InstanceTagRow,
   type TunnelRow,
 } from "@/api/instance";
@@ -33,12 +36,37 @@ const query = reactive({
   size: 15,
 });
 
-// 主要数据库类型（与 settings.ENABLED_ENGINES 对齐）
-const dbTypes = [
-  "mysql", "mariadb", "mssql", "redis", "pgsql", "oracle", "mongo",
-  "clickhouse", "phoenix", "odps", "cassandra", "doris",
-  "elasticsearch", "opensearch", "memcached", "tdengine",
-];
+// 可选数据库类型从后端读取（只包含 ENABLED_ENGINES 中已启用的类型）
+const dbTypes = ref<InstanceEngineOption[]>([]);
+
+// 各数据库类型的默认端口（切换类型时自动带出，用户手改过则保留）
+const DEFAULT_PORTS: Record<string, number> = {
+  mysql: 3306,
+  mssql: 1433,
+  redis: 6379,
+  pgsql: 5432,
+  oracle: 1521,
+  mongo: 27017,
+  phoenix: 8765,
+  clickhouse: 9000,
+  goinception: 4000,
+  cassandra: 9042,
+  doris: 9030,
+  elasticsearch: 9200,
+  opensearch: 9200,
+  memcached: 11211,
+  tdengine: 6041,
+};
+
+function defaultDbType() {
+  return dbTypes.value.some((t) => t.value === "mysql")
+    ? "mysql"
+    : dbTypes.value[0]?.value || "mysql";
+}
+
+function defaultPort(dbType: string) {
+  return DEFAULT_PORTS[dbType] ?? 3306;
+}
 
 const typeMap: Record<string, string> = { master: "主库", slave: "从库" };
 
@@ -114,6 +142,12 @@ const form = reactive<InstanceForm>({
   tunnel: null,
 });
 
+// 上一次选中的数据库类型，用于判断端口是否仍是旧类型的默认值
+let prevDbType = form.db_type;
+
+const testing = ref(false);
+const testResult = ref<{ ok: boolean; msg: string } | null>(null);
+
 // Aliyun RDS（可选，OneToOne）
 const rdsEnabled = ref(false);
 const rdsForm = reactive({
@@ -140,14 +174,15 @@ function resetRds() {
 }
 
 function resetForm() {
+  const dbType = defaultDbType();
   Object.assign(form, {
     id: undefined,
     instance_name: "",
     type: "master",
-    db_type: "mysql",
+    db_type: dbType,
     mode: "",
     host: "",
-    port: 3306,
+    port: defaultPort(dbType),
     user: "",
     password: "",
     is_ssl: false,
@@ -162,19 +197,32 @@ function resetForm() {
     instance_tag: [],
     tunnel: null,
   });
+  prevDbType = dbType;
+  testResult.value = null;
   resetRds();
+}
+
+function onDbTypeChange(value: string) {
+  // 只有当前端口为空或仍是旧类型默认值时才自动切换，避免覆盖手工填写的端口
+  const oldDefault = DEFAULT_PORTS[prevDbType];
+  if (!form.port || form.port === oldDefault) {
+    form.port = DEFAULT_PORTS[value] ?? form.port;
+  }
+  prevDbType = value;
 }
 
 async function loadOptions() {
   try {
-    const [t, tn, g] = await Promise.all([
+    const [t, tn, g, e] = await Promise.all([
       fetchInstanceTags(),
       fetchTunnels(),
       fetchResourceGroups({ size: 1000 }),
+      fetchInstanceEngines(),
     ]);
     tags.value = t;
     tunnels.value = tn.data.results || [];
     groups.value = g.data.results || [];
+    dbTypes.value = e;
   } catch {
     // 拦截器已提示
   }
@@ -210,6 +258,8 @@ async function openEdit(row: InstanceRow) {
     instance_tag: (row.instance_tag as number[]) || [],
     tunnel: (row.tunnel as number) || null,
   });
+  prevDbType = form.db_type;
+  testResult.value = null;
   dialogVisible.value = true;
   // 回填 Aliyun RDS（如有）
   resetRds();
@@ -291,6 +341,35 @@ async function onSubmit() {
   }
 }
 
+async function onTestConnection() {
+  if (!form.host.trim()) return ElMessage.warning("请填写实例连接");
+  testing.value = true;
+  testResult.value = null;
+  try {
+    const payload: InstanceForm = { ...form };
+    // 编辑时密码留空表示沿用已保存密码，交给后端按 id 回填
+    if (isEdit.value && !payload.password) delete payload.password;
+    const { data } = await testInstanceConnection(payload);
+    testResult.value =
+      data.status === 0
+        ? { ok: true, msg: data.msg || "连接成功" }
+        : { ok: false, msg: data.msg || "连接失败" };
+  } catch (e) {
+    testResult.value = { ok: false, msg: (e as Error).message || "连接失败" };
+  } finally {
+    testing.value = false;
+  }
+}
+
+// 连接信息变更后清掉上一次的测试结果，避免误导
+watch(
+  form,
+  () => {
+    if (testResult.value) testResult.value = null;
+  },
+  { deep: true },
+);
+
 async function onDelete(row: InstanceRow) {
   try {
     await ElMessageBox.confirm(`确认删除实例「${row.instance_name}」？`, "提示", {
@@ -326,7 +405,7 @@ onMounted(() => {
         </el-form-item>
         <el-form-item label="数据库类型">
           <el-select v-model="query.db_type" placeholder="全部" clearable style="width: 160px">
-            <el-option v-for="t in dbTypes" :key="t" :label="t" :value="t" />
+            <el-option v-for="t in dbTypes" :key="t.value" :label="t.label" :value="t.value" />
           </el-select>
         </el-form-item>
         <el-form-item>
@@ -391,12 +470,12 @@ onMounted(() => {
           </el-col>
           <el-col :span="12">
             <el-form-item label="数据库类型" required>
-              <el-select v-model="form.db_type" style="width: 100%">
-                <el-option v-for="t in dbTypes" :key="t" :label="t" :value="t" />
+              <el-select v-model="form.db_type" style="width: 100%" @change="onDbTypeChange">
+                <el-option v-for="t in dbTypes" :key="t.value" :label="t.label" :value="t.value" />
               </el-select>
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col v-if="form.db_type !== 'mongo'" :span="12">
             <el-form-item label="实例类型" required>
               <el-select v-model="form.type" style="width: 100%">
                 <el-option label="主库" value="master" />
@@ -414,7 +493,12 @@ onMounted(() => {
           </el-col>
           <el-col :span="12">
             <el-form-item label="实例连接" required>
-              <el-input v-model="form.host" />
+              <el-input
+                v-model="form.host"
+                :placeholder="
+                  form.db_type === 'mongo' ? '复制集可填 h1:3717,h2:3717,h3:3717' : ''
+                "
+              />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -437,7 +521,7 @@ onMounted(() => {
               />
             </el-form-item>
           </el-col>
-          <el-col :span="12">
+          <el-col v-if="form.db_type === 'mysql'" :span="12">
             <el-form-item label="字符集">
               <el-input v-model="form.charset" placeholder="如 utf8mb4" />
             </el-form-item>
@@ -551,11 +635,24 @@ onMounted(() => {
           </el-col>
         </el-row>
       </el-form>
+      <el-alert
+        v-if="testResult"
+        :type="testResult.ok ? 'success' : 'error'"
+        :title="testResult.msg"
+        show-icon
+        :closable="false"
+        class="test-result"
+      />
       <template #footer>
-        <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="onSubmit">
-          {{ isEdit ? "保存" : "新增" }}
-        </el-button>
+        <div class="dialog-footer">
+          <el-button :loading="testing" @click="onTestConnection">测试连接</el-button>
+          <div>
+            <el-button @click="dialogVisible = false">取消</el-button>
+            <el-button type="primary" :loading="submitting" @click="onSubmit">
+              {{ isEdit ? "保存" : "新增" }}
+            </el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>
@@ -576,5 +673,15 @@ onMounted(() => {
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.test-result {
+  margin-top: 4px;
+}
+
+.dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 </style>

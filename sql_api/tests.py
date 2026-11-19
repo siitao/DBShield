@@ -9,7 +9,7 @@ from rest_framework import status
 from common.config import SysConfig
 from sql.utils.workflow_audit import AuditSetting
 from sql.engines import ReviewSet
-from sql.engines.models import ReviewResult
+from sql.engines.models import ResultSet, ReviewResult
 from sql.models import (
     ResourceGroup,
     Instance,
@@ -383,6 +383,118 @@ class TestInstance(APITestCase):
         self.assertIn("查询失败", r.json()["msg"])
         self.assertEqual(r.json()["count"], 0)
         self.assertListEqual(r.json()["data"], [])
+
+    @override_settings(ENABLED_ENGINES=["mysql", "mongo"])
+    def test_instance_engines_list_only_enabled(self):
+        """可选数据库类型只返回已启用的引擎，且不包含无效的 mariadb"""
+        r = self.client.get("/api/v1/instance/engines/", format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertListEqual(
+            [item["value"] for item in r.json()], ["mysql", "mongo"]
+        )
+        self.assertNotIn("mariadb", [item["value"] for item in r.json()])
+
+    @patch("sql_api.api_instance.engine_map")
+    def test_test_connection_success(self, mock_engine_map):
+        """测试连接成功：使用表单信息构造实例，测完关闭连接"""
+        engine = MagicMock()
+        engine.test_connection.return_value = ResultSet(rows=(["1"],))
+        engine_cls = MagicMock(return_value=engine)
+        mock_engine_map.get.return_value = engine_cls
+
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {
+                "db_type": "mysql",
+                "host": "127.0.0.1",
+                "port": 3306,
+                "user": "u",
+                "password": "p",
+                "db_name": "db",
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.json()["status"], 0)
+        engine.test_connection.assert_called_once()
+        engine.close.assert_called_once()
+        instance = engine_cls.call_args.kwargs["instance"]
+        self.assertEqual(instance.host, "127.0.0.1")
+        self.assertEqual(instance.port, 3306)
+        self.assertEqual(instance.password, "p")
+
+    @patch("sql_api.api_instance.engine_map")
+    def test_test_connection_result_error(self, mock_engine_map):
+        """测试连接失败：ResultSet.error 返回给前端"""
+        result = ResultSet()
+        result.error = "Access denied"
+        engine = MagicMock()
+        engine.test_connection.return_value = result
+        mock_engine_map.get.return_value = MagicMock(return_value=engine)
+
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {"db_type": "mysql", "host": "127.0.0.1", "port": 3306},
+            format="json",
+        )
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("Access denied", r.json()["msg"])
+
+    @patch("sql_api.api_instance.engine_map")
+    def test_test_connection_exception(self, mock_engine_map):
+        """测试连接异常：返回异常信息"""
+        engine = MagicMock()
+        engine.test_connection.side_effect = RuntimeError("connect failed")
+        mock_engine_map.get.return_value = MagicMock(return_value=engine)
+
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {"db_type": "mysql", "host": "127.0.0.1", "port": 3306},
+            format="json",
+        )
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("connect failed", r.json()["msg"])
+
+    @patch("sql_api.api_instance.engine_map")
+    def test_test_connection_uses_saved_password_when_blank(self, mock_engine_map):
+        """编辑时密码留空：测试连接复用已保存的密码"""
+        engine = MagicMock()
+        engine.test_connection.return_value = ResultSet()
+        engine_cls = MagicMock(return_value=engine)
+        mock_engine_map.get.return_value = engine_cls
+
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {
+                "id": self.ins.id,
+                "db_type": "mysql",
+                "host": "127.0.0.1",
+                "port": 3306,
+            },
+            format="json",
+        )
+        self.assertEqual(r.json()["status"], 0)
+        instance = engine_cls.call_args.kwargs["instance"]
+        self.assertEqual(instance.password, "some_str")
+
+    def test_test_connection_missing_host(self):
+        """缺少实例连接时直接返回错误"""
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {"db_type": "mysql", "host": ""},
+            format="json",
+        )
+        self.assertEqual(r.json()["status"], 1)
+
+    def test_test_connection_engine_not_enabled(self):
+        """未启用/不存在的数据库类型直接返回错误"""
+        r = self.client.post(
+            "/api/v1/instance/test_connection/",
+            {"db_type": "mariadb", "host": "127.0.0.1", "port": 3306},
+            format="json",
+        )
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("未启用", r.json()["msg"])
 
 
 class TestWorkflow(APITestCase):

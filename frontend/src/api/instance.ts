@@ -35,6 +35,26 @@ export function fetchInstances(params: InstanceQuery = {}) {
   return request.get<Paginated<InstanceRow>>("/api/v1/instance/", { params });
 }
 
+/** 可选数据库类型（GET /api/v1/instance/engines/，仅返回已启用的引擎） */
+export interface InstanceEngineOption {
+  value: string;
+  label: string;
+}
+export function fetchInstanceEngines() {
+  return request
+    .get<InstanceEngineOption[]>("/api/v1/instance/engines/")
+    .then((r) => r.data);
+}
+
+/** 测试实例连接结果（POST /api/v1/instance/test_connection/） */
+export interface InstanceTestResult {
+  status: number;
+  msg: string;
+}
+export function testInstanceConnection(data: InstanceForm) {
+  return request.post<InstanceTestResult>("/api/v1/instance/test_connection/", data);
+}
+
 /** 实例标签（GET /api/v1/instance/tags/） */
 export interface InstanceTagRow {
   id: number;

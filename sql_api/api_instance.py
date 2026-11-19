@@ -1,5 +1,7 @@
 import logging
+import traceback
 
+from django.conf import settings
 from rest_framework import views, generics, status, serializers, permissions
 from rest_framework.response import Response
 from drf_spectacular.utils import extend_schema
@@ -16,8 +18,14 @@ from .serializers import (
 )
 from .pagination import CustomizedPagination
 from .filters import InstanceFilter
-from sql.models import Instance, Tunnel, AliyunRdsConfig, InstanceTag
-from sql.engines import get_engine
+from sql.models import (
+    Instance,
+    Tunnel,
+    AliyunRdsConfig,
+    InstanceTag,
+    DB_TYPE_CHOICES,
+)
+from sql.engines import get_engine, engine_map
 from sql.utils.resource_group import user_instances
 from .table_instance_locator import resolve_table_instances
 from django.http import Http404
@@ -106,6 +114,106 @@ class InstanceDetail(views.APIView):
         instance = self.get_object(pk)
         instance.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class InstanceEngineList(views.APIView):
+    """实例表单可选的数据库类型（只返回 ENABLED_ENGINES 中已启用的类型）"""
+
+    @extend_schema(
+        summary="可用数据库类型",
+        description="返回已启用的数据库类型及展示名，供实例表单下拉使用。",
+    )
+    def get(self, request):
+        labels = dict(DB_TYPE_CHOICES)
+        enabled = set(settings.ENABLED_ENGINES)
+        rows = [
+            {"value": value, "label": labels.get(value, value)}
+            for value in labels
+            if value in enabled
+        ]
+        return Response(rows)
+
+
+class InstanceTestConnection(views.APIView):
+    """测试实例连接（不落库，供新增/编辑实例表单使用）"""
+
+    @extend_schema(
+        summary="测试实例连接",
+        request=InstanceSerializer,
+        description=(
+            "使用表单中的连接信息测试连通性；编辑时未填写密码则复用已保存的密码。"
+        ),
+    )
+    def post(self, request):
+        db_type = (request.data.get("db_type") or "").strip()
+        host = (request.data.get("host") or "").strip()
+        if not db_type or not host:
+            return Response({"status": 1, "msg": "请填写数据库类型和实例连接"})
+
+        engine_cls = engine_map.get(db_type)
+        if not engine_cls:
+            return Response(
+                {"status": 1, "msg": f"数据库类型 {db_type} 未启用或不支持"}
+            )
+
+        try:
+            port = int(request.data.get("port") or 0)
+        except (TypeError, ValueError):
+            return Response({"status": 1, "msg": "端口不合法"})
+
+        password = request.data.get("password") or ""
+        saved_id = request.data.get("id")
+        if saved_id and not password:
+            # 编辑场景密码留空表示不修改，测试也要沿用库里的密码
+            try:
+                saved = Instance.objects.filter(pk=int(saved_id)).first()
+            except (TypeError, ValueError):
+                saved = None
+            if saved:
+                password = saved.password
+
+        tunnel_id = request.data.get("tunnel")
+        tunnel = None
+        if tunnel_id:
+            try:
+                tunnel = Tunnel.objects.filter(pk=int(tunnel_id)).first()
+            except (TypeError, ValueError):
+                tunnel = None
+
+        instance = Instance(
+            instance_name=request.data.get("instance_name") or "connection_test",
+            type=request.data.get("type") or "master",
+            db_type=db_type,
+            mode=request.data.get("mode") or "",
+            host=host,
+            port=port,
+            user=request.data.get("user") or "",
+            password=password,
+            is_ssl=bool(request.data.get("is_ssl", False)),
+            verify_ssl=bool(request.data.get("verify_ssl", True)),
+            db_name=request.data.get("db_name") or "",
+            charset=request.data.get("charset") or "",
+            service_name=request.data.get("service_name") or "",
+            sid=request.data.get("sid") or "",
+        )
+        instance.tunnel = tunnel
+
+        engine = None
+        try:
+            engine = engine_cls(instance=instance)
+            result = engine.test_connection()
+            if result is not None and getattr(result, "error", None):
+                return Response({"status": 1, "msg": str(result.error)})
+        except Exception as e:
+            logger.warning(f"测试实例连接失败：{traceback.format_exc()}")
+            return Response({"status": 1, "msg": str(e) or e.__class__.__name__})
+        finally:
+            if engine is not None:
+                try:
+                    engine.close()
+                except Exception:
+                    pass
+        return Response({"status": 0, "msg": "连接成功", "data": []})
 
 
 class TunnelList(generics.ListAPIView):
