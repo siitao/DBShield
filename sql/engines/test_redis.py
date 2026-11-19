@@ -311,6 +311,7 @@ def test_get_all_databases_normal(mock_get_conn, redis_engine):
         "db0": {"keys": 100, "expires": 5, "avg_ttl": 0},
         "db3": {"keys": 200, "expires": 0, "avg_ttl": 0},
     }
+    mock_conn.config_get.return_value = {"databases": "16"}
     mock_get_conn.return_value = mock_conn
 
     result = redis_engine.get_all_databases()
@@ -337,6 +338,7 @@ def test_get_all_databases_fallback_via_info(mock_get_conn, redis_engine):
         "db3": {"keys": 5, "expires": 0},
         "db5": {"keys": 0, "expires": 0},
     }
+    mock_conn.config_get.return_value = {"databases": "16"}
     mock_get_conn.return_value = mock_conn
 
     result = redis_engine.get_all_databases()
@@ -359,6 +361,7 @@ def test_get_all_databases_fallback_with_high_db(mock_get_conn, redis_engine):
         "db5": {"keys": 30, "expires": 0},
         "db20": {"keys": 50, "expires": 0},
     }
+    mock_conn.config_get.return_value = {"databases": "16"}
     mock_get_conn.return_value = mock_conn
 
     result = redis_engine.get_all_databases()
@@ -367,6 +370,66 @@ def test_get_all_databases_fallback_with_high_db(mock_get_conn, redis_engine):
     assert result.rows[0] == {"value": "0", "text": "db0"}
     assert result.rows[5] == {"value": "5", "text": "db5[30]"}
     assert result.rows[20] == {"value": "20", "text": "db20[50]"}
+
+
+@patch.object(RedisEngine, "get_connection")
+def test_get_all_databases_config_limits_range(mock_get_conn, redis_engine):
+    """服务端 databases < 16 时只展示真实存在的库，避免 DB index is out of range"""
+    mock_conn = Mock()
+    mock_conn.info.return_value = {"db0": {"keys": 1, "expires": 0}}
+    mock_conn.config_get.return_value = {"databases": "8"}
+    mock_get_conn.return_value = mock_conn
+
+    result = redis_engine.get_all_databases()
+    assert len(result.rows) == 8
+    assert result.rows[7]["value"] == "7"
+
+
+@patch("sql.engines.redis.redis.Redis")
+@patch.object(RedisEngine, "get_connection")
+def test_get_all_databases_probe_when_config_disabled(
+    mock_get_conn, mock_redis_cls, redis_engine
+):
+    """CONFIG 被禁用时用 SELECT 探测真实库范围"""
+    mock_conn = Mock()
+    mock_conn.info.return_value = {"db0": {"keys": 1, "expires": 0}}
+    mock_conn.config_get.side_effect = Exception("CONFIG disabled")
+    mock_get_conn.return_value = mock_conn
+
+    probe = Mock()
+
+    def fake_execute(command, idx=None):
+        if command == "SELECT" and idx is not None and idx <= 3:
+            return "OK"
+        raise Exception("DB index is out of range")
+
+    probe.execute_command.side_effect = fake_execute
+    mock_redis_cls.return_value = probe
+
+    result = redis_engine.get_all_databases()
+    assert len(result.rows) == 4
+    assert result.rows[3]["value"] == "3"
+    probe.close.assert_called_once()
+
+
+@patch("sql.engines.redis.redis.Redis")
+@patch.object(RedisEngine, "get_connection")
+def test_get_all_databases_probe_failure_falls_back_to_16(
+    mock_get_conn, mock_redis_cls, redis_engine
+):
+    """CONFIG 与 SELECT 探测都不可用时按默认 16 个库兜底"""
+    mock_conn = Mock()
+    mock_conn.info.return_value = {"db0": {"keys": 1, "expires": 0}}
+    mock_conn.config_get.side_effect = Exception("CONFIG disabled")
+    mock_get_conn.return_value = mock_conn
+
+    probe = Mock()
+    probe.execute_command.side_effect = Exception("SELECT disabled")
+    mock_redis_cls.return_value = probe
+
+    result = redis_engine.get_all_databases()
+    assert len(result.rows) == 16
+    probe.close.assert_called_once()
 
 
 @patch.object(RedisEngine, "get_cluster_master_nodes")

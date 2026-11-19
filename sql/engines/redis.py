@@ -28,6 +28,8 @@ class RedisEngine(EngineBase):
     # 缓存的连接（含所属 db，standalone 模式下 db 变化需重建）
     conn = None
     _conn_db = None
+    # 探测到的服务端最大 db 索引（None 表示尚未探测/无法确定）
+    _max_db_index = None
 
     def get_connection(self, db_name=None):
         """获取连接（缓存复用，避免每次调用新建客户端导致连接池泄漏）"""
@@ -148,6 +150,69 @@ class RedisEngine(EngineBase):
             result.error = str(e)
         return result
 
+    def _get_max_db_index(self):
+        """返回服务端允许的最大 db 索引，无法确定时返回 None。
+
+        优先 ``CONFIG GET databases``（自建 Redis 通常可用）；受管 Redis 常
+        禁用 CONFIG，退化为用 SELECT 二分探测——这样既不会把 databases < 16
+        的服务端不存在的库展示出来，集群/仅允许 db0 的代理也会收敛为 db0。
+        """
+        if self._max_db_index is not None:
+            return self._max_db_index
+
+        try:
+            cfg = self.get_connection().config_get("databases")
+            if isinstance(cfg, dict) and "databases" in cfg:
+                self._max_db_index = max(int(cfg["databases"]) - 1, 0)
+                return self._max_db_index
+        except Exception:
+            pass
+
+        probe = None
+        try:
+            probe = redis.Redis(
+                host=self.host,
+                port=self.port,
+                username=self.user,
+                password=self.password or None,
+                encoding_errors="ignore",
+                decode_responses=True,
+                socket_connect_timeout=10,
+                ssl=self.instance.is_ssl,
+            )
+
+            def can_select(idx):
+                try:
+                    probe.execute_command("SELECT", idx)
+                    return True
+                except Exception:
+                    return False
+
+            if not can_select(0):
+                return None
+            # 库索引是连续的 [0, databases-1]，二分找最后一个可 SELECT 的索引。
+            # 上限按 16384 处理（远超常见的 16/256 配置）。
+            low, high = 0, 16383
+            if can_select(high):
+                self._max_db_index = high
+            else:
+                while low < high:
+                    mid = (low + high + 1) // 2
+                    if can_select(mid):
+                        low = mid
+                    else:
+                        high = mid - 1
+                self._max_db_index = low
+            return self._max_db_index
+        except Exception:
+            return None
+        finally:
+            if probe is not None:
+                try:
+                    probe.close()
+                except Exception:
+                    pass
+
     def get_all_databases(self, **kwargs):
         """
         获取数据库列表，使用 INFO Keyspace 命令
@@ -189,7 +254,8 @@ class RedisEngine(EngineBase):
                 text = f"db0[{total_keys}]" if total_keys > 0 else "db0"
                 result.rows = [{"value": "0", "text": text}]
             else:
-                # 单节点模式：获取 Keyspace 信息，补充 0~15 号库
+                # 单节点模式：优先按服务端实际配置的 databases 数量展示，
+                # 避免把 databases < 16 的服务端不存在的库也列出来（DB index is out of range）
                 conn = self.get_connection()
                 info = conn.info("Keyspace")
                 # 解析 Keyspace 信息，构建 db_num -> keys 的映射
@@ -199,12 +265,15 @@ class RedisEngine(EngineBase):
                     if len(parts) == 2 and parts[1].isdigit():
                         db_num = int(parts[1])
                         db_keys[db_num] = val.get("keys", 0)
-                # 默认配置databases 16，只有16个库，这里取默认配置，不考虑新增到16以上的情况
-                # 确定最大库号，至少到 15
-                max_db = max(list(db_keys.keys()) + [15])
+                # 服务端库数量无法获取时按默认 16 兜底
+                max_db_index = self._get_max_db_index()
+                if max_db_index is None:
+                    max_db_index = 15
+                # Keyspace 里出现更高编号的库时也要展示
+                max_db_index = max([max_db_index] + list(db_keys.keys()))
                 # 构建结果列表，补充缺失的库
                 db_list = []
-                for i in range(max_db + 1):
+                for i in range(max_db_index + 1):
                     keys = db_keys.get(i, 0)
                     text = f"db{i}[{keys}]" if keys > 0 else f"db{i}"
                     db_list.append({"value": str(i), "text": text})
