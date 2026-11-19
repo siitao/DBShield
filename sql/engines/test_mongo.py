@@ -616,6 +616,17 @@ class TestGetMaster:
         mongo_engine.get_master()
         assert mongo_engine.host == "localhost"
 
+    def test_get_master_keeps_replica_set_seed_list(self, mongo_engine):
+        """复制集种子列表不能被主节点地址覆盖，否则切换后会丢种子"""
+        mongo_engine.host = "h1:27017,h2:27017,h3:27017"
+        mongo_engine.port = 27017
+        mongo_engine.get_connection = MagicMock()
+
+        mongo_engine.get_master()
+        assert mongo_engine.host == "h1:27017,h2:27017,h3:27017"
+        assert mongo_engine.port == 27017
+        mongo_engine.get_connection.assert_not_called()
+
 
 # ====================== get_slave ======================
 
@@ -663,6 +674,18 @@ class TestGetSlave:
 
         result = mongo_engine.get_slave()
         assert result is False
+
+    def test_get_slave_keeps_replica_set_seed_list(self, mongo_engine):
+        """复制集种子列表不切换到单个从节点"""
+        mongo_engine.host = "h1:27017,h2:27017,h3:27017"
+        mongo_engine.port = 27017
+        mongo_engine.get_connection = MagicMock()
+
+        result = mongo_engine.get_slave()
+        assert result is False
+        assert mongo_engine.host == "h1:27017,h2:27017,h3:27017"
+        assert mongo_engine.port == 27017
+        mongo_engine.get_connection.assert_not_called()
 
 
 # ====================== execute ======================
@@ -852,6 +875,20 @@ class TestGetConnection:
         mock_client.return_value = MagicMock()
         mongo_engine.get_connection("test_db")
         mock_client.assert_called_once()
+
+    @patch("sql.engines.mongo.pymongo.MongoClient")
+    def test_get_connection_replica_set_seed_list(self, mock_client, mongo_engine):
+        """复制集种子节点按原样交给 pymongo，并去掉逗号两侧空白"""
+        mongo_engine.host = "172.30.82.7:3717, 172.30.82.8:3717 ,172.30.82.5:3717"
+        mongo_engine.port = 3717
+        mock_client.return_value = MagicMock()
+        mongo_engine.get_connection("test_db")
+        _, kwargs = mock_client.call_args
+        assert (
+            kwargs["host"]
+            == "172.30.82.7:3717,172.30.82.8:3717,172.30.82.5:3717"
+        )
+        assert kwargs["port"] == 3717
 
 
 class TestClose:

@@ -40,6 +40,11 @@ def _sanitize_mongo_doc(doc):
     return doc
 
 
+def _normalize_mongo_host(host):
+    """去掉逗号分隔种子节点两侧的空白（pymongo 不会自动 trim，会把空格当作主机名）"""
+    return ",".join(part.strip() for part in host.split(",") if part.strip())
+
+
 # 自定义异常
 class mongo_error(Exception):
     def __init__(self, error_info):
@@ -340,6 +345,10 @@ class MongoEngine(EngineBase):
 
     def get_master(self):
         """获得主节点的port和host"""
+        # 复制集种子列表：pymongo 会自动发现主节点并把写操作路由到主库，
+        # 这里不能回写单节点，否则会丢失其余种子、切换后再次连不上
+        if "," in self.host:
+            return
         try:
             conn = self.get_connection()
             master = conn.admin.command("isMaster").get("primary")
@@ -357,6 +366,9 @@ class MongoEngine(EngineBase):
 
     def get_slave(self):
         """获得从节点的port和host"""
+        # 复制集种子列表：连接由 pymongo 统一维护，不能改成单个从节点
+        if "," in self.host:
+            return False
         try:
             conn = self.get_connection()
             rs_status = conn.admin.command("replSetGetStatus")
@@ -1198,7 +1210,8 @@ class MongoEngine(EngineBase):
         auth_db = self.instance.db_name or "admin"
 
         options = {
-            "host": self.host,
+            # host 支持逗号分隔的复制集种子节点，pymongo 会按种子列表发现主节点
+            "host": _normalize_mongo_host(self.host),
             "port": self.port,
             "username": self.user,
             "password": self.password,

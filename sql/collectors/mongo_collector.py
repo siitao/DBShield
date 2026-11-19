@@ -49,20 +49,35 @@ class MongoSlowQueryCollector(BaseSlowQueryCollector):
         )
 
     def _get_mongo_client(self):
-        """获取 MongoDB 连接"""
+        """获取 MongoDB 连接
+
+        host 支持逗号分隔的复制集种子节点（如 h1:3717,h2:3717,h3:3717），
+        交给 pymongo 按种子列表解析；不能再拼成 ``mongodb://host:port/``，
+        否则多地址会变成非法 URI，且密码中的特殊字符也需要转义。
+        """
         import pymongo
 
-        host = self.instance.host
-        port = self.instance.port
-        user = self.instance.user
-        password = self.instance.password
+        options = {
+            "host": self._normalize_host(self.instance.host),
+            "port": self.instance.port,
+            "serverSelectionTimeoutMS": 5000,
+        }
+        # 与 MongoEngine.get_connection 保持一致的认证方式
+        user, password = self.instance.get_username_password()
+        if user:
+            options["username"] = user
+            options["password"] = password
+            options["authSource"] = self.instance.db_name or "admin"
+        if self.instance.is_ssl:
+            options["tls"] = True
+            options["tlsInsecure"] = not self.instance.verify_ssl
 
-        if user and password:
-            uri = f"mongodb://{user}:{password}@{host}:{port}/"
-        else:
-            uri = f"mongodb://{host}:{port}/"
+        return pymongo.MongoClient(**options)
 
-        return pymongo.MongoClient(uri, serverSelectionTimeoutMS=5000)
+    @staticmethod
+    def _normalize_host(host):
+        """去掉逗号分隔种子节点两侧的空白（pymongo 不会自动 trim）"""
+        return ",".join(part.strip() for part in host.split(",") if part.strip())
 
     def _serialize_mongo_value(self, obj):
         """处理 MongoDB 特殊类型的序列化"""
