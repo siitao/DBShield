@@ -1,35 +1,68 @@
 /* ============================================================
-   DBShield 品牌主题（整体主题升级）
-   统一色板 / Element Plus 变量覆盖 / 全局细节
+   DBShield 设计系统 · 令牌层
+   统一色板 / 圆角 / 阴影 / Element Plus 变量覆盖
+   ------------------------------------------------------------
+   组件级样式在 components.scss；本文件只放「值」。
    ============================================================ */
 
-// ── 品牌色板（全局 CSS 变量，供各组件引用）────────────────
-:root {
-  // 主色（蓝）
+/* 提升一级优先级：避免被 Element Plus 基础/组件样式覆盖 */
+:root:root {
+  /* ── 品牌色 ─────────────────────────────────────────── */
   --dbshield-primary: #2563eb;
+  --dbshield-primary-hover: #3b82f6;
   --dbshield-primary-dark: #1e4fbc;
-  --dbshield-primary-light: #5a8bf1;
+  --dbshield-primary-soft: #eef4ff;
 
-  // 深色导航
-  --dbshield-nav-bg: #0f172a;
-  --dbshield-nav-bg-2: #1e293b;
-  --dbshield-nav-text: #cbd5e1;
+  /* ── 深色导航 ───────────────────────────────────────── */
+  --dbshield-nav-bg: #0b1222;
+  --dbshield-nav-bg-2: #111c31;
+  --dbshield-nav-text: #aab6c8;
   --dbshield-nav-text-active: #ffffff;
 
-  // 背景 / 圆角 / 阴影 / 过渡
-  --dbshield-bg-page: #f3f6fb;
-  --dbshield-card-radius: 10px;
-  --dbshield-shadow-card: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --dbshield-shadow-hover: 0 10px 28px rgba(15, 23, 42, 0.1);
+  /* ── 中性色（文字 / 背景 / 描边）────────────────────── */
+  --dbshield-bg-page: #f5f7fb;
+  --dbshield-surface: #ffffff;
+  --dbshield-surface-muted: #f8faff;
+  --dbshield-text: #172033;
+  --dbshield-text-2: #475467;
+  --dbshield-text-3: #667085;
+  --dbshield-text-4: #98a2b3;
+  --dbshield-border: #e6ebf3;
+  --dbshield-border-light: #eef2f8;
+  --dbshield-border-lighter: #f3f6fa;
+
+  /* ── 圆角 ───────────────────────────────────────────── */
+  --dbshield-radius-sm: 8px;
+  --dbshield-radius: 10px;
+  --dbshield-radius-lg: 14px;
+  --dbshield-radius-pill: 999px;
+
+  /* ── 阴影 ───────────────────────────────────────────── */
+  --dbshield-shadow-xs: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --dbshield-shadow-card: 0 1px 2px rgba(16, 24, 40, 0.04),
+    0 1px 3px rgba(16, 24, 40, 0.03);
+  --dbshield-shadow-sm: 0 2px 6px rgba(16, 24, 40, 0.06);
+  --dbshield-shadow-md: 0 10px 28px rgba(16, 24, 40, 0.1);
+  --dbshield-shadow-lg: 0 24px 56px rgba(16, 24, 40, 0.16);
+  --dbshield-shadow-hover: 0 10px 28px rgba(16, 24, 40, 0.1);
+
+  /* ── 动效 ───────────────────────────────────────────── */
   --dbshield-transition: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  --dbshield-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ── 字体 ───────────────────────────────────────────── */
+  --dbshield-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+  --dbshield-font-mono: "SFMono-Regular", "JetBrains Mono", Consolas,
+    "Liberation Mono", Menlo, monospace;
 }
 
-// ── Element Plus 主题变量覆盖 ─────────────────────────────
-:root {
-  // 主色（含 light/dark 色阶，hover / 选中 / 标签等自动生效）
+/* ============================================================
+   Element Plus 变量覆盖
+   ============================================================ */
+:root:root {
+  /* 主色（含 light/dark 色阶，hover / 选中 / 标签等自动生效） */
   --el-color-primary: #2563eb;
-  // rgb 分量：部分组件（checkbox / switch / date-picker 悬停等）用
-  // rgba(var(--el-color-primary-rgb), x) 做半透明效果，必须同步覆盖
   --el-color-primary-rgb: 37, 99, 235;
   --el-color-primary-light-3: #6692f1;
   --el-color-primary-light-5: #92b1f5;
@@ -38,15 +71,93 @@
   --el-color-primary-light-9: #e9effd;
   --el-color-primary-dark-2: #1e4fbc;
 
-  // 圆角 / 阴影
+  /* 状态色：换成更克制的现代色阶，避免默认的高饱和绿/橙 */
+  --el-color-success: #12b76a;
+  --el-color-success-light-3: #5cd6a1;
+  --el-color-success-light-5: #89e2b8;
+  --el-color-success-light-7: #b7eed4;
+  --el-color-success-light-8: #cdf3e2;
+  --el-color-success-light-9: #e7f9f0;
+  --el-color-success-dark-2: #0e9255;
+
+  --el-color-warning: #f79009;
+  --el-color-warning-light-3: #fab54e;
+  --el-color-warning-light-5: #fbca7d;
+  --el-color-warning-light-7: #fddfac;
+  --el-color-warning-light-8: #fee9c4;
+  --el-color-warning-light-9: #fef4e6;
+  --el-color-warning-dark-2: #c26f06;
+
+  --el-color-danger: #f04438;
+  --el-color-danger-light-3: #f57a71;
+  --el-color-danger-light-5: #f8a19b;
+  --el-color-danger-light-7: #fbc8c4;
+  --el-color-danger-light-8: #fddbd8;
+  --el-color-danger-light-9: #feeded;
+  --el-color-danger-dark-2: #c22f24;
+  --el-color-error: #f04438;
+
+  --el-color-info: #667085;
+  --el-color-info-light-3: #949caa;
+  --el-color-info-light-5: #b2b8c2;
+  --el-color-info-light-7: #d1d5db;
+  --el-color-info-light-8: #e0e3e7;
+  --el-color-info-light-9: #f0f1f3;
+  --el-color-info-dark-2: #515866;
+
+  /* 文字 */
+  --el-text-color-primary: #172033;
+  --el-text-color-regular: #475467;
+  --el-text-color-secondary: #667085;
+  --el-text-color-placeholder: #98a2b3;
+  --el-text-color-disabled: #a6b0bf;
+
+  /* 描边 */
+  --el-border-color: #e1e7f0;
+  --el-border-color-light: #e9eef5;
+  --el-border-color-lighter: #f0f3f8;
+  --el-border-color-extra-light: #f5f7fb;
+  --el-border-color-dark: #d3dbe7;
+  --el-border-color-darker: #c2ccdb;
+
+  /* 填充 / 背景 */
+  --el-fill-color: #f2f5fa;
+  --el-fill-color-light: #f6f8fc;
+  --el-fill-color-lighter: #fafbfd;
+  --el-fill-color-extra-light: #fcfdff;
+  --el-fill-color-dark: #eaedf3;
+  --el-fill-color-darker: #e1e6ee;
+  --el-fill-color-blank: #ffffff;
+  --el-bg-color: #ffffff;
+  --el-bg-color-page: #f5f7fb;
+  --el-bg-color-overlay: #ffffff;
+  --el-mask-color: rgba(15, 23, 42, 0.38);
+  --el-mask-color-extra-light: rgba(15, 23, 42, 0.18);
+
+  /* 圆角 */
   --el-border-radius-base: 8px;
   --el-border-radius-small: 6px;
-  --el-box-shadow-light: var(--dbshield-shadow-card);
-  --el-box-shadow: var(--dbshield-shadow-hover);
+  --el-border-radius-round: 999px;
+  --el-card-border-radius: 14px;
 
-  // 卡片圆角（el-card 单独使用该变量）
-  --el-card-border-radius: var(--dbshield-card-radius);
+  /* 阴影 */
+  --el-box-shadow-light: 0 2px 6px rgba(16, 24, 40, 0.06);
+  --el-box-shadow: 0 10px 28px rgba(16, 24, 40, 0.1);
+  --el-box-shadow-dark: 0 24px 56px rgba(16, 24, 40, 0.16);
 
-  // 页面背景
-  --el-bg-color-page: var(--dbshield-bg-page);
+  /* 尺寸 / 字体 */
+  --el-component-size: 34px;
+  --el-component-size-small: 28px;
+  --el-component-size-large: 40px;
+  --el-font-family: var(--dbshield-font);
+  --el-font-size-base: 14px;
+  --el-font-weight-primary: 500;
+  --el-card-padding: 20px;
+  --el-disabled-bg-color: #f7f9fc;
+  --el-disabled-border-color: #e6ebf3;
+  --el-disabled-text-color: #a6b0bf;
+
+  /* 标签 */
+  --el-tag-border-radius: 6px;
+  --el-tag-font-size: 12px;
 }

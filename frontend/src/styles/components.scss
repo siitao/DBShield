@@ -1,0 +1,812 @@
+/* ============================================================
+   DBShield 设计系统 · 组件层
+   对 Element Plus 做统一「轻量化」重塑：
+   - 控件：34px 高、8px 圆角、柔和描边 + 主色 focus ring
+   - 下拉：浮层圆角 / 阴影 / 选中高亮
+   - 表格：去掉竖向网格，弱化描边，加大行高与表头层次
+   - 卡片 / 弹窗 / 标签页 / 分页：统一圆角与阴影
+   说明：下拉、弹层会被 teleport 到 body，因此这里全部是全局样式。
+   ============================================================ */
+
+/* ══════════════════════════════════════════════════════════
+   1. 输入控件（input / select / textarea / number）
+   ══════════════════════════════════════════════════════════ */
+.el-input__wrapper,
+.el-select__wrapper,
+.el-textarea__inner,
+.el-input-number,
+.el-date-editor.el-input__wrapper,
+.el-date-editor .el-range-input {
+  border-radius: var(--dbshield-radius-sm);
+}
+
+.el-input__wrapper,
+.el-select__wrapper {
+  background-color: var(--el-bg-color);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+  transition: box-shadow var(--dbshield-transition),
+    background-color var(--dbshield-transition);
+}
+
+.el-input__wrapper:hover,
+.el-select__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px #c6d1e2 inset;
+}
+
+.el-select__wrapper.is-hovering:not(.is-focused) {
+  box-shadow: 0 0 0 1px #c6d1e2 inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-select__wrapper.is-focused,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset,
+    0 0 0 3px rgba(var(--el-color-primary-rgb), 0.12) !important;
+}
+
+.el-input__wrapper.is-focus:hover,
+.el-select__wrapper.is-focused:hover {
+  box-shadow: 0 0 0 1px var(--el-color-primary) inset,
+    0 0 0 3px rgba(var(--el-color-primary-rgb), 0.12) !important;
+}
+
+.el-input__inner,
+.el-select__placeholder,
+.el-select__selected-item {
+  color: var(--el-text-color-primary);
+  font-size: 13.5px;
+}
+
+.el-input__inner::placeholder,
+.el-textarea__inner::placeholder {
+  color: var(--el-text-color-placeholder);
+}
+
+.el-textarea__inner {
+  padding: 8px 12px;
+  line-height: 1.6;
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+}
+
+.el-input-group__prepend {
+  background: var(--el-fill-color-light);
+  border-radius: var(--dbshield-radius-sm) 0 0 var(--dbshield-radius-sm);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+}
+
+.el-input-group__append {
+  background: var(--el-fill-color-light);
+  border-radius: 0 var(--dbshield-radius-sm) var(--dbshield-radius-sm) 0;
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+}
+
+/* 搜索框 / 小尺寸控件：高度跟随后端尺寸令牌 */
+.el-input--small .el-input__wrapper,
+.el-select--small .el-select__wrapper {
+  padding: 1px 10px;
+  font-size: 13px;
+}
+
+/* ══════════════════════════════════════════════════════════
+   2. 按钮
+   ══════════════════════════════════════════════════════════ */
+.el-button {
+  border-radius: var(--dbshield-radius-sm);
+  font-weight: 500;
+  transition: color var(--dbshield-transition),
+    background-color var(--dbshield-transition),
+    border-color var(--dbshield-transition), box-shadow var(--dbshield-transition),
+    transform var(--dbshield-transition);
+}
+
+.el-button--default {
+  border-color: var(--dbshield-border);
+  background: var(--el-bg-color);
+  color: var(--el-text-color-regular);
+}
+
+.el-button--default:not(.is-disabled):hover,
+.el-button--default:not(.is-disabled):focus-visible {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary-light-7);
+  background: var(--dbshield-primary-soft);
+}
+
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(.is-disabled) {
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+}
+
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(
+    .is-disabled
+  ):hover {
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text):not(
+    .is-disabled
+  ):active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.22);
+}
+
+.el-button.is-link {
+  font-weight: 500;
+  border-radius: 4px;
+  padding: 1px 2px;
+}
+
+.el-button.is-link:hover {
+  color: var(--el-color-primary-hover, var(--el-color-primary));
+  text-decoration: none;
+}
+
+/* 表格内的链接按钮：更紧凑，避免撑高行 */
+.el-table .el-button.is-link {
+  padding: 0 2px;
+}
+
+.el-button--small {
+  border-radius: var(--dbshield-radius-sm);
+}
+
+.el-button.is-circle {
+  border-radius: 50%;
+}
+
+/* ══════════════════════════════════════════════════════════
+   3. 下拉浮层（select / dropdown / tooltip / popover / picker）
+   ══════════════════════════════════════════════════════════ */
+.el-popper.is-light {
+  border: 1px solid var(--dbshield-border-light);
+  border-radius: var(--dbshield-radius);
+  box-shadow: var(--dbshield-shadow-md);
+}
+
+.el-popper.is-light .el-popper__arrow::before {
+  border-color: var(--dbshield-border-light);
+}
+
+.el-select__popper.el-popper,
+.el-dropdown__popper.el-popper,
+.el-picker__popper.el-popper,
+.el-popover.el-popper {
+  border-radius: var(--dbshield-radius);
+  border-color: var(--dbshield-border-light);
+  box-shadow: var(--dbshield-shadow-md);
+  overflow: hidden;
+}
+
+.el-select-dropdown__list {
+  padding: 6px;
+}
+
+.el-select-dropdown__item {
+  height: 34px;
+  line-height: 34px;
+  padding: 0 10px;
+  margin: 1px 0;
+  border-radius: 6px;
+  font-size: 13.5px;
+  color: var(--el-text-color-regular);
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.el-select-dropdown__item.is-hovering {
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-primary);
+}
+
+.el-select-dropdown__item.is-selected {
+  background: var(--dbshield-primary-soft);
+  color: var(--el-color-primary);
+  font-weight: 600;
+}
+
+.el-select-dropdown__item.is-selected.is-hovering {
+  background: var(--el-color-primary-light-9);
+}
+
+.el-select-group__title {
+  padding: 8px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dbshield-text-4);
+}
+
+.el-dropdown-menu {
+  padding: 6px;
+  border-radius: var(--dbshield-radius);
+}
+
+.el-dropdown-menu__item {
+  height: 34px;
+  line-height: 34px;
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 13.5px;
+  color: var(--el-text-color-regular);
+}
+
+.el-dropdown-menu__item:not(.is-disabled):hover,
+.el-dropdown-menu__item:not(.is-disabled):focus {
+  background: var(--dbshield-primary-soft);
+  color: var(--el-color-primary);
+}
+
+.el-dropdown-menu__item--divided {
+  margin-top: 6px;
+  border-top-color: var(--dbshield-border-light);
+}
+
+.el-dropdown-menu__item--divided::before {
+  background: transparent;
+}
+
+.el-popover.el-popper {
+  padding: 14px;
+}
+
+.el-popper.is-dark {
+  border-radius: var(--dbshield-radius-sm);
+  background: rgba(23, 32, 51, 0.94);
+  font-size: 12px;
+  line-height: 1.5;
+  box-shadow: var(--dbshield-shadow-sm);
+}
+
+/* 日期选择器面板 */
+.el-picker-panel {
+  border-radius: var(--dbshield-radius);
+  color: var(--el-text-color-regular);
+}
+
+.el-date-table td .el-date-table-cell__text {
+  border-radius: 6px;
+  font-size: 12.5px;
+}
+
+.el-date-table td.today .el-date-table-cell__text {
+  color: var(--el-color-primary);
+  font-weight: 700;
+}
+
+.el-date-table td.current:not(.disabled) .el-date-table-cell__text {
+  background: var(--el-color-primary);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.el-date-table td.current:not(.disabled):hover .el-date-table-cell__text {
+  background: var(--el-color-primary);
+}
+
+/* ══════════════════════════════════════════════════════════
+   4. 表格：去掉竖向网格，突出表头与行分隔
+   ══════════════════════════════════════════════════════════ */
+.el-table {
+  /* 组件级变量必须落在 .el-table 上：Element Plus 在组件根节点重新定义了
+     同名变量，挂在 :root 的值会被元素级声明覆盖 */
+  --el-table-border-color: #eef2f7;
+  --el-table-border: 1px solid #eef2f7;
+  --el-table-text-color: #344054;
+  --el-table-header-text-color: #475467;
+  --el-table-header-bg-color: #f7f9fd;
+  --el-table-row-hover-bg-color: #f5f8ff;
+  --el-table-current-row-bg-color: #eef4ff;
+  --el-table-bg-color: #ffffff;
+  --el-table-tr-bg-color: #ffffff;
+  --el-table-expanded-cell-bg-color: #fbfcfe;
+
+  font-size: 13px;
+  color: var(--el-table-text-color);
+  border-radius: var(--dbshield-radius);
+}
+
+.el-table th.el-table__cell {
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  background-color: var(--el-table-header-bg-color);
+}
+
+.el-table .el-table__header-wrapper th.el-table__cell {
+  height: 44px;
+  border-bottom: 1px solid #e3e9f3;
+}
+
+.el-table .el-table__body-wrapper td.el-table__cell {
+  border-bottom: 1px solid #f0f3f8;
+}
+
+.el-table .el-table__cell {
+  padding: 10px 0;
+}
+
+.el-table .cell {
+  padding: 0 12px;
+  line-height: 22px;
+}
+
+/* 去掉 border 表格的竖向网格与右侧/底部外框，仅保留横向分隔 */
+.el-table--border .el-table__cell {
+  border-right: none;
+}
+
+.el-table--border:before,
+.el-table--border:after,
+.el-table--border .el-table__inner-wrapper:after {
+  display: none;
+}
+
+.el-table__inner-wrapper::before {
+  background-color: var(--dbshield-border-light);
+}
+
+.el-table__body tr.el-table__row--striped > td.el-table__cell {
+  background-color: #fbfcfe;
+}
+
+/* 行悬浮由 --el-table-row-hover-bg-color 控制，不再额外覆盖 td 背景，
+   以免盖住审核表格等页面通过 row-class-name 标记的风险行底色 */
+
+.el-table__body tr:last-child > td.el-table__cell {
+  border-bottom-color: transparent;
+}
+
+.el-table__empty-text {
+  color: var(--el-text-color-placeholder);
+  font-size: 13px;
+}
+
+.el-table__footer-wrapper td.el-table__cell {
+  background: var(--el-table-header-bg-color);
+  font-weight: 600;
+}
+
+/* 固定列保留极淡的分隔阴影，横向滚动时仍能区分 */
+.el-table-fixed-column--left.is-last-column::before {
+  box-shadow: 8px 0 10px -8px rgba(16, 24, 40, 0.14);
+}
+
+.el-table-fixed-column--right.is-first-column::before {
+  box-shadow: -8px 0 10px -8px rgba(16, 24, 40, 0.14);
+}
+
+/* 表头里的排序箭头弱化一点 */
+.el-table .caret-wrapper {
+  height: 20px;
+}
+
+.el-table .sort-caret.ascending {
+  border-bottom-color: var(--dbshield-text-4);
+}
+
+.el-table .sort-caret.descending {
+  border-top-color: var(--dbshield-text-4);
+}
+
+/* ══════════════════════════════════════════════════════════
+   5. 标签页
+   ══════════════════════════════════════════════════════════ */
+.el-tabs__header {
+  margin-bottom: 16px;
+}
+
+.el-tabs__nav-wrap::after {
+  height: 1px;
+  background-color: var(--dbshield-border-light);
+}
+
+.el-tabs__item {
+  height: 40px;
+  line-height: 40px;
+  padding: 0 16px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--el-text-color-secondary);
+  transition: color var(--dbshield-transition);
+}
+
+.el-tabs__item:hover,
+.el-tabs__item.is-active {
+  color: var(--el-color-primary);
+}
+
+.el-tabs__item.is-active {
+  font-weight: 600;
+}
+
+.el-tabs__active-bar {
+  height: 2.5px;
+  border-radius: 2px;
+}
+
+.el-tabs__item .is-icon-close {
+  border-radius: 50%;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.el-tabs__item .is-icon-close:hover {
+  background-color: var(--el-color-primary-light-8);
+  color: var(--el-color-primary);
+}
+
+/* card 类型（历史遗留页面）：改造成轻量胶囊，而非老式文件夹样式 */
+.el-tabs--card > .el-tabs__header {
+  border-bottom: 1px solid var(--dbshield-border-light);
+}
+
+.el-tabs--card > .el-tabs__header .el-tabs__nav {
+  border: none;
+  gap: 4px;
+}
+
+.el-tabs--card > .el-tabs__header .el-tabs__item {
+  height: 36px;
+  line-height: 36px;
+  border: 1px solid transparent;
+  border-radius: 8px 8px 0 0;
+  color: var(--el-text-color-secondary);
+}
+
+.el-tabs--card > .el-tabs__header .el-tabs__item.is-active {
+  background: var(--dbshield-surface);
+  border-color: var(--dbshield-border-light);
+  border-bottom-color: var(--dbshield-surface);
+  color: var(--el-color-primary);
+  box-shadow: 0 -1px 0 var(--el-color-primary) inset;
+}
+
+/* ══════════════════════════════════════════════════════════
+   6. 分页
+   ══════════════════════════════════════════════════════════ */
+.el-pagination {
+  --el-pagination-font-size: 13px;
+  gap: 4px;
+}
+
+.el-pagination.is-background .el-pager li,
+.el-pagination.is-background .btn-prev,
+.el-pagination.is-background .btn-next {
+  min-width: 32px;
+  height: 32px;
+  line-height: 30px;
+  border: 1px solid var(--dbshield-border);
+  border-radius: var(--dbshield-radius-sm);
+  background: var(--dbshield-surface);
+  color: var(--el-text-color-regular);
+  font-weight: 500;
+  box-shadow: var(--dbshield-shadow-xs);
+  transition: all var(--dbshield-transition);
+}
+
+.el-pagination.is-background .el-pager li:not(.is-active):hover,
+.el-pagination.is-background .btn-prev:not(:disabled):hover,
+.el-pagination.is-background .btn-next:not(:disabled):hover {
+  color: var(--el-color-primary);
+  border-color: var(--el-color-primary-light-7);
+  background: var(--dbshield-primary-soft);
+}
+
+.el-pagination.is-background .el-pager li.is-active {
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.28);
+}
+
+.el-pagination.is-background .btn-prev:disabled,
+.el-pagination.is-background .btn-next:disabled {
+  background: var(--el-fill-color-lighter);
+  color: var(--el-text-color-placeholder);
+  border-color: var(--dbshield-border-light);
+  box-shadow: none;
+}
+
+.el-pagination .el-input__wrapper {
+  border-radius: var(--dbshield-radius-sm);
+}
+
+.el-pagination__total,
+.el-pagination__jump {
+  color: var(--el-text-color-secondary);
+  font-size: 13px;
+}
+
+/* ══════════════════════════════════════════════════════════
+   7. 卡片 / 弹窗 / 抽屉
+   ══════════════════════════════════════════════════════════ */
+.el-card {
+  --el-card-border-color: var(--dbshield-border-light);
+  --el-card-border-radius: 14px;
+  --el-card-padding: 20px;
+  --el-card-bg-color: var(--dbshield-surface);
+
+  border: 1px solid var(--el-card-border-color);
+  border-radius: var(--el-card-border-radius);
+  box-shadow: var(--dbshield-shadow-card);
+  background: var(--el-card-bg-color);
+  transition: box-shadow var(--dbshield-transition),
+    border-color var(--dbshield-transition);
+}
+
+.el-card.is-hover-shadow:hover {
+  box-shadow: var(--dbshield-shadow-md);
+  border-color: var(--dbshield-border);
+}
+
+.el-card__header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--dbshield-border-lighter);
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.el-card__body {
+  padding: var(--el-card-padding);
+}
+
+.el-dialog {
+  border-radius: var(--dbshield-radius-lg);
+  box-shadow: var(--dbshield-shadow-lg);
+  overflow: hidden;
+}
+
+.el-dialog__header {
+  padding: 20px 24px 10px;
+  margin-right: 0;
+}
+
+.el-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.el-dialog__headerbtn {
+  top: 16px;
+  right: 16px;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  transition: background-color 0.12s ease;
+}
+
+.el-dialog__headerbtn:hover {
+  background: var(--el-fill-color-light);
+}
+
+.el-dialog__body {
+  padding: 8px 24px 20px;
+}
+
+.el-dialog__footer {
+  padding: 12px 24px 20px;
+}
+
+.el-drawer {
+  border-radius: 16px 0 0 16px;
+  box-shadow: var(--dbshield-shadow-lg);
+}
+
+.el-drawer__header {
+  margin-bottom: 16px;
+  padding: 20px 20px 0;
+  color: var(--el-text-color-primary);
+  font-weight: 600;
+}
+
+.el-overlay {
+  backdrop-filter: blur(2px);
+  background-color: var(--el-mask-color);
+}
+
+.el-message-box {
+  border-radius: var(--dbshield-radius-lg);
+  padding: 20px 22px 16px;
+  border: 1px solid var(--dbshield-border-light);
+  box-shadow: var(--dbshield-shadow-lg);
+}
+
+.el-message-box__title {
+  font-weight: 600;
+}
+
+.el-message {
+  border-radius: var(--dbshield-radius);
+  border: 1px solid var(--dbshield-border-light);
+  box-shadow: var(--dbshield-shadow-md);
+  padding: 10px 14px;
+}
+
+.el-notification {
+  border-radius: var(--dbshield-radius);
+  border: 1px solid var(--dbshield-border-light);
+  box-shadow: var(--dbshield-shadow-lg);
+}
+
+/* ══════════════════════════════════════════════════════════
+   8. 标签 / 提示 / 表单 / 其它
+   ══════════════════════════════════════════════════════════ */
+.el-tag {
+  --el-tag-border-radius: 6px;
+  border-radius: var(--el-tag-border-radius);
+  font-weight: 500;
+  padding: 0 8px;
+}
+
+.el-tag--info {
+  --el-tag-bg-color: #f2f4f7;
+  --el-tag-border-color: #e7eaf0;
+  --el-tag-text-color: #475467;
+}
+
+.el-alert {
+  border-radius: var(--dbshield-radius);
+  padding: 12px 14px;
+}
+
+.el-alert--info.is-light {
+  background: #f4f7fd;
+  border: 1px solid #e6edfa;
+}
+
+.el-form-item__label {
+  color: var(--el-text-color-regular);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.el-form-item {
+  margin-bottom: 18px;
+}
+
+.el-checkbox__label,
+.el-radio__label {
+  color: var(--el-text-color-regular);
+  font-size: 13.5px;
+}
+
+.el-checkbox__inner {
+  border-radius: 4px;
+}
+
+.el-radio__inner,
+.el-checkbox__inner {
+  transition: all 0.12s ease;
+}
+
+.el-checkbox__inner:hover,
+.el-radio__inner:hover {
+  border-color: var(--el-color-primary);
+}
+
+.el-switch.is-checked .el-switch__core {
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.28);
+}
+
+.el-divider--horizontal {
+  margin: 18px 0;
+  border-top-color: var(--dbshield-border-light);
+}
+
+.el-divider__text {
+  color: var(--el-text-color-secondary);
+  font-size: 12.5px;
+  font-weight: 600;
+  background: var(--dbshield-surface);
+}
+
+.el-empty__description p {
+  color: var(--el-text-color-placeholder);
+  font-size: 13px;
+}
+
+.el-link.el-link--primary {
+  font-weight: 500;
+}
+
+.el-skeleton__item {
+  border-radius: 6px;
+}
+
+/* 描述列表 / 步骤条 / 折叠面板 / 结果页 / 树 */
+.el-descriptions {
+  --el-descriptions-table-border: 1px solid var(--dbshield-border-light);
+}
+
+.el-descriptions__label {
+  color: var(--el-text-color-secondary);
+  font-weight: 500;
+}
+
+.el-descriptions__cell {
+  padding: 10px 14px;
+}
+
+.el-step__title {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.el-step__icon.is-text {
+  border-width: 1px;
+}
+
+.el-collapse {
+  --el-collapse-border-color: var(--dbshield-border-light);
+  border-top-color: var(--dbshield-border-light);
+  border-bottom-color: var(--dbshield-border-light);
+}
+
+.el-collapse-item__header {
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.el-collapse-item__wrap {
+  background: var(--el-bg-color);
+}
+
+.el-result__title p {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.el-tree {
+  --el-tree-node-hover-bg-color: var(--dbshield-primary-soft);
+}
+
+.el-tree-node__content {
+  height: 32px;
+  border-radius: 6px;
+}
+
+.el-tree-node.is-current > .el-tree-node__content {
+  background: var(--dbshield-primary-soft);
+  color: var(--el-color-primary);
+}
+
+/* 加载遮罩背景更干净 */
+.el-loading-mask {
+  background-color: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(1px);
+}
+
+/* ══════════════════════════════════════════════════════════
+   9. 通用工具
+   ══════════════════════════════════════════════════════════ */
+.dbshield-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.dbshield-card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--el-text-color-primary);
+}
+
+.dbshield-muted {
+  color: var(--el-text-color-secondary);
+  font-size: 12.5px;
+}
+
+.dbshield-mono {
+  font-family: var(--dbshield-font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 数字表格使用等宽数字，避免列跳动 */
+.el-table {
+  font-variant-numeric: tabular-nums;
+}

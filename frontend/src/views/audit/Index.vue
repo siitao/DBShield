@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted } from "vue";
-import { useRoute } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 import {
   fetchAuditLog,
   fetchWorkflowAudit,
@@ -9,11 +9,15 @@ import {
 import TruncateCell from "@/components/TruncateCell.vue";
 
 const route = useRoute();
+const router = useRouter();
 
 type AuditType = "general" | "workflow" | "query";
-const activeTab = ref<AuditType>(
-  (route.query.type as AuditType) || "general"
-);
+const AUDIT_TYPES: AuditType[] = ["general", "workflow", "query"];
+function tabFromQuery(value: unknown): AuditType {
+  const t = String(value || "");
+  return (AUDIT_TYPES as string[]).includes(t) ? (t as AuditType) : "general";
+}
+const activeTab = ref<AuditType>(tabFromQuery(route.query.type));
 
 const loading = ref(false);
 const list = ref<Record<string, unknown>[]>([]);
@@ -128,10 +132,26 @@ function onSearch() {
 }
 
 function onTabChange(name: string | number) {
-  activeTab.value = name as AuditType;
+  activeTab.value = tabFromQuery(name);
+  // 同步到 URL query，让侧边栏「系统审计」下的三个子项高亮跟随当前页签
+  if (route.query.type !== activeTab.value) {
+    router.replace({ query: { ...route.query, type: activeTab.value } });
+  }
   query.page = 1;
   loadData();
 }
+
+// 从侧边栏切换同一页面的其他审计子项时，路由复用组件，需要手动同步页签
+watch(
+  () => route.query.type,
+  (value) => {
+    const next = tabFromQuery(value);
+    if (next === activeTab.value) return;
+    activeTab.value = next;
+    query.page = 1;
+    loadData();
+  }
+);
 
 watch(
   () => query.page,

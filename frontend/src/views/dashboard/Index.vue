@@ -286,13 +286,17 @@ onMounted(loadCharts);
         class="entry"
         @click="go(e)"
       >
-        <div class="entry-icon" :style="{ background: e.color }">
-          <el-icon :size="24"><component :is="e.icon" /></el-icon>
+        <div
+          class="entry-icon"
+          :style="{ background: e.color + '14', color: e.color }"
+        >
+          <el-icon :size="22"><component :is="e.icon" /></el-icon>
         </div>
         <div class="entry-body">
           <div class="entry-title">{{ e.title }}</div>
           <div class="entry-desc">{{ e.desc }}</div>
         </div>
+        <el-icon class="entry-arrow"><ArrowRight /></el-icon>
       </el-card>
     </div>
 
@@ -341,18 +345,51 @@ onMounted(loadCharts);
 .dashboard {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 18px;
 }
 
 /* ---------------- Hero ---------------- */
 .hero {
-  background: linear-gradient(120deg, #1e3a8a 0%, #2563eb 100%);
-  border: none;
-  border-radius: 12px;
-  color: #fff;
+  position: relative;
   overflow: hidden;
+  border: 1px solid #e2eaf9;
+  border-radius: 16px;
+  background: linear-gradient(120deg, #eff5ff 0%, #f8faff 48%, #eef2ff 100%);
+  box-shadow: var(--dbshield-shadow-card);
+  color: var(--el-text-color-primary);
+
+  /* 右侧装饰光斑 */
+  &::before {
+    content: "";
+    position: absolute;
+    top: -90px;
+    right: 8%;
+    width: 280px;
+    height: 280px;
+    border-radius: 50%;
+    background: radial-gradient(
+      circle,
+      rgba(37, 99, 235, 0.14) 0%,
+      rgba(37, 99, 235, 0) 68%
+    );
+    pointer-events: none;
+  }
+  &::after {
+    content: "";
+    position: absolute;
+    bottom: -120px;
+    right: -60px;
+    width: 260px;
+    height: 260px;
+    border-radius: 50%;
+    border: 1px solid rgba(37, 99, 235, 0.1);
+    pointer-events: none;
+  }
+
   :deep(.el-card__body) {
-    padding: 28px 32px;
+    position: relative;
+    z-index: 1;
+    padding: 26px 30px;
   }
   .hero-row {
     display: flex;
@@ -364,25 +401,35 @@ onMounted(loadCharts);
   .hero-greet {
     h2 {
       margin: 0;
-      font-size: 24px;
+      font-size: 23px;
+      font-weight: 700;
+      letter-spacing: -0.01em;
     }
     p {
       margin: 8px 0 0;
-      opacity: 0.9;
-      font-size: 14px;
+      color: var(--el-text-color-secondary);
+      font-size: 13.5px;
     }
   }
   .hero-date {
-    text-align: right;
-    line-height: 1.3;
+    text-align: center;
+    padding: 10px 20px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.78);
+    border: 1px solid rgba(37, 99, 235, 0.12);
+    box-shadow: 0 4px 14px rgba(37, 99, 235, 0.08);
+    backdrop-filter: blur(4px);
     .hero-date-day {
-      font-size: 18px;
+      font-size: 12px;
       font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--el-color-primary);
     }
     .hero-date-text {
-      margin-top: 4px;
-      font-size: 13px;
-      opacity: 0.85;
+      margin-top: 2px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--el-text-color-primary);
     }
   }
 }
@@ -404,21 +451,23 @@ onMounted(loadCharts);
 .stat-icon {
   width: 44px;
   height: 44px;
-  border-radius: 10px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
 }
 .stat-value {
-  font-size: 26px;
+  font-size: 27px;
   font-weight: 700;
   line-height: 1.1;
+  letter-spacing: -0.02em;
   color: var(--el-text-color-primary);
+  font-variant-numeric: tabular-nums;
 }
 .stat-label {
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 3px;
+  font-size: 12.5px;
   color: var(--el-text-color-secondary);
 }
 
@@ -430,35 +479,55 @@ onMounted(loadCharts);
 }
 .entry {
   cursor: pointer;
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: transform var(--dbshield-transition),
+    box-shadow var(--dbshield-transition), border-color var(--dbshield-transition);
   &:hover {
     transform: translateY(-2px);
+    border-color: var(--el-color-primary-light-8);
+    box-shadow: 0 12px 26px rgba(16, 24, 40, 0.09);
+    .entry-arrow {
+      color: var(--el-color-primary);
+      transform: translateX(3px);
+    }
   }
   :deep(.el-card__body) {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 20px;
+    gap: 14px;
+    padding: 18px 20px;
   }
 }
 .entry-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: 10px;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
   flex-shrink: 0;
 }
+.entry-body {
+  min-width: 0;
+}
 .entry-title {
-  font-size: 16px;
+  font-size: 14.5px;
   font-weight: 600;
 }
 .entry-desc {
-  margin-top: 4px;
-  font-size: 13px;
+  margin-top: 3px;
+  font-size: 12.5px;
   color: var(--el-text-color-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.entry-arrow {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 15px;
+  color: var(--el-text-color-placeholder);
+  transition: color var(--dbshield-transition),
+    transform var(--dbshield-transition);
 }
 
 /* ---------------- 图表区 ---------------- */
@@ -466,10 +535,11 @@ onMounted(loadCharts);
   h3 {
     margin: 0;
     font-size: 16px;
+    font-weight: 600;
   }
   .charts-sub {
     margin: 4px 0 0;
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--el-text-color-secondary);
   }
 }
@@ -477,7 +547,7 @@ onMounted(loadCharts);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
   flex-wrap: wrap;
   gap: 12px;
 }
@@ -485,26 +555,26 @@ onMounted(loadCharts);
 .section {
   margin-top: 8px;
   & + .section {
-    margin-top: 24px;
+    margin-top: 26px;
   }
 }
 .section-title {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   .section-bar {
-    width: 4px;
-    height: 16px;
+    width: 3px;
+    height: 15px;
     border-radius: 2px;
   }
   h4 {
     margin: 0;
-    font-size: 15px;
+    font-size: 14.5px;
     font-weight: 600;
   }
   .section-sub {
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--el-text-color-secondary);
   }
 }
@@ -515,10 +585,16 @@ onMounted(loadCharts);
   gap: 16px;
 }
 .chart-cell {
-  background: var(--el-bg-color);
-  border: 1px solid var(--el-border-color-lighter);
-  border-radius: 8px;
-  padding: 8px 8px 0;
+  background: var(--dbshield-surface);
+  border: 1px solid var(--dbshield-border-lighter);
+  border-radius: 12px;
+  padding: 10px 10px 0;
+  transition: border-color var(--dbshield-transition),
+    box-shadow var(--dbshield-transition);
+  &:hover {
+    border-color: var(--dbshield-border-light);
+    box-shadow: var(--dbshield-shadow-xs);
+  }
 }
 .chart-cell.span-2 {
   grid-column: span 2;
@@ -554,8 +630,9 @@ onMounted(loadCharts);
 <style lang="scss">
 .charts-head {
   .el-date-editor--daterange {
-    --el-date-editor-width: 260px;
-    width: 260px;
+    --el-date-editor-width: 280px;
+    flex: 0 0 280px;
+    width: 280px;
   }
 }
 </style>

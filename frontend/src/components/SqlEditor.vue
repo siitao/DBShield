@@ -238,15 +238,25 @@ defineExpose({
 <style scoped lang="scss">
 .sql-editor-wrap {
   width: 100%;
-  border: 1px solid var(--el-border-color);
-  border-radius: 4px;
+  border: 1px solid var(--dbshield-border-light);
+  border-radius: 12px;
   overflow: hidden;
+  background: #fff;
+  box-shadow: var(--dbshield-shadow-card);
+  transition: border-color var(--dbshield-transition),
+    box-shadow var(--dbshield-transition);
+
+  &:focus-within {
+    border-color: var(--el-color-primary-light-7);
+    box-shadow: 0 0 0 3px rgba(var(--el-color-primary-rgb), 0.08),
+      var(--dbshield-shadow-card);
+  }
 }
 
 .toolbar {
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--el-border-color);
-  background: var(--el-fill-color-light);
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--dbshield-border-lighter);
+  background: linear-gradient(180deg, #fbfcfe 0%, #f8fafd 100%);
   display: flex;
   gap: 8px;
   align-items: center;
@@ -254,13 +264,18 @@ defineExpose({
 
 .upload-hint {
   margin-left: auto;
-  color: var(--el-text-color-secondary);
-  font-size: 12px;
+  color: var(--el-text-color-placeholder);
+  font-size: 11.5px;
 }
 
 .editor {
   height: 300px;
   width: 100%;
+  font-family: var(--dbshield-font-mono);
+
+  :deep(.ace_editor) {
+    font-family: var(--dbshield-font-mono) !important;
+  }
 }
 
 .sql-editor-wrap.fill {
@@ -278,6 +293,30 @@ defineExpose({
 .upload-btn {
   display: inline-flex;
   cursor: pointer;
+}
+
+/* Ace 的默认 gutter 偏灰，换成与整体一致的浅色行号栏 */
+:deep(.ace_gutter) {
+  background: #f8fafc !important;
+  color: #98a2b3 !important;
+  border-right: 1px solid var(--dbshield-border-lighter);
+}
+
+:deep(.ace_gutter-active-line) {
+  background: #eef4ff !important;
+  color: var(--el-color-primary) !important;
+}
+
+:deep(.ace_active-line) {
+  background: #f8fbff !important;
+}
+
+:deep(.ace_selection) {
+  background: rgba(37, 99, 235, 0.12) !important;
+}
+
+:deep(.ace_cursor) {
+  color: var(--el-color-primary) !important;
 }
 
 :deep(.ace-error-line) {

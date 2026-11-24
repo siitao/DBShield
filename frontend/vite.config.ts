@@ -32,11 +32,13 @@ export default defineConfig({
     vue(),
     AutoImport({
       imports: ["vue", "vue-router", "pinia"],
-      resolvers: [ElementPlusResolver()],
+      // 全量样式已在 main.ts 引入 element-plus/dist/index.css，
+      // 关闭按需样式注入，避免组件样式后加载覆盖自定义主题（也会重复打包 CSS）
+      resolvers: [ElementPlusResolver({ importStyle: false })],
       dts: "src/auto-imports.d.ts",
     }),
     Components({
-      resolvers: [ElementPlusResolver()],
+      resolvers: [ElementPlusResolver({ importStyle: false })],
       dts: "src/components.d.ts",
     }),
   ],

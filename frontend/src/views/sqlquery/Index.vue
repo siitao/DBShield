@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, nextTick } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
+import { MagicStick, VideoPlay, DataAnalysis } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
 import {
   fetchQueryInstances,
@@ -185,6 +186,12 @@ async function loadLogs() {
 function onLogSearch() {
   logQuery.page = 1;
   loadLogs();
+}
+
+/** 历史记录时间：ISO 字符串 → yyyy-MM-dd HH:mm:ss */
+function formatTime(value?: string): string {
+  if (!value) return "";
+  return String(value).replace("T", " ").replace(/\.\d+.*$/, "").slice(0, 19);
 }
 
 // AI
@@ -682,15 +689,26 @@ onMounted(() => {
             <el-form-item label="操作">
               <div class="action-btns">
                 <el-button
-                  type="success"
-                  @click="onBeautify"
-                >美化</el-button>
-                <el-button v-if="canExecute" type="primary" @click="doExecute(false)">
+                  v-if="canExecute"
+                  type="primary"
+                  class="action-run"
+                  :icon="VideoPlay"
+                  @click="doExecute(false)"
+                >
                   执行
                 </el-button>
-                <el-button v-if="canExecute" @click="doExecute(true)">
-                  执行计划
-                </el-button>
+                <div class="action-secondary">
+                  <el-button :icon="MagicStick" @click="onBeautify">
+                    美化
+                  </el-button>
+                  <el-button
+                    v-if="canExecute"
+                    :icon="DataAnalysis"
+                    @click="doExecute(true)"
+                  >
+                    执行计划
+                  </el-button>
+                </div>
               </div>
             </el-form-item>
           </el-form>
@@ -727,7 +745,7 @@ onMounted(() => {
 
     <!-- 结果 + 历史 tabs -->
     <el-card shadow="never" class="result-card">
-      <el-tabs v-model="activeTabId" type="card" @tab-remove="onTabRemove">
+      <el-tabs v-model="activeTabId" class="result-tabs" @tab-remove="onTabRemove">
         <el-tab-pane label="查询历史" name="history">
           <div class="log-filter">
             <el-input
@@ -740,6 +758,7 @@ onMounted(() => {
             <el-select
               v-model="logQuery.star"
               class="log-star"
+              placeholder="全部"
               @change="onLogSearch"
             >
               <el-option label="全部" value="" />
@@ -777,8 +796,13 @@ onMounted(() => {
               width="110"
               show-overflow-tooltip
             />
-            <el-table-column label="行数" prop="effect_row" width="70" />
-            <el-table-column label="耗时" width="80">
+            <el-table-column
+              label="行数"
+              prop="effect_row"
+              width="80"
+              align="right"
+            />
+            <el-table-column label="耗时" width="90" align="right">
               <template #default="{ row }">{{ row.cost_time }}s</template>
             </el-table-column>
             <el-table-column
@@ -787,7 +811,9 @@ onMounted(() => {
               width="100"
               show-overflow-tooltip
             />
-            <el-table-column label="时间" prop="create_time" width="150" />
+            <el-table-column label="时间" prop="create_time" width="170">
+              <template #default="{ row }">{{ formatTime(row.create_time) }}</template>
+            </el-table-column>
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <el-button
@@ -863,7 +889,7 @@ onMounted(() => {
 .sqlquery-page {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
 }
 
 /* 上半区左右等高，编辑器随右栏伸缩 */
@@ -880,6 +906,7 @@ onMounted(() => {
 }
 .control-card {
   height: 100%;
+  border-radius: 14px;
 }
 .control-card :deep(.el-card__body) {
   height: 100%;
@@ -887,18 +914,22 @@ onMounted(() => {
 }
 /* 控制栏表单紧凑、输入框对齐 */
 .control-body :deep(.el-form-item) {
-  margin-bottom: 10px;
+  margin-bottom: 13px;
+}
+.control-body :deep(.el-form-item__label) {
+  color: var(--el-text-color-secondary);
+  font-size: 12.5px;
 }
 
 .dynamic-params {
-  margin-top: 8px;
+  margin-top: 10px;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 
   .label {
-    font-size: 13px;
+    font-size: 12.5px;
     color: var(--el-text-color-secondary);
   }
 
@@ -908,86 +939,128 @@ onMounted(() => {
 }
 
 :deep(.control-body) {
-  padding: 12px;
+  padding: 18px;
 }
 
 .locator-list {
   max-height: 160px;
   overflow-y: auto;
-  margin: -4px 0 8px;
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 4px;
+  margin: -6px 0 10px;
+  border: 1px solid var(--dbshield-border-light);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+  box-shadow: var(--dbshield-shadow-xs);
 
   .locator-item {
-    padding: 4px 8px;
+    padding: 6px 10px;
     font-size: 12px;
+    color: var(--el-text-color-regular);
     cursor: pointer;
+    border-bottom: 1px solid var(--dbshield-border-lighter);
+    transition: background-color 0.12s ease, color 0.12s ease;
+
+    &:last-child {
+      border-bottom: none;
+    }
 
     &:hover {
-      background: var(--el-fill-color-light);
+      background: var(--dbshield-primary-soft);
+      color: var(--el-color-primary);
     }
   }
 }
 
 .action-btns {
   display: flex;
-  flex-wrap: nowrap;
-  gap: 6px;
+  flex-direction: column;
+  gap: 8px;
   width: 100%;
 }
-/* 执行 / 执行计划：等宽拉伸 */
-.action-btns :deep(.el-button) {
-  flex: 0 0 auto;
+
+.action-btns .action-run {
+  width: 100%;
+  height: 36px;
   margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.action-secondary {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+
+.action-secondary :deep(.el-button) {
+  flex: 1;
+  margin: 0;
+  padding-left: 6px;
+  padding-right: 10px;
 }
 
 .ai-block {
-  margin-top: 8px;
+  margin-top: 10px;
 
   .ai-btn {
-    margin-top: 6px;
+    margin-top: 8px;
     width: 100%;
   }
 }
 
 .result-card {
-  margin-top: 4px;
+  margin-top: 2px;
+}
+
+.result-tabs :deep(.el-tabs__header) {
+  margin-bottom: 14px;
+}
+
+.result-tabs :deep(.el-tabs__item) {
+  max-width: 260px;
+}
+
+.result-tabs :deep(.el-tabs__item span) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .log-filter {
   display: flex;
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
 
   .log-search {
-    width: 260px;
+    width: 280px;
   }
 
   .log-star {
-    width: 120px;
+    width: 124px;
   }
 }
 
 .pager {
-  margin-top: 12px;
+  margin-top: 14px;
   display: flex;
   justify-content: flex-end;
 }
 
 .executed-sql {
-  margin-top: 10px;
-  padding: 8px 10px;
-  background: var(--el-fill-color-light);
-  border-radius: 4px;
+  margin-top: 12px;
+  padding: 9px 12px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--dbshield-border-lighter);
+  border-radius: 8px;
   font-size: 12px;
+  color: var(--el-text-color-regular);
   word-break: break-all;
 
   .lbl {
-    color: var(--el-text-color-secondary);
+    color: var(--el-text-color-placeholder);
   }
 
   code {
-    font-family: monospace;
+    font-family: var(--dbshield-font-mono);
   }
 }
 </style>

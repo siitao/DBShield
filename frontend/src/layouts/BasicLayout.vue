@@ -24,7 +24,12 @@ function topVisible(item: MenuItem): boolean {
 const visibleMenu = computed(() => menuItems.filter(topVisible));
 
 function menuIndex(item: MenuItem): string {
-  if (item.routeName) return item.routeName;
+  if (item.routeName) {
+    const qs = item.routeQuery
+      ? new URLSearchParams(item.routeQuery).toString()
+      : "";
+    return qs ? `${item.routeName}?${qs}` : item.routeName;
+  }
   if (item.legacyPath) return "legacy:" + item.legacyPath;
   return item.title;
 }
@@ -34,10 +39,41 @@ function onSelect(index: string) {
     window.open(legacyBase + index.slice("legacy:".length), "_blank");
     return;
   }
-  router.push({ name: index });
+  const [name, qs] = index.split("?");
+  router.push({
+    name,
+    query: qs ? Object.fromEntries(new URLSearchParams(qs)) : {},
+  });
 }
 
-const activeIndex = computed(() => (route.name as string) || "");
+const activeIndex = computed(() => {
+  const name = (route.name as string) || "";
+  if (!name) return "";
+
+  // 当前路由 + query，与菜单 index 采用同样的序列化方式
+  const qs = new URLSearchParams();
+  for (const [key, value] of Object.entries(route.query)) {
+    if (typeof value === "string") qs.append(key, value);
+  }
+  const full = qs.toString() ? `${name}?${qs.toString()}` : name;
+
+  const indices: string[] = [];
+  for (const item of visibleMenu.value) {
+    if (item.children) {
+      indices.push(...item.children.filter(childVisible).map(menuIndex));
+    } else {
+      indices.push(menuIndex(item));
+    }
+  }
+
+  if (indices.includes(full)) return full;
+  // 同一页面的子视图在页面内切换时 query 可能不同，回退到该路由的默认菜单项
+  return (
+    indices.find((i) => i === name) ??
+    indices.find((i) => i.startsWith(`${name}?`)) ??
+    name
+  );
+});
 
 async function onLogout() {
   try {
@@ -166,8 +202,9 @@ function openUrl(url: string) {
 }
 
 .layout-aside {
-  // 深色导航渐变：从深海军蓝过渡到墨蓝
-  background: linear-gradient(180deg, #0f172a 0%, #111827 55%, #1e293b 100%);
+  // 深色导航渐变：从墨蓝过渡到深海军蓝，右侧留一道极淡的分隔光
+  background: linear-gradient(180deg, #0b1222 0%, #101a2e 55%, #16233c 100%);
+  border-right: 1px solid rgba(148, 163, 184, 0.08);
   overflow-x: hidden;
   overflow-y: auto;
 
@@ -196,21 +233,21 @@ function openUrl(url: string) {
 }
 
 .layout-brand {
-  height: 60px;
+  height: 64px;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
   color: #fff;
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
-  letter-spacing: 1px;
-  background: rgba(255, 255, 255, 0.04);
+  letter-spacing: 0.5px;
+  background: rgba(255, 255, 255, 0.025);
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 
   .brand-logo {
     display: block;
-    filter: drop-shadow(0 2px 6px rgba(37, 99, 235, 0.45));
+    filter: drop-shadow(0 2px 8px rgba(37, 99, 235, 0.5));
   }
 }
 
@@ -218,30 +255,40 @@ function openUrl(url: string) {
 .layout-menu {
   border-right: none;
   background: transparent;
-  padding: 6px 8px 12px;
+  padding: 10px 10px 16px;
 
   :deep(.el-menu-item),
   :deep(.el-sub-menu__title) {
-    height: 44px;
-    line-height: 44px;
-    margin-bottom: 2px;
-    border-radius: 8px;
+    height: 42px;
+    line-height: 42px;
+    margin-bottom: 3px;
+    border-radius: 9px;
+    font-size: 13.5px;
     color: var(--dbshield-nav-text);
     transition: background var(--dbshield-transition),
       color var(--dbshield-transition), box-shadow var(--dbshield-transition);
   }
   :deep(.el-menu-item:hover),
   :deep(.el-sub-menu__title:hover) {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(148, 163, 184, 0.12);
     color: #fff;
   }
   :deep(.el-menu-item.is-active) {
     background: linear-gradient(90deg, #2563eb 0%, #3b82f6 100%);
     color: #fff;
-    box-shadow: 0 4px 12px rgba(37, 99, 235, 0.35);
+    font-weight: 600;
+    box-shadow: 0 6px 16px rgba(37, 99, 235, 0.32),
+      inset 0 0 0 1px rgba(147, 197, 253, 0.18);
   }
   :deep(.el-sub-menu .el-menu) {
     background: transparent;
+  }
+  :deep(.el-sub-menu .el-menu-item) {
+    height: 38px;
+    line-height: 38px;
+    font-size: 13px;
+    margin-left: 2px;
+    margin-right: 2px;
   }
 }
 
@@ -250,34 +297,25 @@ function openUrl(url: string) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: #fff;
-  border-bottom: 1px solid var(--el-border-color-light);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.04);
-
-  // 顶部品牌色细线
-  &::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%);
-  }
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--dbshield-border-light);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.03);
 }
 
 .page-title {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  font-size: 16px;
+  gap: 9px;
+  font-size: 15.5px;
   font-weight: 600;
+  color: var(--el-text-color-primary);
 
   &::before {
     content: "";
-    width: 6px;
-    height: 16px;
-    border-radius: 3px;
+    width: 4px;
+    height: 15px;
+    border-radius: 2px;
     background: linear-gradient(180deg, #60a5fa 0%, #2563eb 100%);
   }
 }
@@ -285,14 +323,24 @@ function openUrl(url: string) {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 8px;
 }
 
 .header-action {
   display: inline-flex;
-  font-size: 18px;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  font-size: 17px;
   color: var(--el-text-color-secondary);
+  cursor: pointer;
+  transition: background-color var(--dbshield-transition),
+    color var(--dbshield-transition);
+
   &:hover {
+    background: var(--el-fill-color-light);
     color: var(--el-color-primary);
   }
 }
@@ -301,16 +349,27 @@ function openUrl(url: string) {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
   cursor: pointer;
-  color: var(--el-text-color-primary);
+  color: var(--el-text-color-regular);
+  transition: background-color var(--dbshield-transition),
+    color var(--dbshield-transition);
+
+  &:hover {
+    background: var(--el-fill-color-light);
+    color: var(--el-color-primary);
+  }
 
   .user-name {
-    font-size: 14px;
+    font-size: 13.5px;
+    font-weight: 500;
   }
 }
 
 .layout-main {
   background: var(--el-bg-color-page);
-  padding: 20px;
+  padding: 20px 24px 24px;
 }
 </style>

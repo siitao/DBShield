@@ -7,6 +7,8 @@ export interface MenuItem {
   icon?: string;
   perm?: string;
   routeName?: string;
+  /** 跳转时附带的 query（同一页面内的子视图，用于区分菜单高亮） */
+  routeQuery?: Record<string, string>;
   legacyPath?: string;
   superuserOnly?: boolean;
   children?: MenuItem[];
@@ -93,9 +95,9 @@ export const menuItems: MenuItem[] = [
     icon: "View",
     perm: "sql.audit_user",
     children: [
-      { title: "通用审计", routeName: "audit" },
-      { title: "SQL 上线审计", routeName: "audit" },
-      { title: "查询审计", routeName: "audit" },
+      { title: "通用审计", routeName: "audit", routeQuery: { type: "general" } },
+      { title: "SQL 上线审计", routeName: "audit", routeQuery: { type: "workflow" } },
+      { title: "查询审计", routeName: "audit", routeQuery: { type: "query" } },
     ],
   },
   {

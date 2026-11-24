@@ -634,7 +634,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
               已达上限，可能被截断
             </el-tag>
           </el-tooltip>
-          <el-tag size="small" type="info">耗时 {{ result.query_time }}s</el-tag>
+          <el-tag
+            v-if="result.query_time != null"
+            size="small"
+            type="info"
+          >
+            耗时 {{ result.query_time }}s
+          </el-tag>
           <el-tag v-if="result.is_masked" size="small" type="warning">
             已脱敏
           </el-tag>
@@ -905,8 +911,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 12px;
-  margin-bottom: 10px;
+  gap: 10px 12px;
+  padding-bottom: 11px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--dbshield-border-lighter);
 }
 
 .meta-tags,
@@ -918,7 +926,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 }
 
 .search-input {
-  width: 200px;
+  width: 220px;
 }
 
 .filter-builder {
@@ -985,38 +993,39 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
 
 .create-text {
   margin: 0;
-  padding: 12px;
-  background: var(--el-fill-color-light);
-  border: 1px solid var(--el-border-color-light);
-  border-radius: 4px;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  padding: 14px 16px;
+  background: var(--el-fill-color-lighter);
+  border: 1px solid var(--dbshield-border-light);
+  border-radius: 10px;
+  font-family: var(--dbshield-font-mono);
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.65;
   white-space: pre-wrap;
   word-break: break-all;
   overflow: auto;
 }
 
 .pager {
-  margin-top: 12px;
+  margin-top: 14px;
   display: flex;
   justify-content: flex-end;
 }
 
 /* 表头与数据行拉开层次：浅主色底 + 更重的下边框 + 加粗字重 */
 .sql-result-table {
-  --el-table-header-bg-color: var(--el-color-primary-light-8);
-  --el-table-header-text-color: var(--el-text-color-primary);
+  --el-table-header-bg-color: #eff4ff;
+  --el-table-header-text-color: #24365c;
 
   :deep(.el-table__header-wrapper th.el-table__cell) {
+    height: 42px;
     font-weight: 600;
     letter-spacing: 0.2px;
-    border-bottom: 1px solid var(--el-color-primary-light-5) !important;
+    border-bottom: 1px solid #c9d8f6 !important;
   }
 
   /* 悬停排序时保持表头主色底，不要退回和数据行一样的灰色 */
   :deep(.el-table__header-wrapper th.el-table__cell:hover) {
-    background-color: var(--el-color-primary-light-7) !important;
+    background-color: var(--el-color-primary-light-8) !important;
   }
 
   /* 选中行高亮不要盖住表头 */
@@ -1024,10 +1033,19 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
     position: relative;
     z-index: 2;
   }
+
+  :deep(.el-table__body-wrapper td.el-table__cell) {
+    border-bottom: 1px solid #f1f4fa;
+  }
+
+  :deep(.el-table__row:hover > td.el-table__cell) {
+    background-color: #f5f8ff !important;
+  }
 }
 
 :deep(.cell-selected) {
   background: var(--el-color-primary-light-8) !important;
+  box-shadow: inset 0 0 0 1px var(--el-color-primary-light-5);
 }
 </style>
 
