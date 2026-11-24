@@ -10,14 +10,12 @@ import {
   executeQuery,
   fetchQueryLogs,
   toggleFavorite,
-  locateTable,
   generateSql,
   checkOpenai,
   type QueryInstanceRow,
   type QueryResultSet,
   type QueryResultEnvelope,
   type QueryLogRow,
-  type TableLocatorRow,
 } from "@/api/sqlquery";
 import SqlEditor from "@/components/SqlEditor.vue";
 import SqlQueryResultTable from "@/components/SqlQueryResultTable.vue";
@@ -364,42 +362,6 @@ async function onViewTableStructure() {
   }
 }
 
-// 表名定位器
-const locatorKeyword = ref("");
-const locatorResults = ref<TableLocatorRow[]>([]);
-const locatorLoading = ref(false);
-let locatorTimer: number | null = null;
-
-function onLocatorInput() {
-  if (locatorTimer) clearTimeout(locatorTimer);
-  locatorTimer = window.setTimeout(async () => {
-    const kw = locatorKeyword.value.trim();
-    if (!kw) {
-      locatorResults.value = [];
-      return;
-    }
-    locatorLoading.value = true;
-    try {
-      locatorResults.value = await locateTable(kw);
-    } catch {
-      locatorResults.value = [];
-    } finally {
-      locatorLoading.value = false;
-    }
-  }, 500);
-}
-
-async function onLocatorPick(row: TableLocatorRow) {
-  form.instance_name = row.name;
-  await onInstanceChange();
-  form.db_name = row.db_name;
-  await onDbChange();
-  form.table_name = row.table_name;
-  await onTableChange();
-  locatorResults.value = [];
-  locatorKeyword.value = "";
-}
-
 // explain 按引擎加前缀
 function withExplain(sql: string): string {
   switch (currentDbType.value) {
@@ -567,30 +529,6 @@ onMounted(() => {
       <el-col :span="6">
         <el-card shadow="never" body-class="control-body" class="control-card">
           <el-form label-width="72px">
-            <el-form-item label="表名定位">
-              <el-input
-                v-model="locatorKeyword"
-                placeholder="输入表名反查"
-                clearable
-                :prefix-icon="undefined"
-                @input="onLocatorInput"
-              />
-            </el-form-item>
-            <div
-              v-if="locatorResults.length"
-              v-loading="locatorLoading"
-              class="locator-list"
-            >
-              <div
-                v-for="r in locatorResults"
-                :key="r.id"
-                class="locator-item"
-                @click="onLocatorPick(r)"
-              >
-                {{ r.name }} / {{ r.db_name }} / {{ r.table_name }}
-              </div>
-            </div>
-
             <el-form-item label="实例">
               <el-select
                 v-model="form.instance_name"
@@ -892,9 +830,11 @@ onMounted(() => {
   gap: 16px;
 }
 
-/* 上半区左右等高，编辑器随右栏伸缩 */
+/* 上半区左右等高：限高让编辑器/控制栏更紧凑，把空间留给下方结果。
+   下限 350px 保证控制栏（含底部操作按钮）在较小屏幕上也能完整显示。 */
 .work-row {
   align-items: stretch;
+  height: clamp(350px, 34vh, 390px);
 }
 .work-row :deep(.el-col) {
   display: flex;
@@ -912,11 +852,13 @@ onMounted(() => {
   height: 100%;
   overflow-y: auto;
 }
-/* 控制栏表单紧凑、输入框对齐 */
-.control-body :deep(.el-form-item) {
-  margin-bottom: 13px;
+/* 控制栏表单紧凑、输入框对齐。
+   注意：body-class 由 ElCard 内部节点承载，没有本组件的 scoped 属性，
+   因此 :deep 必须写在最外层。 */
+:deep(.control-body .el-form-item) {
+  margin-bottom: 10px;
 }
-.control-body :deep(.el-form-item__label) {
+:deep(.control-body .el-form-item__label) {
   color: var(--el-text-color-secondary);
   font-size: 12.5px;
 }
@@ -940,34 +882,6 @@ onMounted(() => {
 
 :deep(.control-body) {
   padding: 18px;
-}
-
-.locator-list {
-  max-height: 160px;
-  overflow-y: auto;
-  margin: -6px 0 10px;
-  border: 1px solid var(--dbshield-border-light);
-  border-radius: 8px;
-  background: var(--el-bg-color);
-  box-shadow: var(--dbshield-shadow-xs);
-
-  .locator-item {
-    padding: 6px 10px;
-    font-size: 12px;
-    color: var(--el-text-color-regular);
-    cursor: pointer;
-    border-bottom: 1px solid var(--dbshield-border-lighter);
-    transition: background-color 0.12s ease, color 0.12s ease;
-
-    &:last-child {
-      border-bottom: none;
-    }
-
-    &:hover {
-      background: var(--dbshield-primary-soft);
-      color: var(--el-color-primary);
-    }
-  }
 }
 
 .action-btns {

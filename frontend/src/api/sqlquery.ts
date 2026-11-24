@@ -54,16 +54,6 @@ export interface QueryLogRow {
   [key: string]: unknown;
 }
 
-/** 表名定位结果（table_instance_locator） */
-export interface TableLocatorRow {
-  id: number;
-  name: string;
-  db_type: string;
-  db_name: string;
-  table_name: string;
-  [key: string]: unknown;
-}
-
 /** 执行查询的完整信封（status 三态：0 成功 / 1 错误 / 2 权限不足） */
 export interface QueryResultEnvelope extends LegacyEnvelope<QueryResultSet> {}
 
@@ -155,16 +145,6 @@ export function toggleFavorite(params: {
 }) {
   return request
     .post<LegacyEnvelope<unknown>>("/api/v1/sqlquery/favorites/", params)
-    .then((res) => unwrapLegacy(res.data));
-}
-
-/** 表名定位（POST /api/v1/instance/table-instances/） */
-export function locateTable(tableName: string) {
-  return request
-    .post<LegacyEnvelope<TableLocatorRow[]>>(
-      "/api/v1/instance/table-instances/",
-      { table_name: tableName }
-    )
     .then((res) => unwrapLegacy(res.data));
 }
 
