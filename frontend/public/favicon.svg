@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="DBShield">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#3b82f6" />
+      <stop offset="0.55" stop-color="#2563eb" />
+      <stop offset="1" stop-color="#1d4ed8" />
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" />
+      <stop offset="1" stop-color="#e8f0ff" />
+    </linearGradient>
+    <linearGradient id="db" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6" />
+      <stop offset="1" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+
+  <!-- 品牌圆角底板 -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)" />
+  <rect
+    x="3"
+    y="3"
+    width="506"
+    height="506"
+    rx="109"
+    fill="none"
+    stroke="#ffffff"
+    stroke-opacity="0.18"
+    stroke-width="6"
+  />
+
+  <!-- 盾牌 -->
+  <path
+    d="M256 76 L416 134 V262 C416 354 344 414 256 440 C168 414 96 354 96 262 V134 Z"
+    fill="url(#shield)"
+  />
+
+  <!-- 数据库圆柱 -->
+  <g fill="url(#db)">
+    <path
+      d="M194 206 V330 C194 345 222 356 256 356 C290 356 318 345 318 330 V206 C318 221 290 232 256 232 C222 232 194 221 194 206 Z"
+    />
+    <ellipse cx="256" cy="206" rx="62" ry="23" />
+  </g>
+  <g
+    fill="none"
+    stroke="#ffffff"
+    stroke-width="10"
+    stroke-linecap="butt"
+  >
+    <path d="M194 258 C194 273 222 284 256 284 C290 284 318 273 318 258" />
+    <path d="M194 302 C194 317 222 328 256 328 C290 328 318 317 318 302" />
+  </g>
+</svg>
