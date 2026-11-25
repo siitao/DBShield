@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, nextTick } from "vue";
-import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   MagicStick,
   VideoPlay,
   DataAnalysis,
   StarFilled,
+  Star,
+  Search,
 } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
 import {
@@ -29,8 +30,6 @@ import type { SqlCompleters } from "@/components/SqlEditor.vue";
 import TruncateCell from "@/components/TruncateCell.vue";
 
 const auth = useAuthStore();
-const route = useRoute();
-const router = useRouter();
 
 // 选择项
 const form = reactive({
@@ -164,15 +163,9 @@ const editorRef = ref<InstanceType<typeof SqlEditor>>();
 const logs = ref<QueryLogRow[]>([]);
 const logTotal = ref(0);
 const logLoading = ref(false);
-
-/** 收藏筛选状态可由 URL（侧边栏「我的收藏」）带入 */
-function starFromQuery(value: unknown): "" | "true" | "false" {
-  return value === "true" || value === "false" ? value : "";
-}
-
 const logQuery = reactive({
   search: "",
-  star: starFromQuery(route.query.star),
+  star: "" as "" | "true",
   page: 1,
   size: 20,
 });
@@ -199,28 +192,6 @@ function onLogSearch() {
   logQuery.page = 1;
   loadLogs();
 }
-
-/** 切换收藏筛选时同步到 URL，让侧边栏「在线查询 / 我的收藏」高亮跟随 */
-function onLogStarChange() {
-  const nextQuery = { ...route.query };
-  if (logQuery.star) nextQuery.star = logQuery.star;
-  else delete nextQuery.star;
-  router.replace({ query: nextQuery });
-  logQuery.page = 1;
-  loadLogs();
-}
-
-// 从侧边栏切换到「我的收藏」或「在线查询」时，路由复用组件，需要手动同步筛选
-watch(
-  () => route.query.star,
-  (value) => {
-    const next = starFromQuery(value);
-    if (next === logQuery.star) return;
-    logQuery.star = next;
-    logQuery.page = 1;
-    loadLogs();
-  }
-);
 
 /** 历史记录时间：ISO 字符串 → yyyy-MM-dd HH:mm:ss */
 function formatTime(value?: string): string {
@@ -732,14 +703,13 @@ onMounted(() => {
             <el-radio-group
               v-model="logQuery.star"
               class="log-view"
-              @change="onLogStarChange"
+              @change="onLogSearch"
             >
               <el-radio-button value="">全部</el-radio-button>
               <el-radio-button value="true">
                 <el-icon class="log-view-star"><StarFilled /></el-icon>
                 已收藏
               </el-radio-button>
-              <el-radio-button value="false">未收藏</el-radio-button>
             </el-radio-group>
             <el-button type="primary" @click="onLogSearch">查询</el-button>
           </div>
@@ -804,22 +774,36 @@ onMounted(() => {
             <el-table-column label="时间" prop="create_time" width="170">
               <template #default="{ row }">{{ formatTime(row.create_time) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="140" fixed="right">
+            <el-table-column
+              label="操作"
+              width="96"
+              fixed="right"
+              align="center"
+            >
               <template #default="{ row }">
-                <el-button
-                  link
-                  type="primary"
-                  @click="onRequery(row as QueryLogRow)"
-                >
-                  重查
-                </el-button>
-                <el-button
-                  link
-                  :type="row.favorite ? 'warning' : 'primary'"
-                  @click="onToggleFav(row as QueryLogRow)"
-                >
-                  {{ row.favorite ? "取消收藏" : "收藏" }}
-                </el-button>
+                <div class="log-actions">
+                  <el-tooltip content="重查" placement="top">
+                    <el-button
+                      link
+                      type="primary"
+                      :icon="Search"
+                      aria-label="重查"
+                      @click="onRequery(row as QueryLogRow)"
+                    />
+                  </el-tooltip>
+                  <el-tooltip
+                    :content="row.favorite ? '取消收藏' : '收藏'"
+                    placement="top"
+                  >
+                    <el-button
+                      link
+                      :type="row.favorite ? 'warning' : 'primary'"
+                      :icon="row.favorite ? StarFilled : Star"
+                      :aria-label="row.favorite ? '取消收藏' : '收藏'"
+                      @click="onToggleFav(row as QueryLogRow)"
+                    />
+                  </el-tooltip>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -891,6 +875,8 @@ onMounted(() => {
 .work-row :deep(.el-col) {
   display: flex;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
 }
 .editor-col :deep(.sql-editor-wrap) {
   flex: 1;
@@ -898,10 +884,12 @@ onMounted(() => {
 }
 .control-card {
   height: 100%;
+  min-height: 0;
   border-radius: 14px;
 }
 .control-card :deep(.el-card__body) {
   height: 100%;
+  min-height: 0;
   overflow-y: auto;
 }
 /* 控制栏表单紧凑、输入框对齐。
@@ -1002,7 +990,7 @@ onMounted(() => {
   }
 }
 
-/* 收藏筛选：三段式分段控件 */
+/* 收藏筛选：分段控件 */
 .log-view {
   flex-shrink: 0;
 
@@ -1054,6 +1042,24 @@ onMounted(() => {
 
 .log-sql-cell {
   min-width: 0;
+}
+
+.log-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+
+  :deep(.el-button) {
+    margin: 0;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 16px;
+  }
+
+  :deep(.el-button:hover) {
+    background: var(--el-fill-color-light);
+  }
 }
 
 .log-alias {
