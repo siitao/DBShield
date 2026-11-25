@@ -171,6 +171,10 @@ async function loadAuditors() {
 }
 
 async function onSaveAuditors() {
+  if (!auditorSelected.value.length) {
+    ElMessage.warning("请至少选择一个审批节点");
+    return;
+  }
   try {
     await changeAuditors({
       group_name: auditorTarget.group_name,

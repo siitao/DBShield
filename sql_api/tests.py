@@ -216,6 +216,57 @@ class TestUser(APITestCase):
         self.assertEqual(r.json()["status"], 1)
 
 
+class TestResourceGroupAuditors(APITestCase):
+    """测试资源组审核流配置接口"""
+
+    def setUp(self):
+        self.user = User(
+            username="test_user", display="测试用户", is_active=True, is_superuser=True
+        )
+        self.user.set_password("test_password")
+        self.user.save()
+        self.client.force_login(self.user)
+        self.res_group = ResourceGroup.objects.create(group_id=1, group_name="test")
+        self.auth_group = Group.objects.create(id=1, name="DBA")
+
+    def _post(self, **kwargs):
+        payload = {"group_name": "test", "workflow_type": 2, "audit_auth_groups": ""}
+        payload.update(kwargs)
+        return self.client.post(
+            "/api/v1/group/changeauditors/", payload, format="json"
+        )
+
+    def test_empty_auditors_returns_error(self):
+        """未选择审批节点：返回业务错误且不落库，而不是 500"""
+        r = self._post(audit_auth_groups="")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("请至少选择一个审批节点", r.json()["msg"])
+        self.assertEqual(WorkflowAuditSetting.objects.count(), 0)
+
+    def test_change_auditors_success(self):
+        """正常保存：按选择顺序把权限组 id 写入审核流配置"""
+        r = self._post(audit_auth_groups="DBA")
+        self.assertEqual(r.json()["status"], 0)
+        setting = WorkflowAuditSetting.objects.get(
+            group_id=self.res_group.group_id, workflow_type=2
+        )
+        self.assertEqual(setting.audit_auth_groups, str(self.auth_group.id))
+
+    def test_unknown_auth_group_returns_error(self):
+        """选择已不存在的权限组：返回业务错误而不是 500"""
+        r = self._post(audit_auth_groups="DBA,已删除的组")
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("审批权限组不存在", r.json()["msg"])
+        self.assertEqual(WorkflowAuditSetting.objects.count(), 0)
+
+    def test_unknown_resource_group_returns_error(self):
+        """资源组不存在：返回业务错误而不是 500"""
+        r = self._post(group_name="not_exist", audit_auth_groups="DBA")
+        self.assertEqual(r.json()["status"], 1)
+        self.assertIn("不存在", r.json()["msg"])
+
+
 class TestInstance(APITestCase):
     """测试实例相关接口"""
 

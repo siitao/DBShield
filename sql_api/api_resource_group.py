@@ -25,6 +25,7 @@ from django.shortcuts import get_object_or_404
 from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.views import APIView
 
+from common.utils.const import WorkflowType
 from common.utils.convert import Convert
 from common.utils.extend_json_encoder import encode_json as _encode
 from sql.models import Instance, ResourceGroup, Users
@@ -315,16 +316,36 @@ class ChangeAuditorsView(APIView):
     permission_classes = [IsAuthenticated, SuperuserPermission]
 
     def post(self, request):
-        auth_groups = request.data.get("audit_auth_groups")
         group_name = request.data.get("group_name")
-        workflow_type = request.data.get("workflow_type")
+        workflow_type = _safe_int(request.data.get("workflow_type"), -1)
         result = {"status": 0, "msg": "ok", "data": []}
 
-        group_id = ResourceGroup.objects.get(group_name=group_name).group_id
-        audit_auth_groups = [
-            str(Group.objects.get(name=g).id)
-            for g in auth_groups.split(",")
-        ]
+        # 审批节点为空会让工单建单时拿到空审批组卡死在待审核，必须拦住而不是落库
+        auth_groups = request.data.get("audit_auth_groups") or ""
+        if isinstance(auth_groups, (list, tuple)):
+            auth_groups = ",".join(str(g) for g in auth_groups)
+        names = [name.strip() for name in str(auth_groups).split(",") if name.strip()]
+        if not names:
+            return JsonResponse({"status": 1, "msg": "请至少选择一个审批节点"})
+        if workflow_type not in WorkflowType.values:
+            return JsonResponse({"status": 1, "msg": "工单类型不合法"})
+
+        try:
+            group_id = ResourceGroup.objects.get(group_name=group_name).group_id
+        except ResourceGroup.DoesNotExist:
+            return JsonResponse(
+                {"status": 1, "msg": f"资源组 {group_name} 不存在"}
+            )
+
+        name_to_id = dict(
+            Group.objects.filter(name__in=names).values_list("name", "id")
+        )
+        missing = [name for name in names if name not in name_to_id]
+        if missing:
+            return JsonResponse(
+                {"status": 1, "msg": f"审批权限组不存在：{','.join(missing)}"}
+            )
+        audit_auth_groups = [str(name_to_id[name]) for name in names]
         try:
             Audit.change_settings(group_id, workflow_type, ",".join(audit_auth_groups))
         except Exception as msg:
