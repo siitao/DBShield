@@ -1,7 +1,13 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, nextTick } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { MagicStick, VideoPlay, DataAnalysis } from "@element-plus/icons-vue";
+import {
+  MagicStick,
+  VideoPlay,
+  DataAnalysis,
+  StarFilled,
+} from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
 import {
   fetchQueryInstances,
@@ -23,6 +29,8 @@ import type { SqlCompleters } from "@/components/SqlEditor.vue";
 import TruncateCell from "@/components/TruncateCell.vue";
 
 const auth = useAuthStore();
+const route = useRoute();
+const router = useRouter();
 
 // 选择项
 const form = reactive({
@@ -156,9 +164,15 @@ const editorRef = ref<InstanceType<typeof SqlEditor>>();
 const logs = ref<QueryLogRow[]>([]);
 const logTotal = ref(0);
 const logLoading = ref(false);
+
+/** 收藏筛选状态可由 URL（侧边栏「我的收藏」）带入 */
+function starFromQuery(value: unknown): "" | "true" | "false" {
+  return value === "true" || value === "false" ? value : "";
+}
+
 const logQuery = reactive({
   search: "",
-  star: "" as "" | "true" | "false",
+  star: starFromQuery(route.query.star),
   page: 1,
   size: 20,
 });
@@ -185,6 +199,28 @@ function onLogSearch() {
   logQuery.page = 1;
   loadLogs();
 }
+
+/** 切换收藏筛选时同步到 URL，让侧边栏「在线查询 / 我的收藏」高亮跟随 */
+function onLogStarChange() {
+  const nextQuery = { ...route.query };
+  if (logQuery.star) nextQuery.star = logQuery.star;
+  else delete nextQuery.star;
+  router.replace({ query: nextQuery });
+  logQuery.page = 1;
+  loadLogs();
+}
+
+// 从侧边栏切换到「我的收藏」或「在线查询」时，路由复用组件，需要手动同步筛选
+watch(
+  () => route.query.star,
+  (value) => {
+    const next = starFromQuery(value);
+    if (next === logQuery.star) return;
+    logQuery.star = next;
+    logQuery.page = 1;
+    loadLogs();
+  }
+);
 
 /** 历史记录时间：ISO 字符串 → yyyy-MM-dd HH:mm:ss */
 function formatTime(value?: string): string {
@@ -693,16 +729,18 @@ onMounted(() => {
               class="log-search"
               @keyup.enter="onLogSearch"
             />
-            <el-select
+            <el-radio-group
               v-model="logQuery.star"
-              class="log-star"
-              placeholder="全部"
-              @change="onLogSearch"
+              class="log-view"
+              @change="onLogStarChange"
             >
-              <el-option label="全部" value="" />
-              <el-option label="已收藏" value="true" />
-              <el-option label="未收藏" value="false" />
-            </el-select>
+              <el-radio-button value="">全部</el-radio-button>
+              <el-radio-button value="true">
+                <el-icon class="log-view-star"><StarFilled /></el-icon>
+                已收藏
+              </el-radio-button>
+              <el-radio-button value="false">未收藏</el-radio-button>
+            </el-radio-group>
             <el-button type="primary" @click="onLogSearch">查询</el-button>
           </div>
           <el-table
@@ -714,14 +752,11 @@ onMounted(() => {
             class="log-table"
           >
             <el-table-column
-              label="SQL"
-              prop="sqllog"
-              min-width="300"
-            >
-              <template #default="{ row }">
-                <TruncateCell :value="(row as QueryLogRow).sqllog" :row="row as unknown as Record<string,unknown>" col="SQLLog" />
-              </template>
-            </el-table-column>
+              label="用户"
+              prop="user_display"
+              width="100"
+              show-overflow-tooltip
+            />
             <el-table-column
               label="实例"
               prop="instance_name"
@@ -735,6 +770,29 @@ onMounted(() => {
               show-overflow-tooltip
             />
             <el-table-column
+              label="SQL"
+              prop="sqllog"
+              min-width="300"
+            >
+              <template #default="{ row }">
+                <div class="log-sql-cell">
+                  <div
+                    v-if="row.alias"
+                    class="log-alias"
+                    :title="`收藏别名：${row.alias}`"
+                  >
+                    <el-icon><StarFilled /></el-icon>
+                    <span>{{ row.alias }}</span>
+                  </div>
+                  <TruncateCell
+                    :value="(row as QueryLogRow).sqllog"
+                    :row="row as unknown as Record<string,unknown>"
+                    col="SQLLog"
+                  />
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column
               label="行数"
               prop="effect_row"
               width="80"
@@ -743,12 +801,6 @@ onMounted(() => {
             <el-table-column label="耗时" width="90" align="right">
               <template #default="{ row }">{{ row.cost_time }}s</template>
             </el-table-column>
-            <el-table-column
-              label="用户"
-              prop="user_display"
-              width="100"
-              show-overflow-tooltip
-            />
             <el-table-column label="时间" prop="create_time" width="170">
               <template #default="{ row }">{{ formatTime(row.create_time) }}</template>
             </el-table-column>
@@ -941,15 +993,84 @@ onMounted(() => {
 
 .log-filter {
   display: flex;
+  align-items: center;
   gap: 8px;
   margin-bottom: 12px;
 
   .log-search {
     width: 280px;
   }
+}
 
-  .log-star {
-    width: 124px;
+/* 收藏筛选：三段式分段控件 */
+.log-view {
+  flex-shrink: 0;
+
+  :deep(.el-radio-button__inner) {
+    height: 34px;
+    padding: 0 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    border-color: var(--dbshield-border);
+    background: var(--dbshield-surface);
+    color: var(--el-text-color-regular);
+    font-weight: 500;
+    box-shadow: none;
+  }
+
+  :deep(.el-radio-button:first-child .el-radio-button__inner) {
+    border-radius: 8px 0 0 8px;
+  }
+
+  :deep(.el-radio-button:last-child .el-radio-button__inner) {
+    border-radius: 0 8px 8px 0;
+  }
+
+  :deep(.el-radio-button__inner:hover) {
+    color: var(--el-color-primary);
+  }
+
+  :deep(.el-radio-button__original-radio:checked + .el-radio-button__inner) {
+    background: var(--dbshield-primary-soft);
+    border-color: var(--el-color-primary-light-7);
+    color: var(--el-color-primary);
+    box-shadow: -1px 0 0 0 var(--el-color-primary-light-7);
+  }
+
+  :deep(
+      .el-radio-button:first-child
+        .el-radio-button__original-radio:checked
+        + .el-radio-button__inner
+    ) {
+    box-shadow: none;
+  }
+}
+
+.log-view-star {
+  color: var(--el-color-warning);
+}
+
+.log-sql-cell {
+  min-width: 0;
+}
+
+.log-alias {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  margin-bottom: 2px;
+  color: var(--el-color-warning-dark-2);
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 16px;
+
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }
 

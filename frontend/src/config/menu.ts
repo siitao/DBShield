@@ -42,6 +42,12 @@ export const menuItems: MenuItem[] = [
     perm: "sql.menu_query",
     children: [
       { title: "在线查询", perm: "sql.menu_sqlquery", routeName: "sqlquery-index" },
+      {
+        title: "我的收藏",
+        perm: "sql.menu_sqlquery",
+        routeName: "sqlquery-index",
+        routeQuery: { star: "true" },
+      },
       { title: "数据导出", perm: "sql.menu_sqlexportworkflow", routeName: "sqlexport" },
       { title: "数据字典", perm: "sql.menu_data_dictionary", routeName: "datadictionary" },
       { title: "权限管理", perm: "sql.menu_queryapplylist", routeName: "queryapplylist" },
