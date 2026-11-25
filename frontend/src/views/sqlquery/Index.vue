@@ -994,6 +994,9 @@ onMounted(() => {
 .log-view {
   flex-shrink: 0;
 
+  /* Element Plus 2.14 的单选按钮描边是用 outline 画的，外扩的 1px 会被
+     .el-tabs__content 的 overflow:hidden 裁掉（顶部边框直接消失），
+     选中态的 border-color 也就永远不生效；这里改回真实 border。 */
   :deep(.el-radio-button__inner) {
     height: 34px;
     padding: 0 14px;
@@ -1001,11 +1004,16 @@ onMounted(() => {
     align-items: center;
     justify-content: center;
     gap: 4px;
-    border-color: var(--dbshield-border);
+    outline: none;
+    border: 1px solid var(--el-border-color);
     background: var(--dbshield-surface);
     color: var(--el-text-color-regular);
     font-weight: 500;
     box-shadow: none;
+  }
+
+  :deep(.el-radio-button:not(:first-child) .el-radio-button__inner) {
+    border-left: 0;
   }
 
   :deep(.el-radio-button:first-child .el-radio-button__inner) {
@@ -1033,6 +1041,14 @@ onMounted(() => {
         + .el-radio-button__inner
     ) {
     box-shadow: none;
+  }
+
+  /* 键盘焦点环内缩绘制，同样避免被 overflow 裁切 */
+  :deep(
+      .el-radio-button__original-radio:focus-visible + .el-radio-button__inner
+    ) {
+    outline: 2px solid rgba(var(--el-color-primary-rgb), 0.55);
+    outline-offset: -3px;
   }
 }
 
