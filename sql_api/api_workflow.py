@@ -129,9 +129,10 @@ class ExecuteCheck(views.APIView):
             raise serializers.ValidationError({"errors": "你所在组未关联该实例！"})
         # 交给engine进行检测
         try:
-            db_name = request.data["db_name"]
+            # db_name 已由 Serializer 校验（反引号/分号等逃逸字符在入口拦截），
+            # 引擎内部再用 quote_db_ident 转义，这里不再做 escape_string
+            db_name = serializer.validated_data["db_name"]
             check_engine = get_engine(instance=instance)
-            db_name = check_engine.escape_string(db_name)
             check_kwargs = {
                 "db_name": db_name,
                 "sql": request.data["full_sql"].strip(),

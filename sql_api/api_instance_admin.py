@@ -51,6 +51,7 @@ from sql.utils.instance_management import (
     get_instanceaccount_unique_value,
 )
 from sql.utils.resource_group import user_instances
+from sql.utils.sql_utils import validate_mysql_user_host
 
 import logging
 
@@ -339,7 +340,11 @@ class AccountGrantView(APIView):
                         pass
                 return val
 
-            user_host = engine.escape_string(user_host)
+            # user_host 拼进 GRANT/REVOKE 的标识符位置，先校验 `user`@`host` 形态
+            try:
+                user_host = validate_mysql_user_host(user_host)
+            except ValueError as e:
+                return JsonResponse({"status": 1, "msg": str(e), "data": []})
 
             try:
                 if priv_type == 0:
@@ -455,6 +460,13 @@ class AccountResetPwdView(APIView):
         except ValidationError as msg:
             return JsonResponse({"status": 1, "msg": str(msg), "data": []})
 
+        # user_host 拼进 ALTER USER 的标识符位置，先校验 `user`@`host` 形态
+        if instance.db_type == "mysql":
+            try:
+                user_host = validate_mysql_user_host(user_host)
+            except ValueError as e:
+                return JsonResponse({"status": 1, "msg": str(e), "data": []})
+
         engine = get_engine(instance=instance)
         exec_result = engine.reset_instance_user_pwd(
             user_host=user_host, db_name_user=db_name_user, reset_pwd=reset_pwd1
@@ -492,7 +504,11 @@ class AccountLockView(APIView):
             return JsonResponse({"status": 1, "msg": "你所在组未关联该实例", "data": []})
 
         engine = get_engine(instance=instance)
-        user_host = engine.escape_string(user_host)
+        # user_host 拼进 ALTER USER 的标识符位置，先校验 `user`@`host` 形态
+        try:
+            user_host = validate_mysql_user_host(user_host)
+        except ValueError as e:
+            return JsonResponse({"status": 1, "msg": str(e), "data": []})
 
         if is_locked == "N":
             lock_sql = f"ALTER USER {user_host} ACCOUNT LOCK;"
@@ -525,6 +541,13 @@ class AccountDeleteView(APIView):
             instance.db_type == "mongo" and not db_name_user
         ):
             return JsonResponse({"status": 1, "msg": "参数不完整，请确认后提交", "data": []})
+
+        # user_host 拼进 DROP USER 的标识符位置，先校验 `user`@`host` 形态
+        if instance.db_type == "mysql":
+            try:
+                user_host = validate_mysql_user_host(user_host)
+            except ValueError as e:
+                return JsonResponse({"status": 1, "msg": str(e), "data": []})
 
         engine = get_engine(instance=instance)
         exec_result = engine.drop_instance_user(

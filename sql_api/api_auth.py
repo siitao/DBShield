@@ -16,6 +16,8 @@ SSO（OIDC/DingTalk/CAS）登录入口仍是整页跳转的 /oidc/authenticate/ 
 from django.contrib.auth import logout as django_logout
 from django.http import JsonResponse, HttpResponseRedirect
 from django.conf import settings
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_protect
 from drf_spectacular.utils import extend_schema
 from rest_framework import views, permissions
 
@@ -25,6 +27,10 @@ from sql.models import TwoFactorAuthConfig
 from common.utils.ding_api import get_ding_user_id
 
 
+# DRF 的 APIView 默认 csrf_exempt，登录接口因此存在登录 CSRF（攻击者可把受害者
+# 浏览器静默登录到自己的账号）。登录页会先调用 auth/login_options/ 拿到
+# csrftoken cookie，SPA 的 axios 拦截器再把它放进 X-CSRFToken，故这里强制校验。
+@method_decorator(csrf_protect, name="dispatch")
 class AuthenticateView(views.APIView):
     """账号密码登录（AllowAny）。
 

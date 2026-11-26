@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 from clickhouse_driver import connect
 from clickhouse_driver.util.escape import escape_chars_map
-from sql.utils.sql_utils import get_syntax_type
+from sql.utils.sql_utils import get_syntax_type, quote_ident
 from .models import ResultSet, ReviewResult, ReviewSet
 from common.utils.timer import FuncTimer
 from common.config import SysConfig
@@ -117,8 +117,7 @@ class ClickHouseEngine(EngineBase):
 
     def describe_table(self, db_name, tb_name, **kwargs):
         """return ResultSet 类似查询"""
-        tb_name = self.escape_string(tb_name)
-        sql = f"show create table `{tb_name}`;"
+        sql = f"show create table {quote_ident(tb_name)};"
         result = self.query(db_name=db_name, sql=sql)
 
         result.rows[0] = (tb_name,) + (

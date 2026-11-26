@@ -14,6 +14,7 @@ import logging
 
 import requests
 from django.http import JsonResponse
+from django.middleware.csrf import get_token
 from drf_spectacular.utils import extend_schema
 from rest_framework import views
 from rest_framework import permissions
@@ -50,6 +51,10 @@ class LoginOptionsView(views.APIView):
         description="返回当前启用的 SSO 登录方式（oidc/dingding/cas）、按钮名称、登录跳转 URL。AllowAny。",
     )
     def get(self, request):
+        # 登录接口已启用 CSRF 校验，这里顺带下发 csrftoken cookie：
+        # 登录页挂载时就会调用本接口，SPA 的 axios 拦截器随后可从 cookie 取到
+        # token 并附到 X-CSRFToken 上（否则首次登录会因缺 token 被 403）
+        get_token(request)
         auth_provider = SysConfig().get("auth_provider")
         # 未配置数据库 auth_provider 时，回退到启动时的 settings.ENABLE_*
         if auth_provider not in ("ldap", "oidc", "dingding", "cas"):

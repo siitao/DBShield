@@ -1096,7 +1096,8 @@ class TestMysql(SimpleTestCase):
         engine.processlist("Query'")
 
         self.assertIn("command= 'Query';", query.call_args_list[0].args[1])
-        self.assertIn("Query\\'", query.call_args_list[1].args[1])
+        # 含引号的非法命令名不再拼接，直接回落到 Query
+        self.assertIn("command= 'Query';", query.call_args_list[1].args[1])
 
     @patch.object(MysqlEngine, "execute")
     @patch.object(MysqlEngine, "query")
@@ -1120,8 +1121,11 @@ class TestMysql(SimpleTestCase):
         engine.tablespace(schema_search="app_'")
         engine.tablespace_count(schema_search="app_'")
 
-        self.assertIn("app_\\'", query.call_args_list[0].args[1])
-        self.assertIn("app_\\'", query.call_args_list[1].args[1])
+        # 首次 query 是 escape_string 的 sql_mode 探测（仅关键字参数），
+        # 这里只看表空间查询本身
+        tablespace_sql = [c.args[1] for c in query.call_args_list if c.args]
+        self.assertIn("app_\\'", tablespace_sql[-2])
+        self.assertIn("app_\\'", tablespace_sql[-1])
 
     @patch.object(MysqlEngine, "query")
     def test_trxandlocks_uses_performance_schema_for_mysql_8(self, query):

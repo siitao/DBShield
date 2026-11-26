@@ -809,6 +809,56 @@ class TestWorkflow(APITestCase):
         self.assertEqual(r.json()["workflow"]["engineer"], self.user.username)
         self.assertEqual(r.json()["workflow"]["engineer_display"], self.user.display)
 
+    def test_submit_workflow_rejects_injected_db_name(self):
+        """库名含反引号/分号会跳出 goInception 的 use 语句，必须在入口拒绝（H5）。"""
+        json_data = {
+            "workflow": {
+                "workflow_name": "上线工单1",
+                "demand_url": "test",
+                "group_id": 1,
+                "db_name": "x`;drop table abc;--",
+                "instance": self.ins.id,
+                "is_offline_export": 0,
+            },
+            "sql_content": "alter table abc add column note varchar(64);",
+        }
+        r = self.client.post("/api/v1/workflow/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("db_name", r.json()["workflow"])
+
+    def test_sqlcheck_rejects_injected_db_name(self):
+        """检测接口同样要拦住库名逃逸。"""
+        json_data = {
+            "full_sql": "alter table abc add column note varchar(64);",
+            "db_name": "x`;drop table abc;--",
+            "instance_id": self.ins.id,
+        }
+        r = self.client.post("/api/v1/workflow/sqlcheck/", json_data, format="json")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("db_name", r.json())
+
+    def test_sqlcheck_allows_pg_db_name_with_space(self):
+        """非 mysql 实例不套用 goInception 的库名黑名单（pgsql 合法库名可含空格）。"""
+        from sql_api.serializers import ExecuteCheckSerializer
+
+        pg_ins = Instance.objects.create(
+            instance_name="pg_ins",
+            type="master",
+            db_type="pgsql",
+            host="some_host",
+            port=5432,
+            user="ins_user",
+            password="some_str",
+        )
+        serializer = ExecuteCheckSerializer(
+            data={
+                "instance_id": pg_ins.id,
+                "db_name": "my db",
+                "full_sql": "select 1;",
+            }
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
     @patch("sql_api.api_workflow.get_engine")
     def test_check_creates_server_ai_review_record(self, _get_engine):
         """检测接口把 AI 结果落服务端快照并返回 token。"""

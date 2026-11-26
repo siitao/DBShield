@@ -17,6 +17,75 @@ from sql.utils.extract_tables import extract_tables as extract_tables_by_sql_par
 __author__ = "hhyo"
 
 
+# ---------- 库名 / 标识符安全 ----------
+# 背景：goInception 的会话头与 `use \`db\`` 会把库名拼进 SQL 文本，而 pymysql 的
+# escape_string 不转义反引号；工单提交接口的 db_name 又直接来自前端，只要含一个
+# 反引号就能跳出 `use`、把任意语句并进 goInception 批次执行（绕过审核）。
+# 因此这里统一提供「入口字符校验」+「标识符双写转义」，供引擎与 serializer 共用。
+
+DB_NAME_MAX_LENGTH = 64
+
+# 入口黑名单：反引号/引号/反斜杠/斜杠/分号/空白/控制字符，以及注释结束符 */
+_DB_NAME_FORBIDDEN_RE = re.compile(r"[`'\"\\/;\s\x00-\x1f]|\*/")
+
+
+def validate_db_name(db_name, field_label="数据库名"):
+    """校验库名，非法时抛 ValueError。
+
+    只做黑名单（允许中文等 unicode 库名，兼容 pgsql/oracle），拦截所有能跳出
+    标识符/注释、或影响文件路径的字符。反斜杠与斜杠一并拦截，避免库名被拼进
+    导出文件名时产生目录穿越。
+    """
+    name = "" if db_name is None else str(db_name)
+    if not name:
+        raise ValueError(f"{field_label}不能为空")
+    if len(name) > DB_NAME_MAX_LENGTH:
+        raise ValueError(f"{field_label}长度不能超过 {DB_NAME_MAX_LENGTH} 个字符")
+    if _DB_NAME_FORBIDDEN_RE.search(name):
+        raise ValueError(f"{field_label}包含非法字符（引号、反引号、分号、空白或路径分隔符）")
+    if name.startswith("-") or name in (".", ".."):
+        raise ValueError(f"{field_label}不合法")
+    return name
+
+
+def quote_ident(name):
+    """把库名/表名/存储过程名等标识符转成 MySQL 反引号形式，内部反引号双写。
+
+    对任意字符串都是安全的：即使 name 含反引号，双写后仍是一个完整的标识符。
+    注意：pymysql 的 escape_string 不转义反引号，标识符位置必须用本函数。
+    """
+    return "`" + ("" if name is None else str(name)).replace("`", "``") + "`"
+
+
+# 兼容早期命名
+quote_db_ident = quote_ident
+
+
+# MySQL 账号表达式：兼容 `` `user`@`host` ``（实例账号页输出）与 user@host（前端兜底）。
+# unquoted 分支只允许常规账号/host 字符（字母数字下划线、$、% 通配、点、横杠）：
+# 该值会被直接拼进 GRANT/ALTER USER/DROP USER 语句，若放行 `;`、`/`、`*` 等字符，
+# 可借注释与分号注入第二条任意语句（MySQL 语法里 /**/ 等价空白）。
+_USER_HOST_RE = re.compile(
+    r"`(?P<quoted_user>[^`]{1,64})`@`(?P<quoted_host>[^`]{1,255})`"
+    r"|(?P<user>[A-Za-z0-9_$%.\-]{1,64})@(?P<host>[A-Za-z0-9_$%.\-]{1,255})"
+)
+
+
+def validate_mysql_user_host(user_host):
+    """校验 MySQL 账号表达式，非法时抛 ValueError。
+
+    user_host 在 GRANT/ALTER USER/DROP USER 里是标识符表达式（不是字符串字面量），
+    escape_string 不转义反引号，因此必须校验形态：quoted 分支的两段内部不允许再出现
+    反引号（反引号内是安全的标识符字符），unquoted 分支只允许常规账号/host 字符集，
+    无法跳出账号表达式，也无法借注释/分号夹带第二条语句。含特殊字符的账号请使用
+    `` `user`@`host` `` 引号形式。
+    """
+    text = "" if user_host is None else str(user_host).strip()
+    if not text or not _USER_HOST_RE.fullmatch(text):
+        raise ValueError("账号格式不合法，应为 `user`@`host` 或 user@host")
+    return text
+
+
 def get_syntax_type(sql, parser=True, db_type="mysql"):
     """
     返回SQL语句类型，仅判断DDL和DML

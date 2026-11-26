@@ -8,7 +8,7 @@ import simplejson as json
 
 from common.config import SysConfig
 from sql.models import AliyunRdsConfig
-from sql.utils.sql_utils import get_syntax_type
+from sql.utils.sql_utils import get_syntax_type, quote_db_ident
 from . import EngineBase
 from .models import ResultSet, ReviewSet, ReviewResult
 
@@ -54,6 +54,34 @@ class GoInceptionEngine(EngineBase):
             return ""
         return escape_string(value)
 
+    @staticmethod
+    def _check_conn_value(field, value):
+        """校验拼进 goInception 会话头的连接参数。
+
+        会话头是 /* */ 注释且值用单引号包裹：值里出现 `*/` 或换行就会提前结束
+        注释、把后面的内容当作 SQL 执行；单引号会提前结束值本身，最坏可借机注入
+        额外会话选项（如 --execute）。goInception 对引号内的转义规则未知，
+        无法安全转义，只能 fail-closed，避免把配置问题放大成注入。
+        """
+        text = "" if value is None else str(value)
+        if "*/" in text or "'" in text or "\n" in text or "\r" in text:
+            raise ValueError(
+                f"实例连接信息 {field} 含单引号、*/ 或换行，无法提交 goInception，"
+                "请修改实例连接信息后重试"
+            )
+        return text
+
+    @classmethod
+    def _conn_header(cls, host, port, user, password, options=""):
+        """构造 goInception 的目标实例连接头注释。"""
+        user = cls._check_conn_value("user", user)
+        password = cls._check_conn_value("password", password)
+        host = cls._check_conn_value("host", host)
+        return (
+            f"/*--user='{user}';--password='{password}';--host='{host}';"
+            f"--port={int(port)};{options}*/"
+        )
+
     def execute_check(self, instance=None, db_name=None, sql=""):
         """inception check"""
         # 判断如果配置了隧道则连接隧道
@@ -65,10 +93,13 @@ class GoInceptionEngine(EngineBase):
         # 获取real_row_count参数选项
         real_row_count = SysConfig().get("real_row_count", False)
         real_row_count_option = "--real_row_count=true;" if real_row_count else ""
-        inception_sql = f"""/*--user='{user}';--password='{password}';--host='{host}';--port={port};--check=1;{real_row_count_option}*/
+        conn_header = self._conn_header(
+            host, port, user, password, f"--check=1;{real_row_count_option}"
+        )
+        inception_sql = f"""{conn_header}
                             inception_magic_start;
                             {set_session_sql}
-                            use `{db_name}`;
+                            use {quote_db_ident(db_name)};
                             {sql.rstrip(';')};
                             inception_magic_commit;"""
         inception_result = self.query(sql=inception_sql)
@@ -104,10 +135,18 @@ class GoInceptionEngine(EngineBase):
 
         # 提交inception执行
         variables, set_session_sql = get_session_variables(instance)
-        sql_execute = f"""/*--user='{user}';--password='{password}';--host='{host}';--port={port};--execute=1;--ignore-warnings=1;{str_backup};--sleep=200;--sleep_rows=100*/
+        conn_header = self._conn_header(
+            host,
+            port,
+            user,
+            password,
+            f"--execute=1;--ignore-warnings=1;{str_backup};"
+            f"--sleep=200;--sleep_rows=100",
+        )
+        sql_execute = f"""{conn_header}
                             inception_magic_start;
                             {set_session_sql}
-                            use `{workflow.db_name}`;
+                            use {quote_db_ident(workflow.db_name)};
                             {workflow.sqlworkflowcontent.sql_content.rstrip(';')};
                             inception_magic_commit;"""
         inception_result = self.query(sql=sql_execute)
@@ -169,9 +208,12 @@ class GoInceptionEngine(EngineBase):
         """
         # 判断如果配置了隧道则连接隧道
         host, port, user, password = self.remote_instance_conn(instance)
-        sql = f"""/*--user='{user}';--password='{password}';--host='{host}';--port={port};--enable-query-print;*/
+        conn_header = self._conn_header(
+            host, port, user, password, "--enable-query-print;"
+        )
+        sql = f"""{conn_header}
                           inception_magic_start;\
-                          use `{db_name}`;
+                          use {quote_db_ident(db_name)};
                           {sql.rstrip(';')};
                           inception_magic_commit;"""
         print_info = self.query(db_name=db_name, sql=sql).to_dict()[1]
@@ -186,9 +228,10 @@ class GoInceptionEngine(EngineBase):
         """
         # 判断如果配置了隧道则连接隧道
         host, port, user, password = self.remote_instance_conn(instance)
-        sql = f"""/*--user={user};--password={password};--host={host};--port={port};--masking=1;*/
+        conn_header = self._conn_header(host, port, user, password, "--masking=1;")
+        sql = f"""{conn_header}
                           inception_magic_start;
-                          use `{db_name}`;
+                          use {quote_db_ident(db_name)};
                           {sql}
                           inception_magic_commit;"""
         query_result = self.query(db_name=db_name, sql=sql)

@@ -4,7 +4,7 @@ import { useRouter, useRoute } from "vue-router";
 import { ElMessage, type FormInstance, type FormRules } from "element-plus";
 import { User, Lock } from "@element-plus/icons-vue";
 import { useAuthStore } from "@/stores/auth";
-import { setCookie } from "@/utils/auth";
+import { setCookie, getCookie } from "@/utils/auth";
 import {
   fetch2faContext,
   fetch2faVerify,
@@ -64,6 +64,15 @@ async function onSubmit() {
     if (!valid) return;
     loading.value = true;
     try {
+      // 登录接口启用了 CSRF 校验：确保 csrftoken cookie 已就绪
+      // （页面挂载时会拉 login_options，这里兜底处理网络慢/直接提交的情况）
+      if (!getCookie("csrftoken")) {
+        try {
+          await fetchLoginOptions();
+        } catch {
+          /* 拉取失败交由后端返回 403，避免静默失败 */
+        }
+      }
       const res = await auth.authenticateUser(form.username, form.password);
       if (res.status === 0) {
         if (res.data) {

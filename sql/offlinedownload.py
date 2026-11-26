@@ -347,7 +347,9 @@ def save_to_format_file(
     # 生成唯一的文件名（包含工单ID、日期和随机哈希值）
     timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
     hash_value = hashlib.sha256(os.urandom(32)).hexdigest()[:8]  # 使用前8位作为哈希值
-    base_name = f"{workflow.db_name}_{timestamp}_{hash_value}"
+    # 库名来自提交人，含路径分隔符时可跳出 temp_dir；这里只保留安全字符兜底
+    safe_db_name = re.sub(r"[^\w.$-]", "_", str(workflow.db_name or "db"))[:64] or "db"
+    base_name = f"{safe_db_name}_{timestamp}_{hash_value}"
     file_name = f"{base_name}.{format_type}"
     file_path = os.path.join(temp_dir, file_name)
     # 将查询结果写入 CSV 文件

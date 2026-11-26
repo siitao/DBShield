@@ -120,8 +120,12 @@ USE_X_FORWARDED_HOST = True
 
 # 反向代理与 Cookie 安全基线：
 # - nginx 会覆盖 X-Forwarded-Proto；只有可信代理后才可信任该头
+# - 默认不信任：直连部署时任意客户端都能伪造 X-Forwarded-Proto: https，
+#   进而影响 request.is_secure()、Secure Cookie 与 SSL 跳转判定
+# - 前置 nginx 且用 `proxy_set_header X-Forwarded-Proto $scheme;` 覆盖该头时，
+#   在 .env 中显式置 TRUST_X_FORWARDED_PROTO=true
 # - Secure Cookie 由环境变量控制，HTTPS 部署必须置 true
-if env.bool("TRUST_X_FORWARDED_PROTO", default=True):
+if env.bool("TRUST_X_FORWARDED_PROTO", default=False):
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = "Lax"

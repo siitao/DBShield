@@ -77,6 +77,7 @@ from sql.plugins.my2sql import (
     describe_failure as describe_my2sql_failure,
     is_failure as is_my2sql_failure,
 )
+from sql.plugins.plugin import redact_credentials
 from sql.plugins.soar import Soar
 from sql.services.instance_service import resolve_instance
 from sql.utils.resource_group import user_groups, user_instances
@@ -546,6 +547,8 @@ class My2sqlView(APIView):
             return JsonResponse({"status": 1, "msg": str(e), "data": []})
 
         username, password = instance.get_username_password()
+        # 口令默认不进命令行（ps 可读）：build_args 拿 None，run 通过 stdin 传入
+        args_password, stdin_password = My2SQL.split_credentials(password)
         # 每次解析独立目录：目录名即提交时间，下载时据此定位结果
         output_dir = os.path.join(MY2SQL_OUTPUT_ROOT, str(time.time()))
         os.makedirs(output_dir, exist_ok=True)
@@ -553,7 +556,7 @@ class My2sqlView(APIView):
             host=instance.host,
             port=instance.port,
             user=username,
-            password=password,
+            password=args_password,
             output_dir=output_dir,
             work_type=options["work_type"],
             threads=options["threads"],
@@ -580,6 +583,9 @@ class My2sqlView(APIView):
                 user=request.user.username,
                 args=args,
                 output_dir=output_dir,
+                # 口令不随任务参数落库（django-q 的 Task 表会持久化 kwargs），
+                # 由任务内按实例重新解密获取
+                instance_id=instance.id,
                 hook="sql.notify.notify_for_my2sql",
                 timeout=-1,
                 task_name="my2sql-%s" % os.path.basename(output_dir),
@@ -616,7 +622,7 @@ class My2sqlView(APIView):
         cmd_args = my2sql.generate_args2cmd(args)
         try:
             stdout, stderr, returncode, timed_out = my2sql.run(
-                cmd_args, MY2SQL_SYNC_TIMEOUT
+                cmd_args, MY2SQL_SYNC_TIMEOUT, stdin_password=stdin_password
             )
         except Exception:
             logger.error("my2sql 执行失败: %s", traceback.format_exc())
@@ -652,7 +658,9 @@ class My2sqlView(APIView):
             return JsonResponse(
                 {
                     "status": 1,
-                    "msg": describe_my2sql_failure(stdout, stderr, returncode),
+                    "msg": My2SQL.add_stdin_hint(
+                        describe_my2sql_failure(stdout, stderr, returncode)
+                    ),
                     "data": [],
                 }
             )
@@ -1424,11 +1432,14 @@ class SchemaSyncView(APIView):
 
         cmd_args = schema_sync.generate_args2cmd(args)
         try:
-            stdout, stderr = schema_sync.execute_cmd(cmd_args).communicate()
-            diff_stdout = f"{stdout}{stderr}"
+            stdout, stderr = schema_sync.run_with_timeout(cmd_args)
+            # 工具可能把含口令的 DSN 打进输出，回前端前先脱敏
+            diff_stdout = redact_credentials(f"{stdout}{stderr}")
         except RuntimeError as e:
             logger.error(f"schemasync 执行命令失败: {e}")
-            diff_stdout = "执行对比命令失败，请联系管理员"
+            diff_stdout = (
+                str(e) if "超时" in str(e) else "执行对比命令失败，请联系管理员"
+            )
 
         result["data"]["diff_stdout"] = diff_stdout
 

@@ -24,6 +24,7 @@ from django.core.exceptions import ValidationError
 from django.db import transaction
 from sql.engines import get_engine
 from sql.utils.ai_review import AI_REVIEW_FIELDS, AI_REVIEW_TTL_HOURS, sql_fingerprint
+from sql.utils.sql_utils import validate_db_name
 from sql.utils.workflow_audit import Audit, get_auditor
 from sql.utils.resource_group import user_groups, user_instances
 from common.utils.const import WorkflowType, WorkflowStatus
@@ -408,13 +409,29 @@ class ExecuteCheckSerializer(serializers.Serializer):
     db_name = serializers.CharField(label="数据库名")
     full_sql = serializers.CharField(label="SQL内容")
 
+    def validate_db_name(self, db_name):
+        # 库名会被拼进 goInception 的 `use` 语句，必须在此收口（防标识符逃逸）。
+        # 仅 mysql 走 goInception，严格黑名单也只对 mysql 生效；其他库
+        # （如 PostgreSQL 合法库名可含空格/引号）不套用该校验，
+        # 与工单入口（WorkflowSerializer.validate）保持同口径。
+        instance = getattr(self, "_instance", None)
+        if instance is not None and instance.db_type != "mysql":
+            return db_name
+        try:
+            return validate_db_name(db_name)
+        except ValueError as e:
+            raise serializers.ValidationError(str(e))
+
     def validate_instance_id(self, instance_id):
         try:
-            Instance.objects.get(pk=instance_id)
+            instance = Instance.objects.get(pk=instance_id)
         except Instance.DoesNotExist:
             raise serializers.ValidationError(
                 {"errors": f"不存在该实例：{instance_id}"}
             )
+        # 缓存实例供 validate_db_name 判断校验强度
+        # （字段按声明顺序校验，instance_id 在 db_name 之前）
+        self._instance = instance
         return instance_id
 
     def get_instance(self):
@@ -456,6 +473,19 @@ class WorkflowSerializer(serializers.ModelSerializer):
         except ResourceGroup.DoesNotExist:
             raise serializers.ValidationError({"errors": f"不存在该资源组：{group_id}"})
         return group_id
+
+    def validate(self, attrs):
+        # MySQL 工单的库名会被拼进 goInception 的 `use \`db\``（见
+        # GoInceptionEngine.execute_check/execute），提交人可控且执行时用的是
+        # 平台托管账号，因此必须在入口拦住反引号/分号等逃逸字符，
+        # 否则可把未经审核的语句并入执行批次（H5：审核绕过）。
+        instance = attrs.get("instance")
+        if instance is not None and instance.db_type == "mysql":
+            try:
+                attrs["db_name"] = validate_db_name(attrs.get("db_name"))
+            except ValueError as e:
+                raise serializers.ValidationError({"db_name": str(e)})
+        return attrs
 
     class Meta:
         model = SqlWorkflow

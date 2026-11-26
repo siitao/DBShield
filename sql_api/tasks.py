@@ -13,17 +13,19 @@ hook=sql.notify.notify_for_my2sql 通过站内信/钉钉等通知提交人。
 
 import logging
 
+from sql.models import Instance
 from sql.plugins.my2sql import TASK_TIMEOUT, My2SQL, describe_failure, is_failure
 
 logger = logging.getLogger("default")
 
 
-def my2sql_execute(user, args, output_dir):
+def my2sql_execute(user, args, output_dir, instance_id=None):
     """执行 my2sql，SQL 文件落在 output_dir。
 
     :param user: 提交人用户名（通知接收人）
-    :param args: sql.plugins.my2sql.My2SQL.build_args 生成的参数
+    :param args: sql.plugins.my2sql.My2SQL.build_args 生成的参数（不含口令）
     :param output_dir: 输出目录
+    :param instance_id: 实例 ID；口令不随任务参数落库，在这里重新解密获取
     :return: [SQL 条数, 输出目录]
     """
     my2sql = My2SQL()
@@ -31,11 +33,23 @@ def my2sql_execute(user, args, output_dir):
     if args_check["status"] == 1:
         raise RuntimeError(args_check["msg"])
 
+    # 兼容命令行传参模式（my2sql_password_stdin=false）时 args 里已带口令
+    stdin_password = None
+    if not args.get("password") and instance_id:
+        instance = Instance.objects.filter(id=instance_id).first()
+        if instance is None:
+            raise RuntimeError("实例不存在或已被删除")
+        _args_password, stdin_password = My2SQL.split_credentials(
+            instance.get_username_password()[1]
+        )
+
     cmd_args = my2sql.generate_args2cmd(args)
     logger.info(
         "my2sql 异步解析开始 提交人=%s 输出目录=%s", user, output_dir
     )
-    stdout, stderr, returncode, timed_out = my2sql.run(cmd_args, TASK_TIMEOUT)
+    stdout, stderr, returncode, timed_out = my2sql.run(
+        cmd_args, TASK_TIMEOUT, stdin_password=stdin_password
+    )
 
     if timed_out:
         my2sql.remove_sql_files(output_dir)
@@ -52,7 +66,9 @@ def my2sql_execute(user, args, output_dir):
             (stderr or "")[-4000:],
         )
         my2sql.remove_sql_files(output_dir)
-        raise RuntimeError(describe_failure(stdout, stderr, returncode))
+        raise RuntimeError(
+            My2SQL.add_stdin_hint(describe_failure(stdout, stderr, returncode))
+        )
 
     sql_count = my2sql.count_sql_rows(output_dir)
     logger.info(

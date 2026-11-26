@@ -8,7 +8,9 @@
 
 import json
 import os
+import subprocess
 import tempfile
+import pytest
 from django.test import Client, TestCase
 from unittest.mock import patch, ANY, Mock
 from pytest_mock import MockerFixture
@@ -330,7 +332,12 @@ class TestPlugin(TestCase):
         )
         stdout, stderr = soar.execute_cmd(cmd_args).communicate()
         mock_subprocess.Popen.assert_called_once_with(
-            cmd_args, shell=False, stdout=ANY, stderr=ANY, universal_newlines=ANY
+            cmd_args,
+            shell=False,
+            stdin=ANY,
+            stdout=ANY,
+            stderr=ANY,
+            universal_newlines=ANY,
         )
         self.assertIn("some_stdout", stdout)
         # 异常
@@ -440,3 +447,107 @@ def test_password_mixin(mocker: MockerFixture):
     assert username == "test"
     assert password == "test"
     assert requests.get.call_count == 1
+
+
+def test_run_with_timeout_returns_output(mocker: MockerFixture):
+    """正常结束时直接返回 (stdout, stderr)。"""
+    from sql.plugins.plugin import Plugin
+
+    proc = mocker.Mock()
+    proc.communicate.return_value = ("out", "err")
+    mocker.patch.object(Plugin, "execute_cmd", return_value=proc)
+
+    assert Plugin("tool").run_with_timeout(["tool"], timeout=5) == ("out", "err")
+    proc.kill.assert_not_called()
+
+
+def test_run_with_timeout_kills_and_raises(mocker: MockerFixture):
+    """超时必须 kill 子进程并抛 RuntimeError，避免请求线程被永久占住（VULN-003）。"""
+    from sql.plugins.plugin import Plugin
+
+    proc = mocker.Mock()
+    proc.communicate.side_effect = [
+        subprocess.TimeoutExpired(cmd=["tool"], timeout=5),
+        ("", ""),
+    ]
+    mocker.patch.object(Plugin, "execute_cmd", return_value=proc)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        Plugin("tool").run_with_timeout(["tool"], timeout=5)
+    assert "超时" in str(exc_info.value)
+    proc.kill.assert_called_once()
+
+
+def test_my2sql_split_credentials(mocker: MockerFixture):
+    """默认走 stdin（不进命令行），配置回退时仍返回命令行口令（VULN-004）。"""
+    from sql.plugins.my2sql import My2SQL
+
+    mocker.patch.object(My2SQL, "password_via_stdin", return_value=True)
+    assert My2SQL.split_credentials("pwd") == (None, "pwd")
+
+    mocker.patch.object(My2SQL, "password_via_stdin", return_value=False)
+    assert My2SQL.split_credentials("pwd") == ("pwd", None)
+
+
+def test_my2sql_run_sends_password_via_stdin(mocker: MockerFixture):
+    from sql.plugins.my2sql import My2SQL
+
+    plugin = My2SQL.__new__(My2SQL)
+    proc = mocker.Mock()
+    proc.communicate.return_value = ("out", "err")
+    mocker.patch.object(My2SQL, "execute_cmd", return_value=proc)
+
+    result = plugin.run(["my2sql"], 5, stdin_password="p@ss")
+    assert result == ("out", "err", proc.returncode, False)
+    proc.communicate.assert_called_once_with(input="p@ss\n", timeout=5)
+    assert My2SQL.execute_cmd.call_args.kwargs["stdin_pipe"] is True
+
+
+def test_my2sql_run_space_password_falls_back_to_argv(mocker: MockerFixture):
+    """含空格的口令无法走 stdin（fmt.Scanln 只取单个 token），执行时回退命令行传参。"""
+    from sql.plugins.my2sql import My2SQL
+
+    plugin = My2SQL.__new__(My2SQL)
+    proc = mocker.Mock()
+    proc.communicate.return_value = ("out", "err")
+    mocker.patch.object(My2SQL, "execute_cmd", return_value=proc)
+
+    result = plugin.run(["my2sql", "-host", "h"], 5, stdin_password="p@ss word")
+    assert result == ("out", "err", proc.returncode, False)
+    proc.communicate.assert_called_once_with(input=None, timeout=5)
+    assert My2SQL.execute_cmd.call_args.kwargs["stdin_pipe"] is False
+    assert My2SQL.execute_cmd.call_args.args[0] == [
+        "my2sql",
+        "-host",
+        "h",
+        "-password",
+        "p@ss word",
+    ]
+
+
+def test_my2sql_run_without_stdin_keeps_devnull(mocker: MockerFixture):
+    from sql.plugins.my2sql import My2SQL
+
+    plugin = My2SQL.__new__(My2SQL)
+    proc = mocker.Mock()
+    proc.communicate.return_value = ("", "")
+    mocker.patch.object(My2SQL, "execute_cmd", return_value=proc)
+
+    plugin.run(["my2sql"], 5)
+    proc.communicate.assert_called_once_with(input=None, timeout=5)
+    assert My2SQL.execute_cmd.call_args.kwargs["stdin_pipe"] is False
+
+
+def test_my2sql_add_stdin_hint(mocker: MockerFixture):
+    """stdin 模式下「拒绝访问」类错误要提示回退开关，其他错误原样返回。"""
+    from sql.plugins.my2sql import My2SQL
+
+    mocker.patch.object(My2SQL, "password_via_stdin", return_value=True)
+    assert "my2sql_password_stdin" in My2SQL.add_stdin_hint("解析失败：实例账号无权限。")
+    assert My2SQL.add_stdin_hint("解析超时") == "解析超时"
+
+    mocker.patch.object(My2SQL, "password_via_stdin", return_value=False)
+    assert (
+        My2SQL.add_stdin_hint("解析失败：实例账号无权限。")
+        == "解析失败：实例账号无权限。"
+    )

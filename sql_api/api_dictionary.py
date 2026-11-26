@@ -29,6 +29,7 @@ from rest_framework.permissions import BasePermission, IsAuthenticated
 
 from sql.models import Instance
 from sql.services.instance_service import resolve_instance_and_engine
+from sql.utils.sql_utils import quote_ident
 
 
 class DataDictionaryPermission(BasePermission):
@@ -130,7 +131,9 @@ class DataDictionaryViewSet(viewsets.ViewSet):
                 "index": engine.get_table_index_data(db_name=db_name, tb_name=tb_name),
             }
             if instance.db_type in ("mysql", "clickhouse"):
-                _sql = engine.query(db_name, f"show create table `{tb_name}`;")
+                _sql = engine.query(
+                    db_name, f"show create table {quote_ident(tb_name)};"
+                )
                 data["create_sql"] = _sql.rows
             return JsonResponse({"status": 0, "data": data})
         except Instance.DoesNotExist:

@@ -34,6 +34,7 @@ from rest_framework.permissions import BasePermission, IsAuthenticated
 from rest_framework.views import APIView
 from sql.engines import get_engine
 from sql.models import Instance
+from sql.plugins.plugin import redact_credentials
 from sql.plugins.soar import Soar
 from sql.plugins.sqladvisor import SQLAdvisor
 from sql.services.instance_service import resolve_instance
@@ -186,8 +187,14 @@ class SqlAnalyzeAnalyzeView(APIView):
                 pass
             args["query"] = row["sql"]
             cmd_args = soar.generate_args2cmd(args=args)
-            stdout, stderr = soar.execute_cmd(cmd_args).communicate()
-            row["report"] = stdout if stdout else stderr
+            try:
+                stdout, stderr = soar.run_with_timeout(cmd_args)
+            except RuntimeError as e:
+                # 单条语句超时/工具异常不影响整批，直接在报告里给出原因
+                row["report"] = redact_credentials(str(e))
+                continue
+            # 工具可能把含口令的 DSN 打进输出，回前端前先脱敏
+            row["report"] = redact_credentials(stdout if stdout else stderr)
 
         result = {"total": len(rows), "rows": rows}
         return JsonResponse(_encode(result), safe=False)
@@ -237,9 +244,12 @@ class OptimizeSqlAdvisorView(APIView):
         if args_check_result["status"] != 0:
             return JsonResponse({"status": 1, "msg": args_check_result["msg"]})
         cmd_args = sqladvisor.generate_args2cmd(args=args)
-        stdout, stderr = sqladvisor.execute_cmd(cmd_args).communicate()
+        try:
+            stdout, stderr = sqladvisor.run_with_timeout(cmd_args)
+        except RuntimeError as e:
+            return JsonResponse({"status": 1, "msg": redact_credentials(str(e))})
 
-        result = stdout if stdout else stderr
+        result = redact_credentials(stdout if stdout else stderr)
         return JsonResponse({"status": 0, "msg": "success", "data": result})
 
 
@@ -279,9 +289,12 @@ class OptimizeSoarView(APIView):
             "allow-online-as-test": False,
         }
         cmd_args = soar.generate_args2cmd(args=args)
-        stdout, stderr = soar.execute_cmd(cmd_args).communicate()
+        try:
+            stdout, stderr = soar.run_with_timeout(cmd_args)
+        except RuntimeError as e:
+            return JsonResponse({"status": 1, "msg": redact_credentials(str(e))})
 
-        result = stdout if stdout else stderr
+        result = redact_credentials(stdout if stdout else stderr)
         return JsonResponse({"status": 0, "msg": "success", "data": result})
 
 

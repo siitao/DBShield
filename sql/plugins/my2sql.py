@@ -92,6 +92,46 @@ class My2SQL(Plugin):
         super(Plugin, self).__init__()
 
     @staticmethod
+    def password_via_stdin():
+        """口令是否通过 stdin 传给 my2sql（默认是）。
+
+        my2sql 的 -password 为空时会 fmt.Scanln 从标准输入读密码，因此可以不把
+        口令放进进程命令行（Linux 的 ps / /proc/<pid>/cmdline、Windows 的任务
+        管理器都能读到）。若使用不支持该行为的老版本，可在系统配置中把
+        my2sql_password_stdin 置为 false 回退到命令行传参。
+        """
+        return bool(SysConfig().get("my2sql_password_stdin", True))
+
+    @staticmethod
+    def split_credentials(password):
+        """拆分口令的传递方式。
+
+        :return: (给 build_args 的 password, 给 run 的 stdin_password)
+            - 默认：(None, password) —— 不出现在命令行，经 stdin 传入
+            - my2sql_password_stdin=false：(password, None) —— 沿用命令行传参
+        """
+        if My2SQL.password_via_stdin():
+            return None, password
+        return password, None
+
+    @staticmethod
+    def add_stdin_hint(message):
+        """口令走 stdin 时，给「拒绝访问」类错误补一句回退提示。
+
+        升级后若遇到不支持从 stdin 读口令的 my2sql 版本，用户会看到
+        "Access denied"，容易被误判成账号权限问题；这里直接指出回退开关。
+        """
+        if not My2SQL.password_via_stdin():
+            return message
+        if "账号无权限" in (message or "") or "access denied" in (message or "").lower():
+            return (
+                message
+                + "（若当前 my2sql 版本不支持从标准输入读取口令，"
+                "请在 系统配置 中把 my2sql_password_stdin 置为 false 后重试）"
+            )
+        return message
+
+    @staticmethod
     def build_args(
         host,
         port,
@@ -151,14 +191,25 @@ class My2SQL(Plugin):
         }
         return args
 
-    def run(self, cmd_args, timeout):
+    def run(self, cmd_args, timeout, stdin_password=None):
         """执行 my2sql。
 
+        :param timeout: 最长等待秒数，超时 kill 子进程
+        :param stdin_password: 经 stdin 传入的口令（不放进命令行）；
+            None 表示不写 stdin（口令已由 build_args 放进 argv 的兼容模式）
         :return: (stdout, stderr, returncode, timed_out)
         """
-        process = self.execute_cmd(cmd_args)
+        if stdin_password is not None and re.search(r"\s", stdin_password):
+            # my2sql 用 fmt.Scanln 从 stdin 读口令，只取空白分隔的单个 token，
+            # 含空格的口令（MySQL 允许）会被截断导致 Access denied。此时回退为
+            # 命令行传参：只在执行时拼进 argv（进程列表瞬时可见），不进
+            # build_args，因此仍不会随 django-q 任务参数落库。
+            cmd_args = list(cmd_args) + ["-password", stdin_password]
+            stdin_password = None
+        stdin_data = None if stdin_password is None else f"{stdin_password}\n"
+        process = self.execute_cmd(cmd_args, stdin_pipe=stdin_data is not None)
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
+            stdout, stderr = process.communicate(input=stdin_data, timeout=timeout)
             return stdout, stderr, process.returncode, False
         except subprocess.TimeoutExpired:
             process.kill()

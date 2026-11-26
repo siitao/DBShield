@@ -15,7 +15,13 @@ from schemaobject.connection import build_database_url
 
 from sql.engines.goinception import GoInceptionEngine
 from sql.utils import ai_review
-from sql.utils.sql_utils import get_syntax_type, remove_comments, extract_tables
+from sql.utils.sql_utils import (
+    get_syntax_type,
+    remove_comments,
+    extract_tables,
+    quote_ident,
+    validate_mysql_user_host,
+)
 from . import EngineBase
 from .models import ResultSet, ReviewResult, ReviewSet
 from sql.utils.data_masking import data_masking
@@ -76,6 +82,8 @@ class MysqlEngine(EngineBase):
         super().__init__(instance=instance)
         self.config = SysConfig()
         self.inc_engine = GoInceptionEngine()
+        # escape_string 按目标会话 sql_mode 选择转义策略，探测结果缓存到本实例
+        self._no_backslash_escapes = None
 
     def get_connection(self, db_name=None):
         # https://stackoverflow.com/questions/19256155/python-mysqldb-returning-x01-for-bit-values
@@ -109,10 +117,37 @@ class MysqlEngine(EngineBase):
         return self.conn
 
     def escape_string(self, value: str) -> str:
-        """字符串参数转义"""
+        """字符串参数转义（标识符请改用 sql.utils.sql_utils.quote_ident）。
+
+        pymysql 的 escape_string 依赖反斜杠转义，目标实例开启
+        NO_BACKSLASH_ESCAPES 后 `'` 可直接闭合字面量；因此这里先探测会话
+        sql_mode，按模式选择策略：
+        - 默认模式：pymysql 转义（反斜杠 + 引号）
+        - NO_BACKSLASH_ESCAPES：反斜杠是普通字符，只把单引号双写（两种模式都合法）
+        """
         if value is None:
             return ""
+        if self.session_no_backslash_escapes():
+            return str(value).replace("'", "''")
         return escape_string(value)
+
+    def session_no_backslash_escapes(self) -> bool:
+        """目标实例当前会话是否开启 NO_BACKSLASH_ESCAPES（探测一次并缓存）。
+
+        探测失败时沿用默认模式的转义（与历史行为一致），不阻断业务。
+        """
+        if self._no_backslash_escapes is None:
+            try:
+                result = self.query(sql="select @@SESSION.sql_mode;")
+                mode = str(result.rows[0][0] or "") if result.rows else ""
+                self._no_backslash_escapes = "NO_BACKSLASH_ESCAPES" in mode.upper()
+            except Exception:
+                logger.warning(
+                    "探测目标实例 sql_mode 失败，按默认反斜杠转义处理: %s",
+                    traceback.format_exc(),
+                )
+                self._no_backslash_escapes = False
+        return self._no_backslash_escapes
 
     @property
     def auto_backup(self):
@@ -435,7 +470,9 @@ class MysqlEngine(EngineBase):
             "column_list": _meta.column_list,
             "rows": _meta.rows[0] if _meta.rows else [],
         }
-        _create = self.query(db_name, f"SHOW CREATE PROCEDURE `{proc_name}`;")
+        _create = self.query(
+            db_name, f"SHOW CREATE PROCEDURE {quote_ident(proc_name)};"
+        )
         create_sql = _create.rows
         return {"meta_data": meta_data, "create_sql": create_sql}
 
@@ -479,7 +516,9 @@ class MysqlEngine(EngineBase):
             "column_list": _meta.column_list,
             "rows": _meta.rows[0] if _meta.rows else [],
         }
-        _create = self.query(db_name, f"SHOW CREATE FUNCTION `{func_name}`;")
+        _create = self.query(
+            db_name, f"SHOW CREATE FUNCTION {quote_ident(func_name)};"
+        )
         create_sql = _create.rows
         return {"meta_data": meta_data, "create_sql": create_sql}
 
@@ -539,7 +578,9 @@ class MysqlEngine(EngineBase):
             "column_list": _meta.column_list,
             "rows": _meta.rows[0] if _meta.rows else [],
         }
-        _create = self.query(db_name, f"SHOW CREATE EVENT `{event_name}`;")
+        _create = self.query(
+            db_name, f"SHOW CREATE EVENT {quote_ident(event_name)};"
+        )
         create_sql = _create.rows
         return {"meta_data": meta_data, "create_sql": create_sql}
 
@@ -836,14 +877,14 @@ class MysqlEngine(EngineBase):
 
     def drop_instance_user(self, user_host: str, **kwarg):
         """实例账号管理功能，删除实例账号"""
-        # escape
-        user_host = self.escape_string(user_host)
+        # user_host 是 `user`@`host` 标识符表达式，escape_string 不转义反引号，
+        # 必须校验形态后再拼接
+        user_host = validate_mysql_user_host(user_host)
         return self.execute(db_name="mysql", sql=f"DROP USER {user_host};")
 
     def reset_instance_user_pwd(self, user_host: str, reset_pwd: str, **kwargs):
         """实例账号管理功能，重置实例账号密码"""
-        # escape
-        user_host = self.escape_string(user_host)
+        user_host = validate_mysql_user_host(user_host)
         reset_pwd = self.escape_string(reset_pwd)
         return self.execute(
             db_name="mysql", sql=f"ALTER USER {user_host} IDENTIFIED BY '{reset_pwd}';"
@@ -851,9 +892,7 @@ class MysqlEngine(EngineBase):
 
     def get_all_columns_by_tb(self, db_name, tb_name, **kwargs):
         """获取所有字段, 返回一个ResultSet"""
-        db_name = self.escape_string(db_name)
-        tb_name = self.escape_string(tb_name)
-        sql = f"""SELECT
+        sql = """SELECT
             COLUMN_NAME,
             COLUMN_TYPE,
             CHARACTER_SET_NAME,
@@ -864,8 +903,8 @@ class MysqlEngine(EngineBase):
         FROM
             information_schema.COLUMNS
         WHERE
-            TABLE_SCHEMA = '{db_name}'
-                AND TABLE_NAME = '{tb_name}'
+            TABLE_SCHEMA = %(db_name)s
+                AND TABLE_NAME = %(tb_name)s
         ORDER BY ORDINAL_POSITION;"""
         result = self.query(
             db_name=db_name,
@@ -878,8 +917,7 @@ class MysqlEngine(EngineBase):
 
     def describe_table(self, db_name, tb_name, **kwargs):
         """return ResultSet 类似查询"""
-        tb_name = self.escape_string(tb_name)
-        sql = f"show create table `{tb_name}`;"
+        sql = f"show create table {quote_ident(tb_name)};"
         result = self.query(db_name=db_name, sql=sql)
         return result
 
@@ -1194,9 +1232,10 @@ class MysqlEngine(EngineBase):
         **kwargs,
     ):
         """获取连接信息"""
-        # escape
-        command_type = self.escape_string(command_type)
-        if not command_type:
+        # command_type 会拼进 command= '...' 字面量：只接受字母/数字/空格/下划线/
+        # 连字符组成的命令名（MySQL 的 command 取值都是这种形态），其余回落到 Query
+        command_type = "" if command_type is None else str(command_type).strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,31}", command_type or ""):
             command_type = "Query"
         if command_type == "All":
             sql = base_sql + ";"

@@ -49,7 +49,7 @@ def _load_user_priv_rows(user, instance):
             instance=instance,
             valid_date__gte=datetime.datetime.now(),
             is_deleted=0,
-        ).order_by("id")
+        ).order_by("privilege_id")  # 主键是 privilege_id，没有 id 字段
     )
 
 
@@ -75,6 +75,71 @@ def _match_tb_priv(priv_rows, user, schema, name):
         ):
             return p.limit_num
     return False
+
+
+# EXPLAIN 前缀（可带 analyze/extended/partitions 与 format=xxx）：
+# 剥离后按被解释的真实语句做表权限校验，避免借 EXPLAIN 读取无权限表的执行计划
+_EXPLAIN_PREFIX_RE = re.compile(
+    r"^\s*explain\s+(?:(?:analyze|extended|partitions)\s+)?"
+    r"(?:format\s*=\s*(?:json|tree|traditional)\s*)?",
+    re.I,
+)
+# SHOW CREATE 的对象类型与对象名
+_SHOW_CREATE_RE = re.compile(
+    r"^\s*show\s+create\s+"
+    r"(?P<kind>table|view|function|procedure|trigger|event|database|schema)\s+"
+    r"(?P<name>[^\s;]+)",
+    re.I,
+)
+# 对象名允许常规标识符（含反引号、点号与中文等 unicode）：捕获组本身已排除
+# 空白与分号，这里再拦住引号/反斜杠/控制字符等易混淆形态，其余 fail-closed
+_OBJECT_NAME_RE = re.compile(r"^[^'\"\\\x00-\x1f\x7f]{1,128}$")
+
+
+def _split_object_name(raw, default_schema):
+    """把 `db`.`tb` / db.tb / tb 拆成 (schema, object)，支持标识符内双写反引号。"""
+    parts, buf, in_tick = [], "", False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if ch == "`":
+            if in_tick and raw[i + 1 : i + 2] == "`":
+                # 引号内的双写反引号是字面反引号，不切换引号状态
+                buf += "`"
+                i += 2
+                continue
+            in_tick = not in_tick
+            i += 1
+            continue
+        if ch == "." and not in_tick:
+            parts.append(buf)
+            buf = ""
+            i += 1
+            continue
+        buf += ch
+        i += 1
+    parts.append(buf)
+    if len(parts) >= 2:
+        return parts[0], parts[-1]
+    return default_schema, parts[-1]
+
+
+def _show_create_table_ref(sql_content, default_schema):
+    """把 SHOW CREATE ... 解析成 [{"schema", "name"}]，供库/表权限校验。
+
+    SHOW CREATE 会直接返回对象 DDL，过去为了兼容被整体跳过权限校验，
+    等同于允许任意用户读取任意库表的结构；这里改为先解析对象再走正常校验。
+    """
+    match = _SHOW_CREATE_RE.match(sql_content)
+    if not match or not _OBJECT_NAME_RE.fullmatch(match.group("name")):
+        raise ValueError("无法解析 SHOW CREATE 语句的对象，已拒绝执行")
+    kind = match.group("kind").lower()
+    name = match.group("name")
+    if kind in ("database", "schema"):
+        # SHOW CREATE DATABASE db：只需库权限
+        return [{"schema": name.strip("`"), "name": ""}]
+    schema, object_name = _split_object_name(name, default_schema)
+    return [{"schema": schema, "name": object_name}]
 
 
 def query_priv_check(user, instance, db_name, sql_content, limit_num):
@@ -108,19 +173,28 @@ def query_priv_check(user, instance, db_name, sql_content, limit_num):
     # 仅MySQL做表权限校验
     if instance.db_type == "mysql":
         try:
-            # explain和show create跳过权限校验
-            if re.match(r"^explain|^show\s+create", sql_content, re.I):
-                return result
-            # 语法树解析走 goInception 外部服务：同一语句短期内重复执行时
-            # 用短缓存避免重复外呼（表引用由 SQL 文本+库唯一决定，TTL 内不变）
-            cache_key = (
-                f"query_priv_table_ref:{instance.pk}:{db_name}:"
-                f"{hashlib.md5(sql_content.encode('utf-8', errors='ignore')).hexdigest()}"
-            )
-            table_ref = cache.get(cache_key)
-            if table_ref is None:
-                table_ref = _table_ref(sql_content, instance, db_name)
-                cache.set(cache_key, table_ref, 60)
+            if re.match(r"^show\s+create", sql_content, re.I):
+                # SHOW CREATE 直接返回对象 DDL，必须按对象做权限校验
+                # （旧实现整体放行，等于允许读取任意库表结构）
+                table_ref = _show_create_table_ref(sql_content, db_name)
+            else:
+                # EXPLAIN / EXPLAIN ANALYZE 需要按被解释的语句校验
+                # （ANALYZE 在 MySQL 8 会真实执行，不能当只读元数据放行）
+                priv_sql = sql_content
+                if re.match(r"^explain", sql_content, re.I):
+                    priv_sql = _EXPLAIN_PREFIX_RE.sub("", sql_content, count=1)
+                    if not priv_sql.strip():
+                        raise ValueError("EXPLAIN 语句缺少被解释的 SQL")
+                # 语法树解析走 goInception 外部服务：同一语句短期内重复执行时
+                # 用短缓存避免重复外呼（表引用由 SQL 文本+库唯一决定，TTL 内不变）
+                cache_key = (
+                    f"query_priv_table_ref:{instance.pk}:{db_name}:"
+                    f"{hashlib.md5(priv_sql.encode('utf-8', errors='ignore')).hexdigest()}"
+                )
+                table_ref = cache.get(cache_key)
+                if table_ref is None:
+                    table_ref = _table_ref(priv_sql, instance, db_name)
+                    cache.set(cache_key, table_ref, 60)
             # 热路径优化：一次取回全部有效权限行，内存匹配（旧实现每表最多 8 条查询）
             priv_rows = _load_user_priv_rows(user, instance)
             for table in table_ref:

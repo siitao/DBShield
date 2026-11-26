@@ -498,8 +498,8 @@ class TestQueryPrivilegesCheck(TestCase):
             {"status": 0, "msg": "ok", "data": {"priv_check": True, "limit_num": 100}},
         )
 
-    def test_query_priv_check_explain_or_show_create(self):
-        """测试用户权限校验，explain和show create不做校验"""
+    def test_query_priv_check_show_create_requires_priv(self):
+        """SHOW CREATE 不再跳过校验：无库表权限时拒绝（VULN-006）。"""
         r = sql.query_privileges.query_priv_check(
             user=self.user,
             instance=self.slave,
@@ -507,7 +507,87 @@ class TestQueryPrivilegesCheck(TestCase):
             sql_content="show create table archery.sql_users;",
             limit_num=100,
         )
-        self.assertTrue(r)
+        self.assertEqual(r["status"], 2)
+        self.assertIn("sql_users", r["msg"])
+
+    def test_query_priv_check_show_create_allowed_with_priv(self):
+        """SHOW CREATE 命中库权限时放行，并按权限压低 limit。"""
+        QueryPrivileges.objects.create(
+            user_name=self.user.username,
+            instance=self.slave,
+            db_name="archery",
+            valid_date=date.today() + timedelta(days=1),
+            limit_num=10,
+            priv_type=1,
+        )
+        r = sql.query_privileges.query_priv_check(
+            user=self.user,
+            instance=self.slave,
+            db_name=self.db_name,
+            sql_content="show create table archery.sql_users;",
+            limit_num=100,
+        )
+        self.assertEqual(r["status"], 0)
+        self.assertEqual(r["data"]["limit_num"], 10)
+
+    def test_query_priv_check_show_create_rejects_bad_object(self):
+        """无法安全解析的 SHOW CREATE 对象 fail-closed（引号等混淆形态）。"""
+        r = sql.query_privileges.query_priv_check(
+            user=self.user,
+            instance=self.slave,
+            db_name=self.db_name,
+            sql_content="show create table `a'b`;",
+            limit_num=100,
+        )
+        self.assertEqual(r["status"], 1)
+
+    def test_query_priv_check_show_create_quoted_ident_backtick(self):
+        """标识符内双写反引号按 MySQL 语义解析，落到无权限拒绝而非解析失败。"""
+        r = sql.query_privileges.query_priv_check(
+            user=self.user,
+            instance=self.slave,
+            db_name=self.db_name,
+            sql_content="show create table `a``b`;",
+            limit_num=100,
+        )
+        self.assertEqual(r["status"], 2)
+        self.assertIn("a`b", r["msg"])
+
+    def test_query_priv_check_show_create_unicode_name(self):
+        """中文等 unicode 对象名可正常通过校验：命中库权限时放行。"""
+        QueryPrivileges.objects.create(
+            user_name=self.user.username,
+            instance=self.slave,
+            db_name=self.db_name,
+            valid_date=date.today() + timedelta(days=1),
+            limit_num=10,
+            priv_type=1,
+        )
+        r = sql.query_privileges.query_priv_check(
+            user=self.user,
+            instance=self.slave,
+            db_name=self.db_name,
+            sql_content="show create table 订单表;",
+            limit_num=100,
+        )
+        self.assertEqual(r["status"], 0)
+        self.assertEqual(r["data"]["limit_num"], 10)
+
+    @patch("sql.query_privileges._table_ref")
+    def test_query_priv_check_explain_inner_statement(self, _table_ref):
+        """EXPLAIN 不再跳过校验，按剥掉前缀后的语句校验表权限。"""
+        _table_ref.return_value = [{"schema": "archery", "name": "sql_users"}]
+        r = sql.query_privileges.query_priv_check(
+            user=self.user,
+            instance=self.slave,
+            db_name=self.db_name,
+            sql_content="explain analyze select * from archery.sql_users;",
+            limit_num=0,
+        )
+        self.assertEqual(r["status"], 2)
+        self.assertEqual(
+            _table_ref.call_args[0][0], "select * from archery.sql_users;"
+        )
 
     @patch(
         "sql.query_privileges._table_ref",

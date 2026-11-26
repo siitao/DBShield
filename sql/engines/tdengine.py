@@ -1,7 +1,7 @@
 # -*- coding: UTF-8 -*-
 import taosws
 from .models import ResultSet, ReviewResult, ReviewSet
-from sql.utils.sql_utils import get_syntax_type
+from sql.utils.sql_utils import get_syntax_type, quote_ident
 from common.utils.timer import FuncTimer
 from common.config import SysConfig
 from . import EngineBase
@@ -155,12 +155,11 @@ class TDengineEngine(EngineBase):
 
     def describe_table(self, db_name, tb_name, **kwargs):
         """return ResultSet 类似查询"""
-        tb_name = self.escape_string(tb_name)
         table_type = self.get_table_type(db_name, tb_name)
         if table_type == "table":
-            sql = f"show create table `{tb_name}`;"
+            sql = f"show create table {quote_ident(tb_name)};"
         else:
-            sql = f"show create stable `{tb_name}`;"
+            sql = f"show create stable {quote_ident(tb_name)};"
         result = self.query(db_name=db_name, sql=sql)
         formatted = re.sub(
             r"(CREATE\s+(?:STABLE|TABLE)\s+`[^`]+`\s*)\(`",
