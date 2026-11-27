@@ -295,22 +295,32 @@ async function openTrend(row: Record<string, unknown>) {
     }
 
     const data = r.data || [];
-    const dates = data.map((d) => d.date);
-    const counts = data.map((d) => d.count);
-    const avgTimes = data.map((d) => d.avg_time);
+    // 后端只返回有慢查记录的日期：直接画会让轴退化成一端孤点。
+    // 补齐近 7 天（缺失天执行次数记 0、平均耗时记 null 不画假数据）
+    const rowMap = new Map(data.map((d) => [d.date, d]));
+    const dates: string[] = [];
+    const counts: number[] = [];
+    const avgTimes: (number | null)[] = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key =
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` +
+        `-${String(d.getDate()).padStart(2, "0")}`;
+      const row = rowMap.get(key);
+      dates.push(key);
+      counts.push(row?.count ?? 0);
+      avgTimes.push(row?.avg_time ?? null);
+    }
 
     trendOption.value = {
-      title: {
-        text: "SQL 历史趋势（近7天）",
-        left: "center",
-        textStyle: { fontSize: 14 },
-      },
+      // 对话框外层已展示标题与 SQL 文本，图内不再重复标题，避免与图例叠在一起
       tooltip: { trigger: "axis" },
-      legend: { top: 24 },
+      legend: { top: 0 },
       grid: {
         left: 56,
         right: 24,
-        top: 56,
+        top: 40,
         bottom: 48,
         containLabel: true,
       },
@@ -338,6 +348,8 @@ async function openTrend(row: Record<string, unknown>) {
           smooth: true,
           yAxisIndex: 1,
           showSymbol: false,
+          // 无慢查的天没有平均耗时，跨过断点连线
+          connectNulls: true,
           areaStyle: { opacity: 0.3 },
           data: avgTimes,
         },

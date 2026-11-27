@@ -416,19 +416,40 @@ async function loadTrendChart() {
     });
     const data = r.data || [];
     if (!data.length) return;
-    const dates = data.map((d) => d.date);
-    const avgTimes = data.map((d) => d.avg_time);
-    const maxTimes = data.map((d) => d.max_time);
+    // 后端只返回有慢查记录的日期：不补齐的话坐标轴把有记录的天当连续类目，
+    // 相邻日期看起来是挨着的，稀疏时整条线缩成一端。缺失天记 null 不画假数据。
+    const rowMap = new Map(data.map((d) => [d.date, d]));
+    const dates: string[] = [];
+    const avgTimes: (number | null)[] = [];
+    const maxTimes: (number | null)[] = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const key =
+        `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` +
+        `-${String(d.getDate()).padStart(2, "0")}`;
+      const row = rowMap.get(key);
+      dates.push(key);
+      avgTimes.push(row?.avg_time ?? null);
+      maxTimes.push(row?.max_time ?? null);
+    }
     trendOption.value = {
-      title: { text: "近14天趋势", left: "center", textStyle: { fontSize: 13 } },
+      // 标题居左、图例居右同一行，避免上下叠在一起
+      title: { text: "近14天趋势", left: 8, top: 0, textStyle: { fontSize: 13 } },
       tooltip: { trigger: "axis" },
-      legend: { top: 24, data: ["平均耗时", "最大耗时"] },
-      grid: { left: 48, right: 24, top: 56, bottom: 32, containLabel: true },
+      legend: { right: 8, top: 0, data: ["平均耗时", "最大耗时"] },
+      grid: { left: 48, right: 24, top: 44, bottom: 32, containLabel: true },
       xAxis: { type: "category", data: dates, axisLabel: { rotate: dates.length > 7 ? 45 : 0 } },
       yAxis: { type: "value", name: "毫秒", axisLabel: { formatter: (v: number) => `${v}ms` } },
       series: [
-        { name: "平均耗时", type: "line", smooth: true, areaStyle: { opacity: 0.2 }, data: avgTimes },
-        { name: "最大耗时", type: "line", smooth: true, areaStyle: { opacity: 0.2 }, data: maxTimes },
+        {
+          name: "平均耗时", type: "line", smooth: true, connectNulls: true,
+          areaStyle: { opacity: 0.2 }, data: avgTimes,
+        },
+        {
+          name: "最大耗时", type: "line", smooth: true, connectNulls: true,
+          areaStyle: { opacity: 0.2 }, data: maxTimes,
+        },
       ],
     } as EChartsOption;
   } catch {

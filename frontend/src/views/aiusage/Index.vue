@@ -30,30 +30,57 @@ const totalTokens = computed(
   () => totals.value.prompt_tokens + totals.value.completion_tokens
 );
 
-const dayChartOption = computed<EChartsOption>(() => ({
-  tooltip: { trigger: "axis" },
-  legend: { data: ["调用量", "prompt tokens", "completion tokens"] },
-  grid: { left: 48, right: 24, top: 40, bottom: 32 },
-  xAxis: { type: "category", data: byDay.value.map((r) => r.day || "") },
-  yAxis: [{ type: "value" }, { type: "value" }],
-  series: [
-    {
-      name: "调用量", type: "bar", yAxisIndex: 0,
-      data: byDay.value.map((r) => r.calls),
-      itemStyle: { color: "#409eff" },
-    },
-    {
-      name: "prompt tokens", type: "line", yAxisIndex: 1, smooth: true,
-      data: byDay.value.map((r) => r.prompt_tokens),
-      itemStyle: { color: "#e6a23c" },
-    },
-    {
-      name: "completion tokens", type: "line", yAxisIndex: 1, smooth: true,
-      data: byDay.value.map((r) => r.completion_tokens),
-      itemStyle: { color: "#67c23a" },
-    },
-  ],
-}));
+const dayChartOption = computed<EChartsOption>(() => {
+  // 后端 by_day 只返回有调用的日期：直接画会让类目轴退化成单类目
+  //（柱子占满整个绘图区，图例和日期标签挤在一起）。按统计范围补齐
+  // 缺失日期（无调用记 0），趋势图才有正常的轴宽与形态。
+  const dayMap = new Map(
+    byDay.value.filter((r) => r.day).map((r) => [r.day as string, r])
+  );
+  const labels: string[] = [];
+  const calls: number[] = [];
+  const promptTokens: number[] = [];
+  const completionTokens: number[] = [];
+  for (let i = days.value - 1; i >= 0; i--) {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    const key =
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}` +
+      `-${String(d.getDate()).padStart(2, "0")}`;
+    const row = dayMap.get(key);
+    labels.push(key.slice(5)); // 轴上用 MM-DD，完整日期进 tooltip
+    calls.push(row?.calls || 0);
+    promptTokens.push(row?.prompt_tokens || 0);
+    completionTokens.push(row?.completion_tokens || 0);
+  }
+  return {
+    tooltip: { trigger: "axis" },
+    // 图例显式置顶，与绘图区/日期标签留出独立空间
+    legend: { top: 0, left: "center", itemGap: 16 },
+    grid: { left: 48, right: 24, top: 48, bottom: 32 },
+    xAxis: { type: "category", data: labels },
+    yAxis: [{ type: "value" }, { type: "value" }],
+    series: [
+      {
+        name: "调用量", type: "bar", yAxisIndex: 0,
+        // 少量日期数据时避免柱子被拉成整块色板
+        barMaxWidth: 32,
+        data: calls,
+        itemStyle: { color: "#409eff" },
+      },
+      {
+        name: "prompt tokens", type: "line", yAxisIndex: 1, smooth: true,
+        data: promptTokens,
+        itemStyle: { color: "#e6a23c" },
+      },
+      {
+        name: "completion tokens", type: "line", yAxisIndex: 1, smooth: true,
+        data: completionTokens,
+        itemStyle: { color: "#67c23a" },
+      },
+    ],
+  };
+});
 
 async function loadSummary() {
   summaryLoading.value = true;
