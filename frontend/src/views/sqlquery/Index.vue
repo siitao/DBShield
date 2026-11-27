@@ -849,10 +849,6 @@ onMounted(() => {
             :table-name="t.tableName"
             @locate-error="(pos) => onLocateError(t, pos)"
           />
-          <div v-if="t.sql" class="executed-sql">
-            <span class="lbl">执行 SQL：</span>
-            <code>{{ t.sql }}</code>
-          </div>
         </el-tab-pane>
       </el-tabs>
     </el-card>
@@ -1100,24 +1096,5 @@ onMounted(() => {
   margin-top: 14px;
   display: flex;
   justify-content: flex-end;
-}
-
-.executed-sql {
-  margin-top: 12px;
-  padding: 9px 12px;
-  background: var(--el-fill-color-lighter);
-  border: 1px solid var(--dbshield-border-lighter);
-  border-radius: 8px;
-  font-size: 12px;
-  color: var(--el-text-color-regular);
-  word-break: break-all;
-
-  .lbl {
-    color: var(--el-text-color-placeholder);
-  }
-
-  code {
-    font-family: var(--dbshield-font-mono);
-  }
 }
 </style>
